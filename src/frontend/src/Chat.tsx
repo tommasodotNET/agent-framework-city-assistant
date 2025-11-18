@@ -15,7 +15,6 @@ import gfm from "remark-gfm";
 
 
 type ChatEntry = (AIChatMessage & { dataUrl?: string }) | AIChatError;
-type ApiType = 'dotnet' | 'python' | 'groupchat';
 type Theme = 'light' | 'dark' | 'system';
 
 function isChatError(entry: unknown): entry is AIChatError {
@@ -23,8 +22,7 @@ function isChatError(entry: unknown): entry is AIChatError {
 }
 
 export default function Chat({ style }: { style: React.CSSProperties }) {
-    const [selectedApi, setSelectedApi] = useState<ApiType>('dotnet');
-    const [client, setClient] = useState(() => new AIChatProtocolClient("/agent/dotnet/chat/"));
+    const [client] = useState(() => new AIChatProtocolClient("/agent/chat/stream"));
 
     const [messages, setMessages] = useState<ChatEntry[]>([]);
     const [input, setInput] = useState<string>("");
@@ -218,9 +216,9 @@ export default function Chat({ style }: { style: React.CSSProperties }) {
 
     return (
         <div className={`${styles.chatWindow} ${effectiveTheme === 'dark' ? styles.dark : ''}`} style={style}>
-            {/* Header with API selection, sessionState and reset button */}
+            {/* Header with sessionState and reset button */}
             <div className={styles.header}>
-                <h1 className={styles.headerTitle}>AI Agent Hub</h1>
+                <h1 className={styles.headerTitle}>City Assistant</h1>
                 <div className={styles.headerContent}>
                     <div className={styles.themeSelector}>
                         <button 
@@ -245,37 +243,6 @@ export default function Chat({ style }: { style: React.CSSProperties }) {
                             🌙
                         </button>
                     </div>
-                    <div className={styles.agentSelector}>
-                        <label className={styles.agentSelectorLabel}>Agent:</label>
-                        <select 
-                            className={styles.agentDropdown}
-                            value={selectedApi}
-                            onChange={(e) => {
-                                const newApi = e.target.value as ApiType;
-                                setSelectedApi(newApi);
-                                
-                                // Update the client with the new API endpoint
-                                let baseUrl = '/agent/dotnet/chat/';
-                                if (newApi === 'python') {
-                                    baseUrl = '/agent/python/chat/';
-                                } else if (newApi === 'groupchat') {
-                                    baseUrl = '/agent/groupchat/chat/';
-                                }
-                                setClient(new AIChatProtocolClient(baseUrl));
-                                
-                                // Reset conversation when switching APIs and generate new session
-                                const newSessionId = crypto.randomUUID();
-                                setSessionState(newSessionId);
-                                setMessages([]);
-                                setHasInvokedInitialAgent(false);
-                                initialFetchStarted.current = false;
-                            }}
-                        >
-                            <option value="dotnet">📄 .NET Agent (Documents)</option>
-                            <option value="python">📊 Python Agent (Financial)</option>
-                            <option value="groupchat">👥 Group Chat (Multi-Agent)</option>
-                        </select>
-                    </div>
                     
                     <div className={styles.sessionInfo}>
                         <label className={styles.sessionLabel}>Session:</label>
@@ -296,8 +263,8 @@ export default function Chat({ style }: { style: React.CSSProperties }) {
                 {messages.length === 0 && !isLoading && (
                     <div className={styles.welcomeMessage}>
                         <div className={styles.welcomeIcon}>🤖</div>
-                        <h2>Welcome to AI Agent Hub!</h2>
-                        <p>Choose an agent from the dropdown above and start chatting!</p>
+                        <h2>Welcome to City Assistant!</h2>
+                        <p>I can help you find great restaurants in the city. Just ask me!</p>
                     </div>
                 )}
                 {messages.map((message, index) => (

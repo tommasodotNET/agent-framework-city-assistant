@@ -1,0 +1,94 @@
+{
+  "resources": {
+    "foundry": {
+      "type": "azure.ai.inference.v0",
+      "connectionString": "{foundry.connectionString}"
+    },
+    "cosmos": {
+      "type": "azure.cosmosdb.connection.v0",
+      "connectionString": "{cosmos.connectionString}",
+      "databases": {
+        "conversations": {
+          "type": "value.v0"
+        }
+      }
+    },
+    "restaurant-agent": {
+      "type": "project.v0",
+      "path": "../restaurant-agent/RestaurantAgent.csproj",
+      "env": {
+        "OTEL_DOTNET_EXPERIMENTAL_OTLP_EMIT_EXCEPTION_LOG_ATTRIBUTES": "true",
+        "OTEL_DOTNET_EXPERIMENTAL_OTLP_EMIT_EVENT_LOG_ATTRIBUTES": "true",
+        "OTEL_DOTNET_EXPERIMENTAL_OTLP_RETRY": "in_memory",
+        "ASPNETCORE_FORWARDEDHEADERS_ENABLED": "true",
+        "HTTP_PORTS": "{restaurant-agent.bindings.http.targetPort}",
+        "ConnectionStrings__foundry": "{foundry.connectionString}",
+        "ConnectionStrings__conversations": "{cosmos.connectionString}",
+        "ConnectionStrings__cosmos": "{cosmos.connectionString}"
+      },
+      "bindings": {
+        "http": {
+          "scheme": "http",
+          "protocol": "tcp",
+          "transport": "http",
+          "targetPort": 8080
+        },
+        "https": {
+          "scheme": "https",
+          "protocol": "tcp",
+          "transport": "http",
+          "targetPort": 8443
+        }
+      }
+    },
+    "orchestrator-agent": {
+      "type": "project.v0",
+      "path": "../orchestrator-agent/OrchestratorAgent.csproj",
+      "env": {
+        "OTEL_DOTNET_EXPERIMENTAL_OTLP_EMIT_EXCEPTION_LOG_ATTRIBUTES": "true",
+        "OTEL_DOTNET_EXPERIMENTAL_OTLP_EMIT_EVENT_LOG_ATTRIBUTES": "true",
+        "OTEL_DOTNET_EXPERIMENTAL_OTLP_RETRY": "in_memory",
+        "ASPNETCORE_FORWARDEDHEADERS_ENABLED": "true",
+        "HTTP_PORTS": "{orchestrator-agent.bindings.http.targetPort}",
+        "ConnectionStrings__foundry": "{foundry.connectionString}",
+        "ConnectionStrings__conversations": "{cosmos.connectionString}",
+        "ConnectionStrings__cosmos": "{cosmos.connectionString}",
+        "services__restaurant-agent__https__0": "{restaurant-agent.bindings.https.url}",
+        "services__restaurant-agent__http__0": "{restaurant-agent.bindings.http.url}"
+      },
+      "bindings": {
+        "http": {
+          "scheme": "http",
+          "protocol": "tcp",
+          "transport": "http",
+          "targetPort": 8081
+        },
+        "https": {
+          "scheme": "https",
+          "protocol": "tcp",
+          "transport": "http",
+          "targetPort": 8444
+        }
+      }
+    },
+    "frontend": {
+      "type": "project.v0",
+      "path": "../frontend",
+      "env": {
+        "NODE_ENV": "development",
+        "PORT": "{frontend.bindings.http.targetPort}",
+        "services__orchestrator-agent__https__0": "{orchestrator-agent.bindings.https.url}",
+        "services__orchestrator-agent__http__0": "{orchestrator-agent.bindings.http.url}"
+      },
+      "bindings": {
+        "http": {
+          "scheme": "http",
+          "protocol": "tcp",
+          "transport": "http",
+          "targetPort": 5173,
+          "external": true
+        }
+      }
+    }
+  }
+}
