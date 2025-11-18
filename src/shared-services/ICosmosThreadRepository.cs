@@ -1,6 +1,6 @@
 using System.Text.Json;
 
-namespace OrchestratorAgent.Services;
+namespace SharedServices;
 
 public interface ICosmosThreadRepository
 {

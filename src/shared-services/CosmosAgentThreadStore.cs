@@ -1,7 +1,8 @@
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Hosting;
+using Microsoft.Extensions.Logging;
 
-namespace OrchestratorAgent.Services;
+namespace SharedServices;
 
 public sealed class CosmosAgentThreadStore : AgentThreadStore
 {

@@ -2,8 +2,9 @@ using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Logging;
 
-namespace OrchestratorAgent.Services;
+namespace SharedServices;
 
 public class CosmosThreadRepository : ICosmosThreadRepository
 {

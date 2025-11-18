@@ -6,6 +6,7 @@ using Microsoft.Agents.AI.Hosting.A2A;
 using Microsoft.Extensions.AI;
 using RestaurantAgent.Services;
 using RestaurantAgent.Tools;
+using SharedServices;
 
 var builder = WebApplication.CreateBuilder(args);
 

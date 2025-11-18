@@ -6,7 +6,7 @@ using Microsoft.Agents.AI.Hosting;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.AI;
 using OrchestratorAgent.Models;
-using OrchestratorAgent.Services;
+using SharedServices;
 
 var builder = WebApplication.CreateBuilder(args);
 

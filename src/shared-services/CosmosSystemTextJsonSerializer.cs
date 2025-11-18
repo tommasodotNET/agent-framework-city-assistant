@@ -3,7 +3,7 @@ using System.Text;
 using System.Text.Json;
 using Microsoft.Azure.Cosmos;
 
-namespace OrchestratorAgent.Services;
+namespace SharedServices;
 
 public class CosmosSystemTextJsonSerializer : CosmosSerializer
 {
