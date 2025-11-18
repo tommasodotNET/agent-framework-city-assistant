@@ -28,10 +28,10 @@ builder.Services.AddSingleton<ICosmosThreadRepository, CosmosThreadRepository>()
 builder.Services.AddSingleton<CosmosAgentThreadStore>();
 
 // Connect to restaurant agent via A2A
-var restaurantAgentUrl = Environment.GetEnvironmentVariable("services__restaurant-agent__https__0") ?? "http://localhost:5196";
+var restaurantAgentUrl = Environment.GetEnvironmentVariable("services__restaurant-agent__https__0") ?? Environment.GetEnvironmentVariable("services__restaurant-agent__http__0");
 var httpClient = new HttpClient()
 {
-    BaseAddress = new Uri(restaurantAgentUrl),
+    BaseAddress = new Uri(restaurantAgentUrl!),
     Timeout = TimeSpan.FromSeconds(60)
 };
 var cardResolver = new A2ACardResolver(
