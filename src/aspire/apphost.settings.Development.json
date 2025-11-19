@@ -1,0 +1,14 @@
+{
+    "Azure": {
+        "TenantId": "tommasostocchi.dev",
+        "SubscriptionId": "cabbfb81-4a74-4730-afdb-65bae9448063",
+        "AllowResourceGroupCreation": true,
+        "ResourceGroup": "rg-smart-city",
+        "Location": "italynorth",
+        "CredentialSource": "AzureCli"
+    },
+    "Parameters": {
+        "existingFoundryName": "ai-tstocchi",
+        "existingFoundryResourceGroup": "rg-supp-resources"
+    }
+}

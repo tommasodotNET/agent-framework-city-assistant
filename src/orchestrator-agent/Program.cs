@@ -28,7 +28,7 @@ builder.Services.AddSingleton<ICosmosThreadRepository, CosmosThreadRepository>()
 builder.Services.AddSingleton<CosmosAgentThreadStore>();
 
 // Connect to restaurant agent via A2A
-var restaurantAgentUrl = Environment.GetEnvironmentVariable("services__restaurant-agent__https__0") ?? Environment.GetEnvironmentVariable("services__restaurant-agent__http__0");
+var restaurantAgentUrl = Environment.GetEnvironmentVariable("services__restaurantagent__https__0") ?? Environment.GetEnvironmentVariable("services__restaurantagent__http__0");
 var httpClient = new HttpClient()
 {
     BaseAddress = new Uri(restaurantAgentUrl!),
@@ -74,10 +74,6 @@ app.MapPost("/agent/chat/stream", async (
 {
     var conversationId = request.SessionState ?? Guid.NewGuid().ToString();
 
-    // Set response headers for streaming
-    response.ContentType = "text/plain; charset=utf-8";
-    response.Headers["Transfer-Encoding"] = "chunked";
-
     if (request.Messages.Count == 0)
     {
         // Initial greeting
@@ -120,7 +116,7 @@ app.MapPost("/agent/chat/stream", async (
         await threadStore.SaveThreadAsync(agent, conversationId, thread);
     }
 
-    return Results.Ok();
+    return;
 });
 
 app.MapDefaultEndpoints();

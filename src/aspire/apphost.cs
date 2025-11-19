@@ -36,7 +36,7 @@ var cosmos = builder.AddAzureCosmosDB("cosmos-db")
 var db = cosmos.AddCosmosDatabase("db");
 var conversations = db.AddContainer("conversations", "/conversationId");
 
-var restaurantAgent = builder.AddProject("restaurant-agent", "../restaurant-agent/RestaurantAgent.csproj")
+var restaurantAgent = builder.AddProject("restaurantagent", "../restaurant-agent/RestaurantAgent.csproj")
     .WithHttpHealthCheck("/health")
     .WithReference(foundry).WaitFor(foundry)
     .WithReference(conversations).WaitFor(conversations)
@@ -46,7 +46,7 @@ var restaurantAgent = builder.AddProject("restaurant-agent", "../restaurant-agen
         e.Urls.Add(new() { Url = "/agenta2a/v1/card", DisplayText = "🤖Restaurant Agent A2A Card", Endpoint = e.GetEndpoint("https") });
     });
 
-var orchestratorAgent = builder.AddProject("orchestrator-agent", "../orchestrator-agent/OrchestratorAgent.csproj")
+var orchestratorAgent = builder.AddProject("orchestratoragent", "../orchestrator-agent/OrchestratorAgent.csproj")
     .WithHttpHealthCheck("/health")
     .WithReference(foundry).WaitFor(foundry)
     .WithReference(conversations).WaitFor(conversations)
@@ -65,13 +65,16 @@ var frontend = builder.AddViteApp("frontend", "../frontend")
         e.Urls.Add(new() { Url = "/", DisplayText = "💬City Assistant", Endpoint = e.GetEndpoint("http") });
     });
 
-builder.AddYarp("yarp")
-    .WithExternalHttpEndpoints()
-    .WithConfiguration(yarp =>
-    {
-        yarp.AddRoute("/agent/{**catch-all}", orchestratorAgent)
-            .WithTransformPathPrefix("/agent");
-    })
-    .PublishWithStaticFiles(frontend);
+if (builder.ExecutionContext.IsPublishMode)
+{
+    builder.AddYarp("yarp")
+        .WithExternalHttpEndpoints()
+        .WithConfiguration(yarp =>
+        {
+            yarp.AddRoute("/agent/{**catch-all}", orchestratorAgent)
+                .WithTransformPathPrefix("/agent");
+        })
+        .PublishWithStaticFiles(frontend);
+}
 
 builder.Build().Run();
