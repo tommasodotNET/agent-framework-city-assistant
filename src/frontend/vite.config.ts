@@ -13,8 +13,9 @@ export default () => {
     server: {
       port: process.env.PORT,
       proxy: {
-        '/agent': {
+        '/agenta2a': {
           target: process.env.services__orchestratoragent__https__0 || process.env.services__orchestratoragent__http__0,
+          changeOrigin: true,
         },
       },
     },

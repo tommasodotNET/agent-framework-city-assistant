@@ -60,7 +60,7 @@ var app = builder.Build();
 app.MapA2A("restaurant-agent", "/agenta2a", new AgentCard
 {
     Name = "restaurant-agent",
-    Url = Environment.GetEnvironmentVariable("services__restaurant-agent__https__0") ?? "http://localhost:5196/agenta2a",
+    Url = app.Configuration["ASPNETCORE_URLS"]?.Split(';')[0] + "/agenta2a" ?? "http://localhost:5196/agenta2a",
     Description = "A restaurant assistant that helps find and recommend restaurants based on user preferences",
     Version = "1.0",
     DefaultInputModes = ["text"],

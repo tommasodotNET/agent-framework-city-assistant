@@ -1,16 +1,25 @@
-using System.Text.Json;
 using A2A;
 using Azure.Identity;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Hosting;
-using Microsoft.AspNetCore.Mvc;
+using Microsoft.Agents.AI.Hosting.A2A;
 using Microsoft.Extensions.AI;
-using OrchestratorAgent.Models;
 using SharedServices;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.AddServiceDefaults();
+
+// Configure CORS
+builder.Services.AddCors(options =>
+{
+    options.AddDefaultPolicy(policy =>
+    {
+        policy.AllowAnyOrigin()
+              .AllowAnyMethod()
+              .AllowAnyHeader();
+    });
+});
 
 // Configure Azure chat client
 builder.AddAzureChatCompletionsClient(connectionName: "foundry",
@@ -64,59 +73,35 @@ Always be friendly, helpful, and provide comprehensive responses based on the in
 
 var app = builder.Build();
 
-// Custom API endpoint for frontend
-app.MapPost("/agent/chat/stream", async (
-    [FromKeyedServices("orchestrator-agent")] AIAgent agent,
-    [FromKeyedServices("orchestrator-agent")] AgentThreadStore threadStore,
-    [FromBody] AIChatRequest request,
-    [FromServices] ILogger<Program> logger,
-    HttpResponse response) =>
+// Enable CORS
+app.UseCors();
+
+// Map A2A endpoint for orchestrator agent
+app.MapA2A("orchestrator-agent", "/agenta2a", new AgentCard
 {
-    var conversationId = request.SessionState ?? Guid.NewGuid().ToString();
-
-    if (request.Messages.Count == 0)
+    Name = "orchestrator-agent",
+    Url = app.Configuration["ASPNETCORE_URLS"]?.Split(';')[0] + "/agenta2a" ?? "http://localhost:5197/agenta2a",
+    Description = "A city assistant that orchestrates multiple specialized agents to help with various tasks",
+    Version = "1.0",
+    DefaultInputModes = ["text"],
+    DefaultOutputModes = ["text"],
+    Capabilities = new AgentCapabilities
     {
-        // Initial greeting
-        AIChatCompletionDelta delta = new(new AIChatMessageDelta()
+        Streaming = true,
+        PushNotifications = false
+    },
+    Skills = [
+        new AgentSkill
         {
-            Content = $"Hi! I'm your city assistant. I can help you find great restaurants in the city. Just ask me about restaurants, food, or dining options!"
-        })
-        {
-            SessionState = conversationId
-        };
-
-        await response.WriteAsync($"{JsonSerializer.Serialize(delta)}\r\n");
-        await response.Body.FlushAsync();
-    }
-    else
-    {
-        var message = request.Messages.LastOrDefault();
-
-        var thread = await threadStore.GetThreadAsync(agent, conversationId);
-        var chatMessage = new ChatMessage(ChatRole.User, message.Content);
-
-        // Stream responses
-        await foreach (var update in agent.RunStreamingAsync(chatMessage, thread))
-        {
-            if (!string.IsNullOrEmpty(update.Text))
-            {
-                var delta = new AIChatCompletionDelta(new AIChatMessageDelta()
-                {
-                    Content = update.Text
-                })
-                {
-                    SessionState = conversationId
-                };
-
-                await response.WriteAsync($"{JsonSerializer.Serialize(delta)}\r\n");
-                await response.Body.FlushAsync();
-            }
+            Name = "City Assistant",
+            Description = "Help users with city-related tasks including restaurant recommendations",
+            Examples = [
+                "Find me a good restaurant",
+                "What's the best pizza place in the city?",
+                "Recommend a vegetarian restaurant"
+            ]
         }
-
-        await threadStore.SaveThreadAsync(agent, conversationId, thread);
-    }
-
-    return;
+    ]
 });
 
 app.MapDefaultEndpoints();

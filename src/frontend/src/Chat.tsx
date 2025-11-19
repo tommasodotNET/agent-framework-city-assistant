@@ -2,62 +2,60 @@
 // Licensed under the MIT License.
 
 import { Button } from "@fluentui/react-components";
-import {
-    AIChatMessage,
-    AIChatProtocolClient,
-    AIChatError,
-} from "@microsoft/ai-chat-protocol";
 import { useEffect, useId, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import TextareaAutosize from "react-textarea-autosize";
 import styles from "./Chat.module.css";
 import gfm from "remark-gfm";
+import { A2AClientWrapper, A2AChatMessage } from "./A2AClientWrapper";
 
-
-type ChatEntry = (AIChatMessage & { dataUrl?: string }) | AIChatError;
+type ChatEntry = A2AChatMessage | ChatError;
 type Theme = 'light' | 'dark' | 'system';
 
-function isChatError(entry: unknown): entry is AIChatError {
-    return (entry as AIChatError).code !== undefined;
+interface ChatError {
+    code: string;
+    message: string;
+}
+
+function isChatError(entry: unknown): entry is ChatError {
+    return (entry as ChatError).code !== undefined;
 }
 
 export default function Chat({ style }: { style: React.CSSProperties }) {
-    const [client] = useState(() => new AIChatProtocolClient("/agent/chat/"));
+    // Initialize A2A client with the orchestrator agent card URL
+    const [client] = useState(() => new A2AClientWrapper("/agenta2a/v1/card"));
 
     const [messages, setMessages] = useState<ChatEntry[]>([]);
     const [input, setInput] = useState<string>("");
     const [isLoading, setIsLoading] = useState<boolean>(false);
     const [hasInvokedInitialAgent, setHasInvokedInitialAgent] = useState<boolean>(false);
     const inputId = useId();
-    // Set initial sessionState to undefined
-    const [sessionState, setSessionState] = useState<string | undefined>(undefined);
+    // Use contextId for conversation management (A2A terminology)
+    const [contextId, setContextId] = useState<string | undefined>(undefined);
     const [theme, setTheme] = useState<Theme>('system');
     const [effectiveTheme, setEffectiveTheme] = useState<'light' | 'dark'>('light');
     const messagesEndRef = useRef<HTMLDivElement>(null);
-    const initialFetchStarted = useRef(false); // <--- aggiungi questa ref
+    const initialFetchStarted = useRef(false);
 
     const invokeAgentWithEmptyMessage = async () => {
-        if (isLoading || !sessionState) return;
+        if (isLoading || !contextId) return;
         
         setIsLoading(true);
         try {
-            const result = await client.getStreamedCompletion([], {
-                sessionState: sessionState,
-            });
-
-            const latestMessage: AIChatMessage = { content: "", role: "assistant" };
-            for await (const response of result) {
-                if (response.sessionState) {
-                    setSessionState(response.sessionState as string);
+            // Send an initial message to get the greeting
+            const initialMessage: A2AChatMessage = { 
+                role: "user", 
+                content: "Hello" 
+            };
+            
+            const latestMessage: A2AChatMessage = { content: "", role: "assistant" };
+            
+            for await (const event of client.sendMessageStream([initialMessage], contextId)) {
+                if (event.contextId) {
+                    setContextId(event.contextId);
                 }
-                if (!response.delta) {
-                    continue;
-                }
-                if (response.delta.role) {
-                    latestMessage.role = response.delta.role;
-                }
-                if (response.delta.content) {
-                    latestMessage.content += response.delta.content;
+                if (event.content) {
+                    latestMessage.content += event.content;
                     setMessages([latestMessage]);
                 }
             }
@@ -76,21 +74,21 @@ export default function Chat({ style }: { style: React.CSSProperties }) {
     };
 
     useEffect(() => {
-        // Generate initial session state if not present
-        if (!sessionState && !initialFetchStarted.current) {
-            const newSessionId = crypto.randomUUID();
-            setSessionState(newSessionId);
+        // Generate initial contextId if not present
+        if (!contextId && !initialFetchStarted.current) {
+            const newContextId = crypto.randomUUID();
+            setContextId(newContextId);
             initialFetchStarted.current = true;
         }
-    }, [sessionState]);
+    }, [contextId]);
 
-    // Invoke agent with empty message when session is ready and agent hasn't been invoked yet
+    // Invoke agent with empty message when context is ready and agent hasn't been invoked yet
     useEffect(() => {
-        if (sessionState && !hasInvokedInitialAgent && !isLoading) {
+        if (contextId && !hasInvokedInitialAgent && !isLoading) {
             setHasInvokedInitialAgent(true);
             invokeAgentWithEmptyMessage();
         }
-    }, [sessionState, hasInvokedInitialAgent, isLoading]);
+    }, [contextId, hasInvokedInitialAgent, isLoading]);
 
     // Load saved theme
     useEffect(() => {
@@ -121,13 +119,13 @@ export default function Chat({ style }: { style: React.CSSProperties }) {
         }
     }, [theme]);
 
-    // Quando resetti la conversazione, consenti una nuova fetch iniziale
+    // Reset conversation with new contextId
     const handleResetConversation = () => {
-        const newSessionId = crypto.randomUUID();
-        setSessionState(newSessionId);
+        const newContextId = crypto.randomUUID();
+        setContextId(newContextId);
         setMessages([]);
         setHasInvokedInitialAgent(false);
-        initialFetchStarted.current = false; // <--- resetta la ref
+        initialFetchStarted.current = false;
     };
 
     const scrollToBottom = () => {
@@ -138,7 +136,7 @@ export default function Chat({ style }: { style: React.CSSProperties }) {
     const sendMessage = async () => {
         if (!input.trim() || isLoading) return;
         
-        const message: AIChatMessage = {
+        const message: A2AChatMessage = {
             role: "user",
             content: input,
         };
@@ -148,32 +146,25 @@ export default function Chat({ style }: { style: React.CSSProperties }) {
         setIsLoading(true);
         
         // Add a placeholder assistant message that will be updated
-        const assistantMessage: AIChatMessage = { content: "", role: "assistant" };
+        const assistantMessage: A2AChatMessage = { content: "", role: "assistant" };
         setMessages([...updatedMessages, assistantMessage]);
         
         try {
             // Build the conversation from updatedMessages, filtering out errors
             const conversation = updatedMessages
                 .filter((entry) => !isChatError(entry))
-                .map((msg) => msg as AIChatMessage);
-
-            const result = await client.getStreamedCompletion(conversation, {
-                sessionState: sessionState,
-            });
-
-            console.log("result", result);
+                .map((msg) => msg as A2AChatMessage);
 
             let accumulatedContent = "";
-            for await (const response of result) {
-                if (response.sessionState) {
-                    setSessionState(response.sessionState as string);
+            
+            // Stream the response using A2A protocol
+            for await (const event of client.sendMessageStream(conversation, contextId)) {
+                if (event.contextId) {
+                    setContextId(event.contextId);
                 }
-                if (!response.delta) {
-                    continue;
-                }
-                if (response.delta.content) {
-                    accumulatedContent += response.delta.content;
-                    const updatedAssistantMessage: AIChatMessage = {
+                if (event.content) {
+                    accumulatedContent += event.content;
+                    const updatedAssistantMessage: A2AChatMessage = {
                         content: accumulatedContent,
                         role: "assistant"
                     };
@@ -206,7 +197,7 @@ export default function Chat({ style }: { style: React.CSSProperties }) {
             : styles.assistantMessage;
     };
 
-    const getErrorMessage = (message: AIChatError) => {
+    const getErrorMessage = (message: ChatError) => {
         return `${message.code}: ${message.message}`;
     };
 
@@ -245,12 +236,12 @@ export default function Chat({ style }: { style: React.CSSProperties }) {
                     </div>
                     
                     <div className={styles.sessionInfo}>
-                        <label className={styles.sessionLabel}>Session:</label>
+                        <label className={styles.sessionLabel}>Context:</label>
                         <input
                             type="text"
-                            value={sessionState || ''}
-                            onChange={(e) => setSessionState(e.target.value)}
-                            placeholder="Enter or generate session ID..."
+                            value={contextId || ''}
+                            onChange={(e) => setContextId(e.target.value)}
+                            placeholder="Enter or generate context ID..."
                             className={styles.sessionInput}
                         />
                         <Button onClick={handleResetConversation} className={styles.resetButton}>

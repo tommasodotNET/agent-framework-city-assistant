@@ -54,7 +54,7 @@ var orchestratorAgent = builder.AddProject("orchestratoragent", "../orchestrator
     .WithEnvironment("AZURE_TENANT_ID", tenantId)
     .WithUrls((e) =>
     {
-        e.Urls.Add(new() { Url = "/agent/chat", DisplayText = "🤖Orchestrator Chat", Endpoint = e.GetEndpoint("https") });
+        e.Urls.Add(new() { Url = "/agenta2a/v1/card", DisplayText = "🤖Orchestrator Agent A2A Card", Endpoint = e.GetEndpoint("https") });
     });
 
 var frontend = builder.AddViteApp("frontend", "../frontend")

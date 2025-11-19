@@ -15,6 +15,7 @@
     
     <!-- A2A Support -->
     <PackageReference Include="Microsoft.Agents.AI.A2A" Version="1.0.0-preview.*" />
+    <PackageReference Include="Microsoft.Agents.AI.Hosting.A2A.AspNetCore" Version="1.0.0-preview.*" />
     
     <!-- Azure and Aspire integrations -->
     <PackageReference Include="Aspire.Azure.AI.Inference" Version="13.0.0-preview.1.25560.3" />
