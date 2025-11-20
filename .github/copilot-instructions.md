@@ -5,7 +5,7 @@ This is a multi-agent system using Microsoft Agent Framework (.NET 10) with A2A 
 ## Reference Documentation
 
 - `.github/architecture.md` - Complete system architecture, technology stack, and component details
-- `.github/agents/maf-dotnet-agent-instructions.md` - MAF agent development patterns and best practices
+- `.github/agents/maf-dotnet.agent.md` - MAF agent development patterns and best practices
 
 ## Key Patterns
 
