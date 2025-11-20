@@ -38,25 +38,25 @@ The application consists of three main components:
                 │ /agenta2a/v1/*             │ (Thread Storage)
                 │ (Agent-to-Agent)           │
                 ▼                            ▼
-┌───────────────────────────────┐  ┌────────────────────────────┐
-│  Restaurant Agent (.NET)      │  │     Cosmos DB              │
-│                               │  │                            │
-│  • Restaurant search tools    │  │  • Conversation threads    │
-│  • Category filtering         │  │  • Message history         │
-│  • Mock restaurant data       │  │  • Context persistence     │
-│  • A2A endpoint               │  │                            │
-└───────────────┬───────────────┘  └────────────────────────────┘
-                │
-                │ Azure Cosmos DB
-                │ (Thread Storage)
-                ▼
-┌───────────────────────────────┐
-│     Cosmos DB                 │
-│                               │
-│  • Conversation threads       │
-│  • Message history            │
-│  • Context persistence        │
-└───────────────────────────────┘
+┌───────────────────────────────┐            │
+│  Restaurant Agent (.NET)      │            │
+│                               │            │
+│  • Restaurant search tools    │            │
+│  • Category filtering         │            │
+│  • Mock restaurant data       │            │
+│  • A2A endpoint               │            │
+└───────────────┬───────────────┘            │
+                │                            │
+                └───────────────┬────────────┘
+                                │
+                                ▼
+                  ┌────────────────────────────┐
+                  │     Cosmos DB              │
+                  │                            │
+                  │  • Conversation threads    │
+                  │  • Message history         │
+                  │  • Context persistence     │
+                  └────────────────────────────┘
 
 Data Flow:
 1. User sends message via Frontend → Orchestrator (A2A)
