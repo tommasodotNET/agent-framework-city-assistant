@@ -26,11 +26,6 @@ When creating or modifying agents, consult the agent instructions file for MAF p
 
 Run with: `aspire run`
 
-Frontend development:
-- `cd src/frontend`
-- `npm install`
-- `npm run dev`
-
 ## Project Layout
 
 - `src/aspire/` - Single-file Aspire host (apphost.cs)
