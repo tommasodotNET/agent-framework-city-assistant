@@ -73,4 +73,4 @@ Aspire manages all service connections and configuration through environment var
 - Cosmos DB connections
 - Inter-agent URLs
 
-Azure-specific settings (tenant, subscription, location) are configured in `src/aspire/appsettings.json`.
+Azure-specific settings (tenant, subscription, location) are configured via `src/aspire/apphost.run.json`, `apphost.cs`, environment variables, or the Aspire CLI.
