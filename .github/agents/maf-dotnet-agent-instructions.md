@@ -76,7 +76,6 @@ Add the required NuGet packages to your `.csproj` file:
   <ItemGroup>
     <ProjectReference Include="..\service-defaults\ServiceDefaults.csproj" />
     <ProjectReference Include="..\shared-services\SharedServices.csproj" />
-    <ProjectReference Include="..\shared-models\SharedModels.csproj" />
   </ItemGroup>
 </Project>
 ```
@@ -91,15 +90,6 @@ The repository provides shared libraries to avoid code duplication:
 - `ICosmosThreadRepository`: Interface for thread storage
 - `CosmosSystemTextJsonSerializer`: Custom JSON serializer for Cosmos DB
 
-**SharedModels** (`src/shared-models`):
-- `AIChatMessage`: Chat message model for UI
-- `AIChatRequest`: Chat request model
-- `AIChatRole`: Enum for message roles (User, Assistant, System)
-- `AIChatFile`: File attachment model
-- `AIChatMessageDelta`: Streaming message delta
-- `AIChatCompletionDelta`: Streaming completion delta
-- `JsonCamelCaseEnumConverter`: JSON converter for camelCase enums
-
 ### Key Namespace Imports
 
 Your Program.cs will typically need these imports:
@@ -113,7 +103,6 @@ using Microsoft.Extensions.AI;                       // AI abstractions
 using Azure.Identity;                                // Azure authentication
 using A2A;                                           // A2A types
 using SharedServices;                                // Shared Cosmos services
-using SharedModels;                                  // Shared UI models
 ```
 
 ## Agent Implementation Patterns
