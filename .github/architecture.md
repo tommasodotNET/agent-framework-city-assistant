@@ -2,14 +2,52 @@
 
 ## System Overview
 
-Three-tier multi-agent system where specialized agents communicate via A2A protocol:
+Three-tier multi-agent system where specialized agents communicate via A2A protocol
+
+### Detailed Architecture Diagram
 
 ```
-Frontend (React + A2A SDK)
-    ↓ A2A Protocol
-Orchestrator Agent (.NET + MAF)
-    ↓ A2A Protocol
-Restaurant Agent (.NET + MAF)
+┌─────────────────────────────────────────────────────────────────┐
+│                          Frontend (React)                       │
+│                                                                 │
+│  • A2A JavaScript SDK (@a2a-js/sdk)                             │
+│  • Streaming chat interface                                     │
+│  • Theme support & session management                           │
+└──────────────────────────────┬──────────────────────────────────┘
+                               │
+                               │ A2A Protocol
+                               │ /agenta2a/v1/*
+                               │ (Agent Card, Run, Stream)
+                               │
+                               ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     Orchestrator Agent (.NET)                   │
+│                                                                 │
+│  • Receives user requests via A2A                               │
+│  • Maintains conversation context (contextId)                   │
+│  • Invokes Restaurant Agent as a tool                           │
+│  • Stores conversation history in Cosmos DB                     │
+└──────────────────┬───────────────────────────┬──────────────────┘
+                   │                           │
+                   │ A2A Protocol              │ Azure Cosmos DB
+                   │ /agenta2a/v1/*            │ (Thread Storage)
+                   │ (Agent-to-Agent)          │
+                   │                           │
+                   ▼                           ▼
+┌──────────────────────────────┐   ┌──────────────────────────────┐
+│  Restaurant Agent (.NET)     │   │     Cosmos DB                │
+│                              │   │                              │
+│  • Restaurant search tools   │   │  • Conversation threads      │
+│  • Category filtering        │   │  • Message history           │
+│  • Mock restaurant data      │   │  • Context persistence       │
+│  • A2A endpoint              │   │                              │
+└──────────────┬───────────────┘   └──────────────────────────────┘
+               │
+               │ Azure Cosmos DB
+               │ (Thread Storage)
+               │
+               ▼
+   (same Cosmos DB instance)
 ```
 
 ## Technology Stack
