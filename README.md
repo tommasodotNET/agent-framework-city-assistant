@@ -10,6 +10,11 @@ The application consists of three main components:
 2. **Orchestrator Agent** - An orchestrator that uses the restaurant agent as a tool via A2A (Agent-to-Agent) communication
 3. **Frontend** - A React-based chat interface for interacting with the orchestrator
 
+For detailed documentation, see:
+- [Architecture Guide](.github/architecture.md) - Complete system architecture and technology stack
+- [Copilot Instructions](.github/copilot-instructions.md) - Guidelines for working with this codebase
+- [MAF Agent Development](.github/agents/maf-dotnet.agent.md) - Agent development patterns and best practices
+
 ## Prerequisites
 
 - .NET 10 SDK
