@@ -33,7 +33,7 @@ src/your-agent-dotnet/
     └── YourTools.cs
 ```
 
-**Note**: Conversational UI models (like `AIChatMessage`, `AIChatRequest`, etc.) and Cosmos thread store services are now in shared libraries (`shared-models` and `shared-services`) to avoid duplication across agents.
+**Note**: Conversational UI models (like `AIChatMessage`, `AIChatRequest`, etc.) and Cosmos thread store services are now in shared libraries (`shared-services`) to avoid duplication across agents.
 
 ## Dependencies and Project Setup
 
