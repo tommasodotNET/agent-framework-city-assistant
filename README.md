@@ -8,7 +8,64 @@ The application consists of three main components:
 
 1. **Restaurant Agent** - A specialized agent that can search and recommend restaurants by category or keywords
 2. **Orchestrator Agent** - An orchestrator that uses the restaurant agent as a tool via A2A (Agent-to-Agent) communication
-3. **Frontend** - A React-based chat interface for interacting with the orchestrator
+3. **Frontend** - A React-based chat interface that communicates with the orchestrator via A2A protocol
+
+### Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                          Frontend (React)                        │
+│                                                                   │
+│  • A2A JavaScript SDK (@a2a-js/sdk)                             │
+│  • Streaming chat interface                                      │
+│  • Theme support & session management                            │
+└────────────────────────────┬────────────────────────────────────┘
+                             │
+                             │ A2A Protocol
+                             │ /agenta2a/v1/*
+                             │ (Agent Card, Run, Stream)
+                             ▼
+┌─────────────────────────────────────────────────────────────────┐
+│                     Orchestrator Agent (.NET)                    │
+│                                                                   │
+│  • Receives user requests via A2A                                │
+│  • Maintains conversation context (contextId)                    │
+│  • Invokes Restaurant Agent as a tool                            │
+│  • Stores conversation history in Cosmos DB                      │
+└───────────────┬────────────────────────────┬────────────────────┘
+                │                            │
+                │ A2A Protocol               │ Azure Cosmos DB
+                │ /agenta2a/v1/*             │ (Thread Storage)
+                │ (Agent-to-Agent)           │
+                ▼                            ▼
+┌───────────────────────────────┐            │
+│  Restaurant Agent (.NET)      │            │
+│                               │            │
+│  • Restaurant search tools    │            │
+│  • Category filtering         │            │
+│  • Mock restaurant data       │            │
+│  • A2A endpoint               │            │
+└───────────────┬───────────────┘            │
+                │                            │
+                └───────────────┬────────────┘
+                                │
+                                ▼
+                  ┌────────────────────────────┐
+                  │     Cosmos DB              │
+                  │                            │
+                  │  • Conversation threads    │
+                  │  • Message history         │
+                  │  • Context persistence     │
+                  └────────────────────────────┘
+
+Data Flow:
+1. User sends message via Frontend → Orchestrator (A2A)
+2. Orchestrator determines if Restaurant Agent is needed
+3. If needed: Orchestrator → Restaurant Agent (A2A as tool)
+4. Restaurant Agent searches mock data and returns results
+5. Orchestrator streams response back to Frontend (A2A)
+6. Both agents persist conversation state to Cosmos DB
+```
 
 ## Prerequisites
 
@@ -64,14 +121,16 @@ To ease the debug experience, you can use the [Aspire extension for Visual Studi
 ### Orchestrator Agent
 - Orchestrates calls to the restaurant agent
 - Maintains conversation history via Cosmos DB
-- Custom streaming API endpoint at `/agent/chat/stream`
+- Exposes A2A endpoint at `/agenta2a` for frontend communication
 - Integrates with restaurant agent via A2A protocol
+- Uses contextId for conversation management
 
 ### Frontend
 - Clean, modern chat interface
-- Streaming responses
+- Streaming responses via A2A JavaScript SDK
 - Theme support (light/dark/system)
-- Session management with conversation history
+- Session management with conversation history using contextId
+- Communicates with orchestrator via A2A protocol
 
 ## Mock Data
 
@@ -85,13 +144,19 @@ All restaurant data is hardcoded in `RestaurantService.cs` and doesn't require e
 ## API Endpoints
 
 ### Restaurant Agent
-- `POST /agenta2a/v1/run` - A2A endpoint for agent communication
-- `POST /v1/chat/completions` - OpenAI-compatible chat endpoint
+- `GET /agenta2a/v1/card` - A2A agent card (metadata and capabilities)
+- `POST /agenta2a/v1/run` - A2A endpoint for agent-to-agent communication
+- `POST /agenta2a/v1/stream` - A2A streaming endpoint
+- `POST /v1/chat/completions` - OpenAI-compatible chat endpoint (for testing)
 - `GET /health` - Health check endpoint
 
 ### Orchestrator Agent
-- `POST /agent/chat/stream` - Streaming chat endpoint for frontend
+- `GET /agenta2a/v1/card` - A2A agent card (metadata and capabilities)
+- `POST /agenta2a/v1/run` - A2A endpoint for frontend and agent communication
+- `POST /agenta2a/v1/stream` - A2A streaming endpoint for real-time responses
 - `GET /health` - Health check endpoint
+
+All communication between frontend and orchestrator uses the A2A protocol for standardized message formats, streaming support, and contextId-based conversation management.
 
 ## Development
 
@@ -125,22 +190,36 @@ cd src/restaurant-agent && dotnet build
 cd src/orchestrator-agent && dotnet build
 ```
 
-### Testing the Restaurant Agent Directly
+### Testing the Agents via A2A
 
-You can test the restaurant agent's A2A endpoint:
+You can test the agent's A2A endpoint directly:
 
 ```bash
-curl -X POST https://localhost:5196/agenta2a/v1/run \
+# Get the agent card to see capabilities
+curl https://localhost:5197/agenta2a/v1/card
+
+# Send a message to the orchestrator
+# Note: messageId should be a unique UUID for each message
+# Note: contextId maintains conversation continuity across requests
+curl -X POST https://localhost:5197/agenta2a/v1/run \
   -H "Content-Type: application/json" \
   -d '{
-    "messages": [
-      {
-        "role": "user",
-        "content": "Find me a vegetarian restaurant"
-      }
-    ]
+    "message": {
+      "messageId": "550e8400-e29b-41d4-a716-446655440000",
+      "role": "user",
+      "kind": "message",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "Find me a vegetarian restaurant"
+        }
+      ],
+      "contextId": "conversation-abc123"
+    }
   }'
 ```
+
+The frontend uses the `@a2a-js/sdk` package to handle A2A protocol communication, including streaming responses and conversation context management.
 
 ## Troubleshooting
 
