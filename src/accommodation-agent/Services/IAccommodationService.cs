@@ -10,7 +10,7 @@ public interface IAccommodationService
         string? city = null,
         double? latitude = null,
         double? longitude = null,
-        double? maxDistanceKm = null,
+        double? maxDistanceKm = 1.0,
         List<string>? amenities = null,
         decimal? maxPricePerNight = null,
         AccommodationType? type = null);

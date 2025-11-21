@@ -61,10 +61,9 @@ public class AccommodationTools
     public async Task<string> SearchAccommodationsAsync(
         [Description("The user's original search query to use for reranking results")] string userQuery,
         [Description("Minimum user rating from 1 to 5 (e.g., 4 means at least 4 stars)")] double? minRating = null,
-        [Description("City name to search in (e.g., 'Rome', 'Latina')")] string? city = null,
         [Description("Latitude coordinate for proximity search")] double? latitude = null,
         [Description("Longitude coordinate for proximity search")] double? longitude = null,
-        [Description("Maximum distance from the coordinates in kilometers")] double? maxDistanceKm = null,
+        [Description("Maximum distance from the coordinates in kilometers (default: 1 km)")] double? maxDistanceKm = 1.0,
         [Description("List of required amenities (all must be present). Options include: parking, room-service, breakfast, wifi, gym, spa, restaurant, pool, bar, air-conditioning, 24-hour-reception, concierge, shared-kitchen")] List<string>? amenities = null,
         [Description("Maximum price per night in euros")] decimal? maxPricePerNight = null,
         [Description("Type of accommodation")] AccommodationType? type = null)
@@ -74,7 +73,7 @@ public class AccommodationTools
             // Search accommodations with filters
             var accommodations = _accommodationService.SearchAccommodations(
                 minRating: minRating,
-                city: city,
+                city: null,  // City filtering removed - use geocoding + coordinates instead
                 latitude: latitude,
                 longitude: longitude,
                 maxDistanceKm: maxDistanceKm,
