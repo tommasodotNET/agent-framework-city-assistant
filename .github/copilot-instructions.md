@@ -19,7 +19,7 @@ When creating or modifying agents, consult the agent instructions file for MAF p
 **Agent communication**:
 - Restaurant agent exposes A2A at `/agenta2a/v1/*`
 - Orchestrator consumes restaurant agent as tool via A2A
-- Frontend calls orchestrator at `/agent/chat/stream`
+- Frontend calls orchestrator via A2A at `/agenta2a/v1/*`
 - A2A is the preferred protocol for inter-agent communication
 
 ## Build Commands
