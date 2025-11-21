@@ -1,14 +1,15 @@
 # City Assistant - Agent Framework Demo
 
-A multi-agent application built with Microsoft Agent Framework, featuring a restaurant recommendation system with orchestrated agents.
+A multi-agent application built with Microsoft Agent Framework, featuring restaurant and accommodation recommendation systems with orchestrated agents.
 
 ## Architecture
 
-The application consists of three main components:
+The application consists of four main components:
 
 1. **Restaurant Agent** - A specialized agent that can search and recommend restaurants by category or keywords
-2. **Orchestrator Agent** - An orchestrator that uses the restaurant agent as a tool via A2A (Agent-to-Agent) communication
-3. **Frontend** - A React-based chat interface that communicates with the orchestrator via A2A protocol
+2. **Accommodation Agent** - A specialized agent that can search and recommend accommodations (hotels, B&Bs, hostels) based on multiple criteria with LLM-based reranking
+3. **Orchestrator Agent** - An orchestrator that uses the restaurant and accommodation agents as tools via A2A (Agent-to-Agent) communication
+4. **Frontend** - A React-based chat interface that communicates with the orchestrator via A2A protocol
 
 ### Architecture Diagram
 
@@ -30,41 +31,46 @@ The application consists of three main components:
 │                                                                   │
 │  • Receives user requests via A2A                                │
 │  • Maintains conversation context (contextId)                    │
-│  • Invokes Restaurant Agent as a tool                            │
+│  • Invokes Restaurant & Accommodation Agents as tools            │
 │  • Stores conversation history in Cosmos DB                      │
-└───────────────┬────────────────────────────┬────────────────────┘
-                │                            │
-                │ A2A Protocol               │ Azure Cosmos DB
-                │ /agenta2a/v1/*             │ (Thread Storage)
-                │ (Agent-to-Agent)           │
-                ▼                            ▼
-┌───────────────────────────────┐            │
-│  Restaurant Agent (.NET)      │            │
-│                               │            │
-│  • Restaurant search tools    │            │
-│  • Category filtering         │            │
-│  • Mock restaurant data       │            │
-│  • A2A endpoint               │            │
-└───────────────┬───────────────┘            │
-                │                            │
-                └───────────────┬────────────┘
-                                │
-                                ▼
-                  ┌────────────────────────────┐
-                  │     Cosmos DB              │
-                  │                            │
-                  │  • Conversation threads    │
-                  │  • Message history         │
-                  │  • Context persistence     │
-                  └────────────────────────────┘
+└───────┬──────────────────┬─────────────────┬────────────────────┘
+        │                  │                 │
+        │ A2A Protocol     │ A2A Protocol    │ Azure Cosmos DB
+        │ /agenta2a/v1/*   │ /agenta2a/v1/*  │ (Thread Storage)
+        │ (Agent-to-Agent) │ (Agent-to-Agent)│
+        ▼                  ▼                 ▼
+┌───────────────────┐  ┌───────────────────────┐
+│ Restaurant Agent  │  │ Accommodation Agent   │
+│      (.NET)       │  │       (.NET)          │
+│                   │  │                       │
+│ • Search tools    │  │ • Multi-criteria      │
+│ • Category filter │  │   search (rating,     │
+│ • Mock data       │  │   location, amenities,│
+│ • A2A endpoint    │  │   price, type)        │
+│                   │  │ • Geocoding service   │
+│                   │  │ • LLM-based reranking │
+│                   │  │ • Mock data           │
+│                   │  │ • A2A endpoint        │
+└─────────┬─────────┘  └─────────┬─────────────┘
+          │                      │
+          └──────────┬───────────┘
+                     │
+                     ▼
+       ┌────────────────────────────┐
+       │     Cosmos DB              │
+       │                            │
+       │  • Conversation threads    │
+       │  • Message history         │
+       │  • Context persistence     │
+       └────────────────────────────┘
 
 Data Flow:
 1. User sends message via Frontend → Orchestrator (A2A)
-2. Orchestrator determines if Restaurant Agent is needed
-3. If needed: Orchestrator → Restaurant Agent (A2A as tool)
-4. Restaurant Agent searches mock data and returns results
+2. Orchestrator determines which agent(s) are needed
+3. If needed: Orchestrator → Restaurant/Accommodation Agent (A2A as tool)
+4. Agent searches mock data (accommodation agent applies LLM reranking)
 5. Orchestrator streams response back to Frontend (A2A)
-6. Both agents persist conversation state to Cosmos DB
+6. All agents persist conversation state to Cosmos DB
 ```
 
 ## Prerequisites
@@ -118,11 +124,29 @@ To ease the debug experience, you can use the [Aspire extension for Visual Studi
 - A2A endpoint at `/agenta2a`
 - OpenAI-compatible endpoints for testing
 
+### Accommodation Agent
+- **Multi-criteria search** with the following filters:
+  - User rating (1-5 scale)
+  - Location (city name or proximity to coordinates)
+  - Amenities (parking, wifi, breakfast, room-service, gym, spa, restaurant, pool, etc.)
+  - Price per night (in euros)
+  - Accommodation type (Hotel, BedAndBreakfast, Hostel, Apartment, Resort, Guesthouse, Motel, Villa, Boutique)
+- **Geocoding service** to convert addresses/landmarks to coordinates
+  - Known locations: Colosseum, Vatican, Pantheon, Trevi Fountain, Rome, Latina, etc.
+  - Smart fallback with realistic random coordinates for unknown locations
+- **LLM-based reranking** using pointwise scoring (1-10 scale)
+  - Parallel processing with configurable MAXDOP (default: 3)
+  - Returns only highly relevant results (score > 6)
+  - Detailed grading criteria and evaluation process
+- Semantically rich accommodation descriptions for optimal reranking
+- A2A endpoint at `/agenta2a`
+- OpenAI-compatible endpoints for testing
+
 ### Orchestrator Agent
-- Orchestrates calls to the restaurant agent
+- Orchestrates calls to the restaurant and accommodation agents
 - Maintains conversation history via Cosmos DB
 - Exposes A2A endpoint at `/agenta2a` for frontend communication
-- Integrates with restaurant agent via A2A protocol
+- Integrates with specialized agents via A2A protocol
 - Uses contextId for conversation management
 
 ### Frontend
@@ -134,16 +158,40 @@ To ease the debug experience, you can use the [Aspire extension for Visual Studi
 
 ## Mock Data
 
+### Restaurant Agent
 The restaurant agent includes mock data for 11 restaurants across various categories:
 - 3 Vegetarian restaurants
 - 3 Pizza places
 - 5 Other cuisines (Japanese, Mexican, French, Indian, Steakhouse)
 
-All restaurant data is hardcoded in `RestaurantService.cs` and doesn't require external data sources.
+### Accommodation Agent
+The accommodation agent includes mock data for 12 accommodations in Rome and Latina:
+- 5 Hotels (ranging from budget to luxury, €45-€450 per night)
+- 3 Bed & Breakfasts (cozy options, €65-€80 per night)
+- 1 Hostel (budget-friendly, €30 per night)
+- 1 Boutique hotel (premium location, €280 per night)
+- 2 Hotels in Latina (€85-€110 per night)
+
+Each accommodation includes:
+- Detailed description with location context, amenities, and target audience
+- User ratings (3.8-4.9 out of 5)
+- GPS coordinates for proximity search
+- Complete address information
+- List of amenities (parking, wifi, breakfast, gym, spa, pool, etc.)
+- Accommodation type (enum-based)
+
+All data is hardcoded in service classes and doesn't require external data sources.
 
 ## API Endpoints
 
 ### Restaurant Agent
+- `GET /agenta2a/v1/card` - A2A agent card (metadata and capabilities)
+- `POST /agenta2a/v1/run` - A2A endpoint for agent-to-agent communication
+- `POST /agenta2a/v1/stream` - A2A streaming endpoint
+- `POST /v1/chat/completions` - OpenAI-compatible chat endpoint (for testing)
+- `GET /health` - Health check endpoint
+
+### Accommodation Agent
 - `GET /agenta2a/v1/card` - A2A agent card (metadata and capabilities)
 - `POST /agenta2a/v1/run` - A2A endpoint for agent-to-agent communication
 - `POST /agenta2a/v1/stream` - A2A streaming endpoint
@@ -165,18 +213,22 @@ All communication between frontend and orchestrator uses the A2A protocol for st
 ```
 src/
 ├── service-defaults/          # Shared Aspire service configuration
+├── shared-services/           # Shared services (Cosmos thread store)
 ├── restaurant-agent/          # Restaurant recommendation agent
 │   ├── Models/               # Data models
 │   ├── Services/             # Business logic and storage
 │   └── Tools/                # Agent tools/functions
+├── accommodation-agent/       # Accommodation recommendation agent
+│   ├── Models/               # Data models (Accommodation, AccommodationType, etc.)
+│   ├── Services/             # Business logic (search, geocoding, reranking)
+│   └── Tools/                # Agent tools/functions
 ├── orchestrator-agent/       # Orchestrator agent
-│   ├── Models/               # API models
-│   └── Services/             # Storage services
+│   └── Program.cs            # Main orchestrator logic
 ├── frontend/                 # React frontend
 │   └── src/
 │       ├── Chat.tsx         # Main chat component
 │       └── ...
-└── aspire/                   # Aspire orchestration (placeholder)
+└── aspire/                   # Aspire orchestration
 ```
 
 ### Building
@@ -192,11 +244,13 @@ cd src/orchestrator-agent && dotnet build
 
 ### Testing the Agents via A2A
 
-You can test the agent's A2A endpoint directly:
+You can test the agents' A2A endpoints directly:
 
 ```bash
 # Get the agent card to see capabilities
-curl https://localhost:5197/agenta2a/v1/card
+curl https://localhost:5197/agenta2a/v1/card  # Orchestrator
+curl https://localhost:5196/agenta2a/v1/card  # Restaurant Agent
+curl https://localhost:5198/agenta2a/v1/card  # Accommodation Agent
 
 # Send a message to the orchestrator
 # Note: messageId should be a unique UUID for each message
@@ -217,26 +271,52 @@ curl -X POST https://localhost:5197/agenta2a/v1/run \
       "contextId": "conversation-abc123"
     }
   }'
+
+# Example: Search for accommodations
+curl -X POST https://localhost:5197/agenta2a/v1/run \
+  -H "Content-Type: application/json" \
+  -d '{
+    "message": {
+      "messageId": "550e8400-e29b-41d4-a716-446655440001",
+      "role": "user",
+      "kind": "message",
+      "parts": [
+        {
+          "kind": "text",
+          "text": "Find me a hotel near the Colosseum with parking for less than 80€ per night"
+        }
+      ],
+      "contextId": "conversation-abc123"
+    }
+  }'
 ```
 
 The frontend uses the `@a2a-js/sdk` package to handle A2A protocol communication, including streaming responses and conversation context management.
 
 ## Troubleshooting
 
-### Restaurant Agent not connecting
-- Ensure the restaurant agent is running and accessible
-- Check that `services__restaurant-agent__https__0` environment variable is set correctly in orchestrator
+### Agent Connection Issues
+- Ensure all agents (restaurant, accommodation) are running and accessible
+- Check that environment variables for agent URLs are set correctly in orchestrator
+  - `services__restaurantagent__https__0` or `services__restaurantagent__http__0`
+  - `services__accommodationagent__https__0` or `services__accommodationagent__http__0`
 - Verify SSL certificate if using HTTPS in development
 
-### Cosmos DB connection issues
+### Cosmos DB Connection Issues
 - Verify your Cosmos DB connection string is valid
 - Ensure the `conversations` container exists or can be created
 - Check that your Azure Cosmos DB firewall rules allow your IP
 
-### Frontend not connecting
+### Frontend Connection Issues
 - Verify the proxy configuration in `vite.config.ts`
 - Check that orchestrator agent is running on the expected port
 - Look for CORS issues in browser console
+
+### LLM Reranking Issues (Accommodation Agent)
+- Verify Azure AI Foundry connection is properly configured
+- Check that the chat client model (gpt-4.1) is available
+- Monitor logs for reranking errors or invalid scores
+- Ensure parallel processing limit (MAXDOP) is appropriate for your setup
 
 ## License
 
