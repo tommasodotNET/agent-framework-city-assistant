@@ -7,6 +7,7 @@ namespace AccommodationAgent.Services;
 public class GeocodingService : IGeocodingService
 {
     private readonly ILogger<GeocodingService> _logger;
+    private readonly IAccommodationService _accommodationService;
     
     // Mock data for known landmarks and cities
     private static readonly Dictionary<string, (double Latitude, double Longitude)> KnownLocations = new(StringComparer.OrdinalIgnoreCase)
@@ -33,9 +34,10 @@ public class GeocodingService : IGeocodingService
         { "termini station", (41.9008, 12.5015) }
     };
 
-    public GeocodingService(ILogger<GeocodingService> logger)
+    public GeocodingService(ILogger<GeocodingService> logger, IAccommodationService accommodationService)
     {
         _logger = logger;
+        _accommodationService = accommodationService;
     }
 
     public Task<(double Latitude, double Longitude)?> GeocodeAsync(string query)
@@ -51,15 +53,30 @@ public class GeocodingService : IGeocodingService
             return Task.FromResult<(double Latitude, double Longitude)?>(coordinates);
         }
 
-        // Generate realistic but random coordinates in the Rome/Lazio area when location not found
-        // Rome/Lazio region roughly: Latitude 41.4-42.2, Longitude 12.2-13.5
-        var random = new Random(query.GetHashCode()); // Use query hash for deterministic randomness
-        var randomLat = 41.4 + (random.NextDouble() * 0.8); // 41.4 to 42.2
-        var randomLon = 12.2 + (random.NextDouble() * 1.3); // 12.2 to 13.5
+        // When location not found, return coordinates near a random mocked accommodation
+        var accommodations = _accommodationService.GetAllAccommodations();
+        if (accommodations.Count > 0)
+        {
+            // Use query hash to select an accommodation (deterministic but varies based on query)
+            var random = new Random(query.GetHashCode());
+            var selectedAccommodation = accommodations[random.Next(accommodations.Count)];
+            
+            // Generate coordinates near the selected accommodation (within ~500 meters)
+            // Roughly 0.005 degrees latitude/longitude is about 500 meters
+            var latOffset = (random.NextDouble() - 0.5) * 0.01; // +/- 0.005 degrees (~500m)
+            var lonOffset = (random.NextDouble() - 0.5) * 0.01; // +/- 0.005 degrees (~500m)
+            
+            var nearbyLat = selectedAccommodation.Position.Latitude + latOffset;
+            var nearbyLon = selectedAccommodation.Position.Longitude + lonOffset;
+            
+            _logger.LogWarning("Location '{Query}' not found in mock data. Returning coordinates near '{AccommodationName}': {Lat}, {Lon}", 
+                query, selectedAccommodation.Name, nearbyLat, nearbyLon);
+            
+            return Task.FromResult<(double Latitude, double Longitude)?>((nearbyLat, nearbyLon));
+        }
         
-        _logger.LogWarning("Location '{Query}' not found in mock data. Returning random coordinates in Lazio region: {Lat}, {Lon}", 
-            query, randomLat, randomLon);
-        
-        return Task.FromResult<(double Latitude, double Longitude)?>((randomLat, randomLon));
+        // Fallback if no accommodations exist (shouldn't happen)
+        _logger.LogError("No accommodations available for fallback geocoding. Returning null.");
+        return Task.FromResult<(double Latitude, double Longitude)?>(null);
     }
 }
