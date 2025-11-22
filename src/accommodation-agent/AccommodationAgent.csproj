@@ -21,7 +21,7 @@
     <PackageReference Include="Microsoft.Agents.AI.Hosting.OpenAI" Version="1.0.0-alpha.*" />
     
     <!-- MCP Client Support -->
-    <PackageReference Include="ModelContextProtocol.Core" Version="0.2.0-preview.1" />
+    <PackageReference Include="ModelContextProtocol.Core" Version="0.3.0-preview.5" />
     
     <!-- Azure and Aspire integrations -->
     <PackageReference Include="Aspire.Azure.AI.Inference" Version="13.0.0-preview.1.25560.3" />

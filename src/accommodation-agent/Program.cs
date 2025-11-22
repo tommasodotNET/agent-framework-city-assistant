@@ -34,7 +34,7 @@ var geocodingMcpUrl = builder.Configuration["services__geocodingmcpserver__https
 // Append the MCP endpoint path
 var mcpEndpoint = new Uri(new Uri(geocodingMcpUrl), "/mcp");
 
-var transport = new SseClientTransport(new SseClientTransportOptions
+var transport = new HttpClientTransport(new HttpClientTransportOptions
 {
     Endpoint = mcpEndpoint
 });
