@@ -112,7 +112,7 @@ To use this MCP server from an AI agent:
 
 ```csharp
 // Connect to the MCP server
-var mcpClient = await McpClient.CreateAsync(httpTransport);
+var mcpClient = await McpClientFactory.CreateAsync(httpTransport);
 
 // Call the geocoding tool
 var result = await mcpClient.CallToolAsync(
