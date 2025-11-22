@@ -24,7 +24,9 @@ builder.AddAzureChatCompletionsClient(connectionName: "foundry",
 // Register services
 builder.Services.AddSingleton<IAccommodationService, AccommodationService>();
 builder.Services.AddSingleton<IRerankingService, RerankingService>();
-builder.Services.AddSingleton<IGeocodingService, GeocodingService>();
+// Register MCP-based geocoding service
+builder.Services.AddHttpClient(); // Required for McpGeocodingService
+builder.Services.AddSingleton<IGeocodingService, McpGeocodingService>();
 builder.Services.AddSingleton<AccommodationTools>();
 
 // Register OpenAI endpoints
@@ -47,13 +49,13 @@ builder.AddAIAgent("accommodation-agent", (sp, key) =>
         instructions: @"You are a helpful accommodation assistant. You help users find accommodations (hotels, B&Bs, hostels) based on their preferences.
 
 AVAILABLE TOOLS:
-1. GeocodeLocationAsync - Convert addresses, city names, or landmark names to coordinates (latitude, longitude)
+1. GeocodeLocationAsync - Convert addresses, city names, or landmark names to coordinates (latitude, longitude) using the MCP geocoding server
 2. SearchAccommodationsAsync - Search for accommodations using coordinates and other filters
 3. GetAllAccommodations - Get all available accommodations
 
 SEARCH WORKFLOW:
 ALWAYS geocode locations first! When users mention ANY location (city, landmark, or address), you MUST:
-1. Use GeocodeLocationAsync to convert the location to coordinates
+1. Use GeocodeLocationAsync to convert the location to coordinates (this now uses the MCP geocoding server)
 2. Then use those coordinates with SearchAccommodationsAsync
 
 You can search for accommodations by:

@@ -25,7 +25,7 @@ public class AccommodationTools
         _logger = logger;
     }
 
-    [Description("Geocode an address or landmark to get its coordinates (latitude, longitude)")]
+    [Description("Geocode an address or landmark to get its coordinates (latitude, longitude). This uses the shared MCP geocoding server.")]
     public async Task<string> GeocodeLocationAsync(
         [Description("Address or landmark name to geocode (e.g., 'Colosseum', 'Vatican', 'Rome', 'Latina')")] string location)
     {
@@ -40,7 +40,7 @@ public class AccommodationTools
                     location,
                     latitude = coordinates.Value.Latitude,
                     longitude = coordinates.Value.Longitude,
-                    message = $"Successfully geocoded '{location}' to coordinates."
+                    message = $"Successfully geocoded '{location}' to coordinates via MCP server."
                 });
             }
             
@@ -52,10 +52,12 @@ public class AccommodationTools
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error geocoding location {Location}", location);
+            _logger.LogError(ex, "Error geocoding location {Location} via MCP server", location);
             return JsonSerializer.Serialize(new { error = "An error occurred while geocoding the location." });
         }
     }
+
+    // Note: GeocodeLocationAsync removed - now provided by geocoding MCP server
 
     [Description("Search for accommodations based on various criteria including rating, location, amenities, price, and type")]
     public async Task<string> SearchAccommodationsAsync(
