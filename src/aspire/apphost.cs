@@ -68,7 +68,6 @@ var orchestratorAgent = builder.AddProject("orchestratoragent", "../orchestrator
     .WithReference(conversations).WaitFor(conversations)
     .WithReference(restaurantAgent).WaitFor(restaurantAgent)
     .WithReference(accommodationAgent).WaitFor(accommodationAgent)
-    .WithReference(geocodingMcpServer).WaitFor(geocodingMcpServer)
     .WithEnvironment("AZURE_TENANT_ID", tenantId)
     .WithUrls((e) =>
     {
