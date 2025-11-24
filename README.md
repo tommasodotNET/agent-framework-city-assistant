@@ -4,12 +4,13 @@ A multi-agent application built with Microsoft Agent Framework, featuring restau
 
 ## Architecture
 
-The application consists of four main components:
+The application consists of five main components:
 
 1. **Restaurant Agent** - A specialized agent that can search and recommend restaurants by category or keywords
 2. **Accommodation Agent** - A specialized agent that can search and recommend accommodations (hotels, B&Bs, hostels) based on multiple criteria with LLM-based reranking
-3. **Orchestrator Agent** - An orchestrator that uses the restaurant and accommodation agents as tools via A2A (Agent-to-Agent) communication
-4. **Frontend** - A React-based chat interface that communicates with the orchestrator via A2A protocol
+3. **Geocoding MCP Server** - A Model Context Protocol server that provides geocoding services (address/landmark to coordinates conversion) shared across agents
+4. **Orchestrator Agent** - An orchestrator that uses the restaurant and accommodation agents as tools via A2A (Agent-to-Agent) communication
+5. **Frontend** - A React-based chat interface that communicates with the orchestrator via A2A protocol
 
 ### Architecture Diagram
 
@@ -47,12 +48,24 @@ The application consists of four main components:
 │ • Category filter │  │   search (rating,     │
 │ • Mock data       │  │   location, amenities,│
 │ • A2A endpoint    │  │   price, type)        │
-│                   │  │ • Geocoding service   │
 │                   │  │ • LLM-based reranking │
 │                   │  │ • Mock data           │
 │                   │  │ • A2A endpoint        │
 └─────────┬─────────┘  └─────────┬─────────────┘
           │                      │
+          │                      │ MCP Protocol
+          │                      │ (HTTP)
+          │                      ▼
+          │            ┌────────────────────────┐
+          │            │ Geocoding MCP Server   │
+          │            │      (.NET)            │
+          │            │                        │
+          │            │ • geocode_location     │
+          │            │   tool                 │
+          │            │ • Mock Rome landmarks  │
+          │            │ • HTTP/MCP endpoints   │
+          │            └────────────────────────┘
+          │
           └──────────┬───────────┘
                      │
                      ▼
@@ -68,9 +81,10 @@ Data Flow:
 1. User sends message via Frontend → Orchestrator (A2A)
 2. Orchestrator determines which agent(s) are needed
 3. If needed: Orchestrator → Restaurant/Accommodation Agent (A2A as tool)
-4. Agent searches mock data (accommodation agent applies LLM reranking)
-5. Orchestrator streams response back to Frontend (A2A)
-6. All agents persist conversation state to Cosmos DB
+4. Accommodation Agent → Geocoding MCP Server (MCP protocol for location lookup)
+5. Agent searches mock data (accommodation agent applies LLM reranking)
+6. Orchestrator streams response back to Frontend (A2A)
+7. All agents persist conversation state to Cosmos DB
 ```
 
 ## Prerequisites
@@ -131,9 +145,10 @@ To ease the debug experience, you can use the [Aspire extension for Visual Studi
   - Amenities (parking, wifi, breakfast, room-service, gym, spa, restaurant, pool, etc.)
   - Price per night (in euros)
   - Accommodation type (Hotel, BedAndBreakfast, Hostel, Apartment, Resort, Guesthouse, Motel, Villa, Boutique)
-- **Geocoding service** to convert addresses/landmarks to coordinates
+- **Geocoding via MCP** - Uses the shared Geocoding MCP Server to convert addresses/landmarks to coordinates
+  - Communicates via Model Context Protocol (MCP) over HTTP
   - Known locations: Colosseum, Vatican, Pantheon, Trevi Fountain, Rome, Latina, etc.
-  - Smart fallback with realistic random coordinates for unknown locations
+  - Smart fallback with Rome city center coordinates for unknown locations
 - **LLM-based reranking** using pointwise scoring (1-10 scale)
   - Parallel processing with configurable MAXDOP (default: 3)
   - Returns only highly relevant results (score > 6)
@@ -141,6 +156,21 @@ To ease the debug experience, you can use the [Aspire extension for Visual Studi
 - Semantically rich accommodation descriptions for optimal reranking
 - A2A endpoint at `/agenta2a`
 - OpenAI-compatible endpoints for testing
+
+### Geocoding MCP Server
+- **Model Context Protocol (MCP) compliant** server for geocoding services
+- Exposes `geocode_location` tool via MCP protocol
+- Mock geocoding data for Rome landmarks and cities:
+  - Rome landmarks: Colosseum, Vatican, Pantheon, Trevi Fountain, Spanish Steps, Trastevere, etc.
+  - Cities: Rome, Latina
+  - Areas: Downtown Rome, Termini Station
+- Returns coordinates in latitude/longitude format
+- Fallback to Rome city center for unknown locations
+- HTTP-based MCP transport
+- Can be consumed by any MCP-compatible client or agent
+- Shared across multiple agents in the system
+- Health check endpoint at `/health`
+- MCP endpoints at `/mcp/v1/*`
 
 ### Orchestrator Agent
 - Orchestrates calls to the restaurant and accommodation agents
@@ -198,6 +228,12 @@ All data is hardcoded in service classes and doesn't require external data sourc
 - `POST /v1/chat/completions` - OpenAI-compatible chat endpoint (for testing)
 - `GET /health` - Health check endpoint
 
+### Geocoding MCP Server
+- `POST /mcp/v1/initialize` - Initialize MCP session
+- `GET /mcp/v1/tools/list` - List available MCP tools
+- `POST /mcp/v1/tools/call` - Call an MCP tool (e.g., geocode_location)
+- `GET /health` - Health check endpoint
+
 ### Orchestrator Agent
 - `GET /agenta2a/v1/card` - A2A agent card (metadata and capabilities)
 - `POST /agenta2a/v1/run` - A2A endpoint for frontend and agent communication
@@ -205,6 +241,8 @@ All data is hardcoded in service classes and doesn't require external data sourc
 - `GET /health` - Health check endpoint
 
 All communication between frontend and orchestrator uses the A2A protocol for standardized message formats, streaming support, and contextId-based conversation management.
+
+The accommodation agent uses the Model Context Protocol (MCP) to communicate with the geocoding server for location-based queries.
 
 ## Development
 
@@ -220,8 +258,11 @@ src/
 │   └── Tools/                # Agent tools/functions
 ├── accommodation-agent/       # Accommodation recommendation agent
 │   ├── Models/               # Data models (Accommodation, AccommodationType, etc.)
-│   ├── Services/             # Business logic (search, geocoding, reranking)
+│   ├── Services/             # Business logic (search, reranking, MCP geocoding client)
 │   └── Tools/                # Agent tools/functions
+├── geocoding-mcp-server/     # Geocoding MCP server
+│   ├── Tools/                # MCP tools (geocode_location)
+│   └── Program.cs            # MCP server setup
 ├── orchestrator-agent/       # Orchestrator agent
 │   └── Program.cs            # Main orchestrator logic
 ├── frontend/                 # React frontend

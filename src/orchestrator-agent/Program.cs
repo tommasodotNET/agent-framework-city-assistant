@@ -75,6 +75,7 @@ builder.AddAIAgent("orchestrator-agent", (sp, key) =>
         instructions: @"You are a helpful city assistant that helps users with various tasks.
 You can help users find restaurants using the restaurant-agent tool.
 You can help users find accommodations (hotels, B&Bs, hostels) using the accommodation-agent tool.
+The accommodation agent has geocoding capabilities built-in, so it can handle location-based queries.
 When users ask about restaurants, food, dining, or related topics, use the restaurant-agent to get the information.
 When users ask about accommodations, hotels, lodging, places to stay, or related topics, use the accommodation-agent to get the information.
 Always be friendly, helpful, and provide comprehensive responses based on the information you receive from the tools.",

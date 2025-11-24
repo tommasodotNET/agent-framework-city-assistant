@@ -7,6 +7,7 @@ using Microsoft.Extensions.AI;
 using AccommodationAgent.Services;
 using AccommodationAgent.Tools;
 using SharedServices;
+using ModelContextProtocol.Client;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -24,7 +25,28 @@ builder.AddAzureChatCompletionsClient(connectionName: "foundry",
 // Register services
 builder.Services.AddSingleton<IAccommodationService, AccommodationService>();
 builder.Services.AddSingleton<IRerankingService, RerankingService>();
-builder.Services.AddSingleton<IGeocodingService, GeocodingService>();
+
+// Configure MCP Client for geocoding server
+var geocodingMcpUrl = builder.Configuration["services__geocodingmcpserver__https__0"] 
+    ?? builder.Configuration["services__geocodingmcpserver__http__0"]
+    ?? "https://localhost:7299";
+
+// Append the MCP endpoint path
+var mcpEndpoint = new Uri(new Uri(geocodingMcpUrl), "/mcp");
+
+var transport = new HttpClientTransport(new HttpClientTransportOptions
+{
+    Endpoint = mcpEndpoint
+});
+
+var mcpClient = await McpClient.CreateAsync(transport);
+
+// Retrieve the list of tools available on the MCP geocoding server
+var mcpTools = await mcpClient.ListToolsAsync();
+
+// Register MCP client as a singleton
+builder.Services.AddSingleton(mcpClient);
+
 builder.Services.AddSingleton<AccommodationTools>();
 
 // Register OpenAI endpoints
@@ -47,19 +69,21 @@ builder.AddAIAgent("accommodation-agent", (sp, key) =>
         instructions: @"You are a helpful accommodation assistant. You help users find accommodations (hotels, B&Bs, hostels) based on their preferences.
 
 AVAILABLE TOOLS:
-1. GeocodeLocationAsync - Convert addresses, city names, or landmark names to coordinates (latitude, longitude)
+1. geocode_location (MCP) - Convert addresses, city names, or landmark names to coordinates (latitude, longitude). Location must be in English.
 2. SearchAccommodationsAsync - Search for accommodations using coordinates and other filters
 3. GetAllAccommodations - Get all available accommodations
 
 SEARCH WORKFLOW:
 ALWAYS geocode locations first! When users mention ANY location (city, landmark, or address), you MUST:
-1. Use GeocodeLocationAsync to convert the location to coordinates
-2. Then use those coordinates with SearchAccommodationsAsync
+1. Use geocode_location to convert the location to coordinates (pass English location names)
+2. Parse the JSON response to extract latitude and longitude
+3. Then use those coordinates with SearchAccommodationsAsync
 
 You can search for accommodations by:
 - User rating (e.g., 'find me the best hotels', 'hotels rated more than 4')
 - Location using coordinates:
-  * ALWAYS use GeocodeLocationAsync first for ANY location (cities like 'Rome' or 'Latina', landmarks like 'Colosseum' or 'Vatican', addresses)
+  * ALWAYS use geocode_location first for ANY location (cities like 'Rome' or 'Latina', landmarks like 'Colosseum' or 'Vatican', addresses)
+  * Parse the returned JSON to get latitude and longitude values
   * Then pass the latitude/longitude to SearchAccommodationsAsync
   * The default search radius is 1 km from the coordinates
 - Amenities/services (e.g., 'with parking', 'with room service', 'with breakfast')
@@ -72,7 +96,7 @@ Always be friendly and provide detailed information about the accommodations inc
 The search results are automatically reranked using AI to show only the most relevant options for the user's query.",
         description: "A friendly accommodation assistant that helps find hotels, B&Bs, and other lodging",
         name: key,
-        tools: [.. accommodationTools]
+        tools: [.. accommodationTools, .. mcpTools.Cast<AITool>()]
     );
 
     return agent;

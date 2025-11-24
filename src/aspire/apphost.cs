@@ -8,6 +8,7 @@
 #:project ../restaurant-agent/RestaurantAgent.csproj
 #:project ../accommodation-agent/AccommodationAgent.csproj
 #:project ../orchestrator-agent/OrchestratorAgent.csproj
+#:project ../geocoding-mcp-server/GeocodingMcpServer.csproj
 
 using Aspire.Hosting.Yarp.Transforms;
 
@@ -47,10 +48,14 @@ var restaurantAgent = builder.AddProject("restaurantagent", "../restaurant-agent
         e.Urls.Add(new() { Url = "/agenta2a/v1/card", DisplayText = "🤖Restaurant Agent A2A Card", Endpoint = e.GetEndpoint("https") });
     });
 
+var geocodingMcpServer = builder.AddProject("geocodingmcpserver", "../geocoding-mcp-server/GeocodingMcpServer.csproj")
+    .WithHttpHealthCheck("/health");
+
 var accommodationAgent = builder.AddProject("accommodationagent", "../accommodation-agent/AccommodationAgent.csproj")
     .WithHttpHealthCheck("/health")
     .WithReference(foundry).WaitFor(foundry)
     .WithReference(conversations).WaitFor(conversations)
+    .WithReference(geocodingMcpServer).WaitFor(geocodingMcpServer)
     .WithEnvironment("AZURE_TENANT_ID", tenantId)
     .WithUrls((e) =>
     {

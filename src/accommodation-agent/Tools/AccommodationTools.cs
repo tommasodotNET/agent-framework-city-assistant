@@ -10,51 +10,16 @@ public class AccommodationTools
 {
     private readonly IAccommodationService _accommodationService;
     private readonly IRerankingService _rerankingService;
-    private readonly IGeocodingService _geocodingService;
     private readonly ILogger<AccommodationTools> _logger;
 
     public AccommodationTools(
         IAccommodationService accommodationService,
         IRerankingService rerankingService,
-        IGeocodingService geocodingService,
         ILogger<AccommodationTools> logger)
     {
         _accommodationService = accommodationService;
         _rerankingService = rerankingService;
-        _geocodingService = geocodingService;
         _logger = logger;
-    }
-
-    [Description("Geocode an address or landmark to get its coordinates (latitude, longitude)")]
-    public async Task<string> GeocodeLocationAsync(
-        [Description("Address or landmark name to geocode (e.g., 'Colosseum', 'Vatican', 'Rome', 'Latina')")] string location)
-    {
-        try
-        {
-            var coordinates = await _geocodingService.GeocodeAsync(location);
-            
-            if (coordinates.HasValue)
-            {
-                return JsonSerializer.Serialize(new
-                {
-                    location,
-                    latitude = coordinates.Value.Latitude,
-                    longitude = coordinates.Value.Longitude,
-                    message = $"Successfully geocoded '{location}' to coordinates."
-                });
-            }
-            
-            return JsonSerializer.Serialize(new
-            {
-                location,
-                message = $"Unable to geocode '{location}'. Location not found."
-            });
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error geocoding location {Location}", location);
-            return JsonSerializer.Serialize(new { error = "An error occurred while geocoding the location." });
-        }
     }
 
     [Description("Search for accommodations based on various criteria including rating, location, amenities, price, and type")]
@@ -130,7 +95,6 @@ public class AccommodationTools
 
     public IEnumerable<AIFunction> GetFunctions()
     {
-        yield return AIFunctionFactory.Create(GeocodeLocationAsync);
         yield return AIFunctionFactory.Create(SearchAccommodationsAsync);
         yield return AIFunctionFactory.Create(GetAllAccommodations);
     }
