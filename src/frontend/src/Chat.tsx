@@ -145,10 +145,6 @@ export default function Chat({ style }: { style: React.CSSProperties }) {
         setInput("");
         setIsLoading(true);
         
-        // Add a placeholder assistant message that will be updated
-        const assistantMessage: A2AChatMessage = { content: "", role: "assistant" };
-        setMessages([...updatedMessages, assistantMessage]);
-        
         try {
             // Build the conversation from updatedMessages, filtering out errors
             const conversation = updatedMessages
