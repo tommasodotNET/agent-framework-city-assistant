@@ -6,6 +6,7 @@
 #:package Aspire.Hosting.Yarp@13.0.0
 
 #:project ../restaurant-agent/RestaurantAgent.csproj
+#:project ../activities-agent/ActivitiesAgent.csproj
 #:project ../accommodation-agent/AccommodationAgent.csproj
 #:project ../orchestrator-agent/OrchestratorAgent.csproj
 #:project ../geocoding-mcp-server/GeocodingMcpServer.csproj
@@ -51,6 +52,17 @@ var restaurantAgent = builder.AddProject("restaurantagent", "../restaurant-agent
 var geocodingMcpServer = builder.AddProject("geocodingmcpserver", "../geocoding-mcp-server/GeocodingMcpServer.csproj")
     .WithHttpHealthCheck("/health");
 
+var activitiesAgent = builder.AddProject("activitiesagent", "../activities-agent/ActivitiesAgent.csproj")
+    .WithHttpHealthCheck("/health")
+    .WithReference(foundry).WaitFor(foundry)
+    .WithReference(conversations).WaitFor(conversations)
+    .WithReference(geocodingMcpServer).WaitFor(geocodingMcpServer)
+    .WithEnvironment("AZURE_TENANT_ID", tenantId)
+    .WithUrls((e) =>
+    {
+        e.Urls.Add(new() { Url = "/agenta2a/v1/card", DisplayText = "🎭Activities Agent A2A Card", Endpoint = e.GetEndpoint("https") });
+    });
+
 var accommodationAgent = builder.AddProject("accommodationagent", "../accommodation-agent/AccommodationAgent.csproj")
     .WithHttpHealthCheck("/health")
     .WithReference(foundry).WaitFor(foundry)
@@ -67,6 +79,7 @@ var orchestratorAgent = builder.AddProject("orchestratoragent", "../orchestrator
     .WithReference(foundry).WaitFor(foundry)
     .WithReference(conversations).WaitFor(conversations)
     .WithReference(restaurantAgent).WaitFor(restaurantAgent)
+    .WithReference(activitiesAgent).WaitFor(activitiesAgent)
     .WithReference(accommodationAgent).WaitFor(accommodationAgent)
     .WithEnvironment("AZURE_TENANT_ID", tenantId)
     .WithUrls((e) =>
