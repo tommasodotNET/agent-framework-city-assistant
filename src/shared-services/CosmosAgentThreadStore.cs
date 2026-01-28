@@ -4,33 +4,33 @@ using Microsoft.Extensions.Logging;
 
 namespace SharedServices;
 
-public sealed class CosmosAgentThreadStore : AgentThreadStore
+public sealed class CosmosAgentSessionStore : AgentSessionStore
 {
     private readonly ICosmosThreadRepository _repository;
-    private readonly ILogger<CosmosAgentThreadStore> _logger;
+    private readonly ILogger<CosmosAgentSessionStore> _logger;
 
-    public CosmosAgentThreadStore(
+    public CosmosAgentSessionStore(
         ICosmosThreadRepository repository,
-        ILogger<CosmosAgentThreadStore> logger)
+        ILogger<CosmosAgentSessionStore> logger)
     {
         _repository = repository ?? throw new ArgumentNullException(nameof(repository));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
     }
 
-    public override async ValueTask SaveThreadAsync(
+    public override async ValueTask SaveSessionAsync(
         AIAgent agent,
         string conversationId,
-        AgentThread thread,
+        AgentSession session,
         CancellationToken cancellationToken = default)
     {
         var key = GetKey(conversationId, agent.Id);
-        var serializedThread = thread.Serialize();
+        var serializedThread = session.Serialize();
         
         _logger.LogInformation("Saving thread for conversation {ConversationId} and agent {AgentId}", conversationId, agent.Id);
         await _repository.SaveThreadAsync(key, serializedThread, cancellationToken);
     }
 
-    public override async ValueTask<AgentThread> GetThreadAsync(
+    public override async ValueTask<AgentSession> GetSessionAsync(
         AIAgent agent,
         string conversationId,
         CancellationToken cancellationToken = default)
@@ -40,12 +40,12 @@ public sealed class CosmosAgentThreadStore : AgentThreadStore
 
         if (serializedThread == null)
         {
-            _logger.LogInformation("Creating new thread for conversation {ConversationId} and agent {AgentId}", conversationId, agent.Id);
-            return agent.GetNewThread();
+            _logger.LogInformation("Creating new session for conversation {ConversationId} and agent {AgentId}", conversationId, agent.Id);
+            return await agent.GetNewSessionAsync();
         }
 
-        _logger.LogInformation("Loading existing thread for conversation {ConversationId} and agent {AgentId}", conversationId, agent.Id);
-        return agent.DeserializeThread(serializedThread.Value);
+        _logger.LogInformation("Loading existing session for conversation {ConversationId} and agent {AgentId}", conversationId, agent.Id);
+        return await agent.DeserializeSessionAsync(serializedThread.Value);
     }
 
     private static string GetKey(string conversationId, string agentId) => $"{agentId}:{conversationId}";

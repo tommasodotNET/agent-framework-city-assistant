@@ -134,7 +134,7 @@ builder.AddAIAgent("my-agent", (sp, key) =>
     var chatClient = sp.GetRequiredService<IChatClient>();
     var localTools = sp.GetRequiredService<MyTools>().GetFunctions();
 
-    var agent = chatClient.CreateAIAgent(
+    var agent = chatClient.AsAIAgent(
         instructions: "Your agent instructions here...",
         description: "Your agent description",
         name: key,

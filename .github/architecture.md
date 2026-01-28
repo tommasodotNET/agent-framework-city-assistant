@@ -124,7 +124,7 @@ Used for tool-based services that can be shared across agents:
 
 - Maintains conversation history across requests
 - Enables conversation continuity
-- Shared thread store implementation used by all agents
+- Shared session store implementation used by all agents
 
 ## Configuration
 

@@ -12,7 +12,7 @@ This is a multi-agent system using Microsoft Agent Framework (.NET 10) with A2A 
 When creating or modifying agents, consult the agent instructions file for MAF patterns and best practices.
 
 **Shared services** exist in `src/shared-services/` - never duplicate Cosmos DB code:
-- Use `CosmosAgentThreadStore` for conversation persistence
+- Use `CosmosAgentSessionStore` for conversation persistence
 - Use `CosmosThreadRepository` for thread storage
 - Reference `SharedServices.csproj` in agent projects
 

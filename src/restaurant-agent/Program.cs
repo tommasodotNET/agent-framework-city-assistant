@@ -33,7 +33,7 @@ builder.Services.AddOpenAIConversations();
 builder.AddKeyedAzureCosmosContainer("conversations",
     configureClientOptions: (option) => option.Serializer = new CosmosSystemTextJsonSerializer());
 builder.Services.AddSingleton<ICosmosThreadRepository, CosmosThreadRepository>();
-builder.Services.AddSingleton<CosmosAgentThreadStore>();
+builder.Services.AddSingleton<CosmosAgentSessionStore>();
 
 // Register the restaurant agent
 builder.AddAIAgent("restaurant-agent", (sp, key) =>
@@ -41,7 +41,7 @@ builder.AddAIAgent("restaurant-agent", (sp, key) =>
     var chatClient = sp.GetRequiredService<IChatClient>();
     var restaurantTools = sp.GetRequiredService<RestaurantTools>().GetFunctions();
 
-    var agent = chatClient.CreateAIAgent(
+    var agent = chatClient.AsAIAgent(
         instructions: @"You are a helpful restaurant assistant. You help users find restaurants based on their preferences.
 You can search for restaurants by category (vegetarian, pizza, japanese, mexican, french, indian, steakhouse) or by keywords.
 Always be friendly and provide detailed information about the restaurants including their name, address, phone, description, rating, and price range.
@@ -52,7 +52,7 @@ When users ask about restaurants, use the available tools to retrieve the inform
     );
 
     return agent;
-}).WithThreadStore((sp, key) => sp.GetRequiredService<CosmosAgentThreadStore>());
+}).WithSessionStore((sp, key) => sp.GetRequiredService<CosmosAgentSessionStore>());
 
 var app = builder.Build();
 

@@ -56,7 +56,7 @@ builder.Services.AddOpenAIConversations();
 builder.AddKeyedAzureCosmosContainer("conversations",
     configureClientOptions: (option) => option.Serializer = new CosmosSystemTextJsonSerializer());
 builder.Services.AddSingleton<ICosmosThreadRepository, CosmosThreadRepository>();
-builder.Services.AddSingleton<CosmosAgentThreadStore>();
+builder.Services.AddSingleton<CosmosAgentSessionStore>();
 
 // Register the activities agent
 builder.AddAIAgent("activities-agent", (sp, key) =>
@@ -64,7 +64,7 @@ builder.AddAIAgent("activities-agent", (sp, key) =>
     var chatClient = sp.GetRequiredService<IChatClient>();
     var activitiesTools = sp.GetRequiredService<ActivitiesTools>().GetFunctions();
 
-    var agent = chatClient.CreateAIAgent(
+    var agent = chatClient.AsAIAgent(
         instructions: @"You are a helpful activities assistant. You help users discover and plan activities during their trip.
 
 AVAILABLE TOOLS:
@@ -98,7 +98,7 @@ Always be friendly and provide comprehensive information to help users plan thei
     );
 
     return agent;
-}).WithThreadStore((sp, key) => sp.GetRequiredService<CosmosAgentThreadStore>());
+}).WithSessionStore((sp, key) => sp.GetRequiredService<CosmosAgentSessionStore>());
 
 var app = builder.Build();
 

@@ -251,7 +251,7 @@ The accommodation agent uses the Model Context Protocol (MCP) to communicate wit
 ```
 src/
 ├── service-defaults/          # Shared Aspire service configuration
-├── shared-services/           # Shared services (Cosmos thread store)
+├── shared-services/           # Shared services (Cosmos session store)
 ├── restaurant-agent/          # Restaurant recommendation agent
 │   ├── Models/               # Data models
 │   ├── Services/             # Business logic and storage

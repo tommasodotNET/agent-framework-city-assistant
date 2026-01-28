@@ -34,7 +34,7 @@ builder.AddAzureChatCompletionsClient(connectionName: "foundry",
 builder.AddKeyedAzureCosmosContainer("conversations",
     configureClientOptions: (option) => option.Serializer = new CosmosSystemTextJsonSerializer());
 builder.Services.AddSingleton<ICosmosThreadRepository, CosmosThreadRepository>();
-builder.Services.AddSingleton<CosmosAgentThreadStore>();
+builder.Services.AddSingleton<CosmosAgentSessionStore>();
 
 // Connect to restaurant agent via A2A
 var restaurantAgentUrl = Environment.GetEnvironmentVariable("services__restaurantagent__https__0") ?? Environment.GetEnvironmentVariable("services__restaurantagent__http__0");
@@ -85,7 +85,7 @@ builder.AddAIAgent("orchestrator-agent", (sp, key) =>
 {
     var chatClient = sp.GetRequiredService<IChatClient>();
 
-    var agent = chatClient.CreateAIAgent(
+    var agent = chatClient.AsAIAgent(
         instructions: @"You are a helpful city assistant that helps users with various tasks.
 
 AVAILABLE AGENTS:
@@ -111,7 +111,7 @@ Always be friendly, helpful, and provide comprehensive responses based on the in
     );
 
     return agent;
-}).WithThreadStore((sp, key) => sp.GetRequiredService<CosmosAgentThreadStore>());
+}).WithSessionStore((sp, key) => sp.GetRequiredService<CosmosAgentSessionStore>());
 
 var app = builder.Build();
 
