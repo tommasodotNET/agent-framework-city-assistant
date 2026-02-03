@@ -52,11 +52,15 @@ builder.Services.AddSingleton<ActivitiesTools>();
 builder.Services.AddOpenAIResponses();
 builder.Services.AddOpenAIConversations();
 
-// Register Cosmos for conversation storage
+// Register Cosmos containers for session and conversation storage
+builder.AddKeyedAzureCosmosContainer("sessions",
+    configureClientOptions: (option) => option.Serializer = new CosmosSystemTextJsonSerializer());
 builder.AddKeyedAzureCosmosContainer("conversations",
     configureClientOptions: (option) => option.Serializer = new CosmosSystemTextJsonSerializer());
-builder.Services.AddSingleton<ICosmosThreadRepository, CosmosThreadRepository>();
-builder.Services.AddSingleton<CosmosAgentSessionStore>();
+
+// Register session store and chat history provider
+builder.Services.AddCosmosAgentSessionStore("sessions");
+builder.Services.AddCosmosChatHistoryProvider("conversations");
 
 // Register the activities agent
 builder.AddAIAgent("activities-agent", (sp, key) =>
@@ -64,8 +68,13 @@ builder.AddAIAgent("activities-agent", (sp, key) =>
     var chatClient = sp.GetRequiredService<IChatClient>();
     var activitiesTools = sp.GetRequiredService<ActivitiesTools>().GetFunctions();
 
-    var agent = chatClient.AsAIAgent(
-        instructions: @"You are a helpful activities assistant. You help users discover and plan activities during their trip.
+    var agentOptions = new ChatClientAgentOptions()
+    {
+        Name = key,
+        Description = "A friendly activities assistant that helps discover museums, theaters, cultural events, and attractions",
+        ChatOptions = new ChatOptions()
+        {
+            Instructions = @"You are a helpful activities assistant. You help users discover and plan activities during their trip.
 
 AVAILABLE TOOLS:
 1. geocode_location (MCP) - Convert addresses, city names, or landmark names to coordinates (latitude, longitude). Location must be in English.
@@ -92,13 +101,12 @@ Multiple criteria can be combined (e.g., 'find me museums near the Colosseum').
 
 Each activity includes detailed information about hours, dates, pricing, restrictions, accessibility, location, and user reviews.
 Always be friendly and provide comprehensive information to help users plan their visit.",
-        description: "A friendly activities assistant that helps discover museums, theaters, cultural events, and attractions",
-        name: key,
-        tools: [.. activitiesTools, .. mcpTools.Cast<AITool>()]
-    );
+            Tools = [.. activitiesTools, .. mcpTools.Cast<AITool>()]
+        }
+    }.WithCosmosChatHistoryProvider(sp);
 
-    return agent;
-}).WithSessionStore((sp, key) => sp.GetRequiredService<CosmosAgentSessionStore>());
+    return chatClient.AsAIAgent(agentOptions, services: sp);
+}).WithCosmosSessionStore();
 
 var app = builder.Build();
 
