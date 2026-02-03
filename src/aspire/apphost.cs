@@ -39,11 +39,13 @@ var cosmos = builder.AddAzureCosmosDB("cosmos-db")
         
 var db = cosmos.AddCosmosDatabase("db");
 var sessions = db.AddContainer("sessions", "/conversationId");
+var conversations = db.AddContainer("conversations", "/conversationId");
 
 var restaurantAgent = builder.AddProject("restaurantagent", "../restaurant-agent/RestaurantAgent.csproj")
     .WithHttpHealthCheck("/health")
     .WithReference(foundry).WaitFor(foundry)
     .WithReference(sessions).WaitFor(sessions)
+    .WithReference(conversations).WaitFor(conversations)
     .WithEnvironment("AZURE_TENANT_ID", tenantId)
     .WithUrls((e) =>
     {
@@ -57,6 +59,7 @@ var activitiesAgent = builder.AddProject("activitiesagent", "../activities-agent
     .WithHttpHealthCheck("/health")
     .WithReference(foundry).WaitFor(foundry)
     .WithReference(sessions).WaitFor(sessions)
+    .WithReference(conversations).WaitFor(conversations)
     .WithReference(geocodingMcpServer).WaitFor(geocodingMcpServer)
     .WithEnvironment("AZURE_TENANT_ID", tenantId)
     .WithUrls((e) =>
@@ -68,6 +71,7 @@ var accommodationAgent = builder.AddProject("accommodationagent", "../accommodat
     .WithHttpHealthCheck("/health")
     .WithReference(foundry).WaitFor(foundry)
     .WithReference(sessions).WaitFor(sessions)
+    .WithReference(conversations).WaitFor(conversations)
     .WithReference(geocodingMcpServer).WaitFor(geocodingMcpServer)
     .WithEnvironment("AZURE_TENANT_ID", tenantId)
     .WithUrls((e) =>
@@ -79,6 +83,7 @@ var orchestratorAgent = builder.AddProject("orchestratoragent", "../orchestrator
     .WithHttpHealthCheck("/health")
     .WithReference(foundry).WaitFor(foundry)
     .WithReference(sessions).WaitFor(sessions)
+    .WithReference(conversations).WaitFor(conversations)
     .WithReference(restaurantAgent).WaitFor(restaurantAgent)
     .WithReference(activitiesAgent).WaitFor(activitiesAgent)
     .WithReference(accommodationAgent).WaitFor(accommodationAgent)

@@ -1,6 +1,4 @@
-﻿// Copyright (c) Microsoft. All rights reserved.
-
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 using System.Linq;
@@ -56,6 +54,44 @@ public static class CosmosDBChatExtensions
         
         return options;
     }
+
+    public static ChatClientAgentOptions WithCosmosDBChatHistoryProvider(
+       this ChatClientAgentOptions options,
+       Container container)
+    {
+        if (options is null)
+        {
+            throw new ArgumentNullException(nameof(options));
+        }
+
+        if (container is null)
+        {
+            throw new ArgumentNullException(nameof(container));
+        }
+
+        options.ChatHistoryProviderFactory = (context, ct) =>
+        {
+            // Deserialization: we have serialized state → restore provider with same ConversationIdentifier
+            if (context.SerializedState.ValueKind == JsonValueKind.Object)
+            {
+                return new ValueTask<ChatHistoryProvider>(
+                    MyCosmosChatHistoryProvider.CreateFromSerializedState(
+                        container.Database.Client,
+                        context.SerializedState,
+                        container.Database.Id,
+                        container.Id,
+                        context.JsonSerializerOptions));
+            }
+
+            // New session: create provider with new ConversationId
+            return new ValueTask<ChatHistoryProvider>(
+                new MyCosmosChatHistoryProvider(container.Database.Client, container.Database.Id, container.Id));
+        };
+
+        return options;
+    }
+
+
 }
 
 

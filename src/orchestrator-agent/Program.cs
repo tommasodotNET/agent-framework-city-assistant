@@ -3,8 +3,10 @@ using Azure.Identity;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Hosting;
 using Microsoft.Agents.AI.Hosting.A2A;
+using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.AI;
 using SharedServices;
+//using SharedServices;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -30,11 +32,22 @@ builder.AddAzureChatCompletionsClient(connectionName: "foundry",
     })
     .AddChatClient("gpt-4.1");
 
-// Register Cosmos for conversation storage
-builder.AddKeyedAzureCosmosContainer("conversations",
-    configureClientOptions: (option) => option.Serializer = new CosmosSystemTextJsonSerializer());
-builder.Services.AddSingleton<ICosmosThreadRepository, CosmosThreadRepository>();
-builder.Services.AddSingleton<CosmosAgentSessionStore>();
+// Register Cosmos containers for session and conversation storage
+builder.AddKeyedAzureCosmosContainer("sessions",
+    configureClientOptions: (option) => 
+    {
+        option.Serializer = new CosmosSystemTextJsonSerializer();
+    });
+
+builder.AddKeyedAzureCosmosContainer("conversations", 
+    configureClientOptions: (option) =>
+    {
+        option.Serializer = new CosmosSystemTextJsonSerializer();
+    });
+
+// Register session and chat history providers using keyed containers
+builder.Services.AddCosmosAgentSessionStore("sessions");
+builder.Services.AddCosmosChatHistoryProvider("conversations");
 
 // Connect to restaurant agent via A2A
 var restaurantAgentUrl = Environment.GetEnvironmentVariable("services__restaurantagent__https__0") ?? Environment.GetEnvironmentVariable("services__restaurantagent__http__0");
@@ -85,9 +98,13 @@ builder.AddAIAgent("orchestrator-agent", (sp, key) =>
 {
     var chatClient = sp.GetRequiredService<IChatClient>();
 
-    var agent = chatClient.AsAIAgent(
-        instructions: @"You are a helpful city assistant that helps users with various tasks.
-
+    var agentOptions = new ChatClientAgentOptions()
+    {
+        Name = key,
+        Description = "A city assistant that orchestrates multiple specialized agents",
+        ChatOptions = new ChatOptions()
+        {
+            Instructions = @"You are a helpful city assistant that helps users with various tasks.
 AVAILABLE AGENTS:
 1. restaurant-agent - Find restaurants by category or search
 2. activities-agent - Discover museums, theaters, cultural events, and attractions (has geocoding for location-based search)
@@ -101,17 +118,22 @@ ROUTING RULES:
 Both activities-agent and accommodation-agent have geocoding capabilities built-in, so they can handle location-based queries.
 
 Always be friendly, helpful, and provide comprehensive responses based on the information you receive from the tools.",
-        description: "A city assistant that orchestrates multiple specialized agents",
-        name: key,
-        tools: [
+            Tools = [
             restaurantAgent.AsAIFunction(),
             activitiesAgent.AsAIFunction(),
             accommodationAgent.AsAIFunction()
         ]
-    );
+        },
+
+    }.WithCosmosChatHistoryProvider(sp);
+
+    var agent = chatClient.AsAIAgent(agentOptions, services: sp);
+
 
     return agent;
-}).WithSessionStore((sp, key) => sp.GetRequiredService<CosmosAgentSessionStore>());
+}).WithCosmosSessionStore();
+
+
 
 var app = builder.Build();
 

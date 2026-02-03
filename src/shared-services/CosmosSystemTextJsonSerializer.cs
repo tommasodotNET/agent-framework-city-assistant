@@ -1,28 +1,37 @@
-using System.IO;
-using System.Text;
-using System.Text.Json;
 using Microsoft.Azure.Cosmos;
+using System.Text.Json;
 
 namespace SharedServices;
 
-public class CosmosSystemTextJsonSerializer : CosmosSerializer
+/// <summary>
+/// A custom <see cref="CosmosSerializer"/> that uses System.Text.Json for serialization.
+/// </summary>
+/// <remarks>
+/// <para>
+/// This serializer allows using System.Text.Json instead of the default Newtonsoft.Json
+/// serializer used by the Cosmos DB SDK, providing better performance and smaller allocations.
+/// </para>
+/// 
+/// <para><b>Usage:</b></para>
+/// <code>
+/// builder.AddKeyedAzureCosmosContainer("sessions",
+///     configureClientOptions: options => options.Serializer = new CosmosSystemTextJsonSerializer());
+/// </code>
+/// </remarks>
+public sealed class CosmosSystemTextJsonSerializer : CosmosSerializer
 {
     private readonly JsonSerializerOptions? _options;
 
-//    private static JsonSerializerOptions CreateDefaultJsonOptions()
-//    {
-//        var options = new JsonSerializerOptions();
-//#if NET9_0_OR_GREATER
-//        options.TypeInfoResolver = new System.Text.Json.Serialization.Metadata.DefaultJsonTypeInfoResolver();
-//#endif
-//        return options;
-//    }
-
+    /// <summary>
+    /// Initializes a new instance of the <see cref="CosmosSystemTextJsonSerializer"/> class.
+    /// </summary>
+    /// <param name="options">Optional JSON serializer options. If null, default options are used.</param>
     public CosmosSystemTextJsonSerializer(JsonSerializerOptions? options = null)
     {
-        _options = options;// ?? CreateDefaultJsonOptions();
+        _options = options;
     }
 
+    /// <inheritdoc />
     public override T FromStream<T>(Stream stream)
     {
         using (stream)
@@ -36,10 +45,12 @@ public class CosmosSystemTextJsonSerializer : CosmosSerializer
         }
     }
 
+    /// <inheritdoc />
     public override Stream ToStream<T>(T input)
     {
-        var json = JsonSerializer.Serialize(input, _options);
-        return new MemoryStream(Encoding.UTF8.GetBytes(json));
+        var stream = new MemoryStream();
+        JsonSerializer.Serialize(stream, input, _options);
+        stream.Position = 0;
+        return stream;
     }
 }
-
