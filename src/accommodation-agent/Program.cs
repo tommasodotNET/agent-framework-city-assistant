@@ -53,11 +53,15 @@ builder.Services.AddSingleton<AccommodationTools>();
 builder.Services.AddOpenAIResponses();
 builder.Services.AddOpenAIConversations();
 
-// Register Cosmos for conversation storage
+// Register Cosmos containers for session and conversation storage
+builder.AddKeyedAzureCosmosContainer("sessions",
+    configureClientOptions: (option) => option.Serializer = new CosmosSystemTextJsonSerializer());
 builder.AddKeyedAzureCosmosContainer("conversations",
     configureClientOptions: (option) => option.Serializer = new CosmosSystemTextJsonSerializer());
-builder.Services.AddSingleton<ICosmosThreadRepository, CosmosThreadRepository>();
-builder.Services.AddSingleton<CosmosAgentSessionStore>();
+
+// Register session store and chat history provider
+builder.Services.AddCosmosAgentSessionStore("sessions");
+builder.Services.AddCosmosChatHistoryProvider("conversations");
 
 // Register the accommodation agent
 builder.AddAIAgent("accommodation-agent", (sp, key) =>
@@ -65,8 +69,13 @@ builder.AddAIAgent("accommodation-agent", (sp, key) =>
     var chatClient = sp.GetRequiredService<IChatClient>();
     var accommodationTools = sp.GetRequiredService<AccommodationTools>().GetFunctions();
 
-    var agent = chatClient.AsAIAgent(
-        instructions: @"You are a helpful accommodation assistant. You help users find accommodations (hotels, B&Bs, hostels) based on their preferences.
+    var agentOptions = new ChatClientAgentOptions()
+    {
+        Name = key,
+        Description = "A friendly accommodation assistant that helps find hotels, B&Bs, and other lodging",
+        ChatOptions = new ChatOptions()
+        {
+            Instructions = @"You are a helpful accommodation assistant. You help users find accommodations (hotels, B&Bs, hostels) based on their preferences.
 
 AVAILABLE TOOLS:
 1. geocode_location (MCP) - Convert addresses, city names, or landmark names to coordinates (latitude, longitude). Location must be in English.
@@ -94,13 +103,12 @@ Multiple criteria can be combined (e.g., 'find me a hotel near the Colosseum wit
 
 Always be friendly and provide detailed information about the accommodations including their name, type, rating, address, amenities, price, and description.
 The search results are automatically reranked using AI to show only the most relevant options for the user's query.",
-        description: "A friendly accommodation assistant that helps find hotels, B&Bs, and other lodging",
-        name: key,
-        tools: [.. accommodationTools, .. mcpTools.Cast<AITool>()]
-    );
+            Tools = [.. accommodationTools, .. mcpTools.Cast<AITool>()]
+        }
+    }.WithCosmosChatHistoryProvider(sp);
 
-    return agent;
-}).WithSessionStore((sp, key) => sp.GetRequiredService<CosmosAgentSessionStore>());
+    return chatClient.AsAIAgent(agentOptions, services: sp);
+}).WithCosmosSessionStore();
 
 var app = builder.Build();
 

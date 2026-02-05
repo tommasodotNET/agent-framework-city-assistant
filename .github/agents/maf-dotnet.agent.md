@@ -33,7 +33,7 @@ src/your-agent-dotnet/
     └── YourTools.cs
 ```
 
-**Note**: Conversational UI models (like `AIChatMessage`, `AIChatRequest`, etc.) and Cosmos session store services are now in shared libraries (`shared-services`) to avoid duplication across agents.
+**Note**: Conversational UI models (like `AIChatMessage`, `AIChatRequest`, etc.) and Cosmos session and conversation store services are now in shared libraries (`shared-services`) to avoid duplication across agents.
 
 ## Dependencies and Project Setup
 
@@ -85,9 +85,10 @@ Add the required NuGet packages to your `.csproj` file:
 The repository provides shared libraries to avoid code duplication:
 
 **SharedServices** (`src/shared-services`):
-- `CosmosAgentSessionStore`: Cosmos DB implementation of `AgentSessionStore`
-- `CosmosThreadRepository`: Repository for storing/retrieving agent threads
-- `ICosmosThreadRepository`: Interface for thread storage
+- `CosmosAgentSessionStore`: Cosmos DB implementation of `AgentSessionStore` for session persistence
+- `CosmosAgentSessionStoreExtensions`: Extension methods for registering the session store
+- `CosmosChatHistoryProvider`: Cosmos DB implementation of `ChatHistoryProvider` for chat history
+- `CosmosChatHistoryProviderExtensions`: Extension methods for configuring chat history
 - `CosmosSystemTextJsonSerializer`: Custom JSON serializer for Cosmos DB
 
 ### Key Namespace Imports
@@ -131,11 +132,15 @@ builder.AddAzureChatCompletionsClient(connectionName: "foundry",
 builder.Services.AddSingleton<YourService>();
 builder.Services.AddSingleton<YourTools>();
 
-// Register Cosmos for conversation storage
+// Register Cosmos containers for session and conversation storage
+builder.AddKeyedAzureCosmosContainer("sessions", 
+    configureClientOptions: (option) => option.Serializer = new CosmosSystemTextJsonSerializer());
 builder.AddKeyedAzureCosmosContainer("conversations", 
     configureClientOptions: (option) => option.Serializer = new CosmosSystemTextJsonSerializer());
-builder.Services.AddSingleton<ICosmosThreadRepository, CosmosThreadRepository>();
-builder.Services.AddSingleton<CosmosAgentSessionStore>();
+
+// Register session store and chat history provider
+builder.Services.AddCosmosAgentSessionStore("sessions");
+builder.Services.AddCosmosChatHistoryProvider("conversations");
 ```
 
 #### Register the Agent
@@ -146,15 +151,19 @@ builder.AddAIAgent("your-agent-name", (sp, key) =>
     var chatClient = sp.GetRequiredService<IChatClient>();
     var yourTools = sp.GetRequiredService<YourTools>().GetFunctions();
 
-    var agent = chatClient.AsAIAgent(
-        instructions: @"You are a helpful assistant that...",
-        description: "A friendly AI assistant",
-        name: key,
-        tools: yourTools
-    );
+    var agentOptions = new ChatClientAgentOptions()
+    {
+        Name = key,
+        Description = "A friendly AI assistant",
+        ChatOptions = new ChatOptions()
+        {
+            Instructions = @"You are a helpful assistant that...",
+            Tools = yourTools
+        }
+    }.WithCosmosChatHistoryProvider(sp);
 
-    return agent;
-}).WithSessionStore((sp, key) => sp.GetRequiredService<CosmosAgentSessionStore>());
+    return chatClient.AsAIAgent(agentOptions, services: sp);
+}).WithCosmosSessionStore();
 ```
 
 #### Add Custom API Endpoint
@@ -166,7 +175,7 @@ var app = builder.Build();
 
 app.MapPost("/agent/chat/stream", async (
     [FromKeyedServices("your-agent-name")] AIAgent agent,
-    [FromKeyedServices("your-agent-name")] AgentSessionStore sessionStore,
+    [FromKeyedServices("your-agent-name")] AgentThreadStore threadStore,
     [FromBody] AIChatRequest request,
     [FromServices] ILogger<Program> logger,
     HttpResponse response) =>
@@ -188,11 +197,11 @@ app.MapPost("/agent/chat/stream", async (
     else
     {
         var message = request.Messages.LastOrDefault();
-        var session = await sessionStore.GetSessionAsync(agent, conversationId);
+        var thread = await threadStore.GetThreadAsync(agent, conversationId);
         var chatMessage = new ChatMessage(ChatRole.User, message.Content);
 
         // Stream responses
-        await foreach (var update in agent.RunStreamingAsync(chatMessage, session))
+        await foreach (var update in agent.RunStreamingAsync(chatMessage, thread))
         {
             await response.WriteAsync($"{JsonSerializer.Serialize(
                 new AIChatCompletionDelta(new AIChatMessageDelta() 
@@ -200,7 +209,7 @@ app.MapPost("/agent/chat/stream", async (
             await response.Body.FlushAsync();
         }
 
-        await sessionStore.SaveSessionAsync(agent, conversationId, session);
+        await threadStore.SaveThreadAsync(agent, conversationId, thread);
     }
 
     return;
@@ -302,7 +311,7 @@ var app = builder.Build();
 
 app.MapPost("/agent/chat/stream", async (
     [FromKeyedServices("your-agent-name")] AIAgent agent,
-    [FromKeyedServices("your-agent-name")] AgentSessionStore sessionStore,
+    [FromKeyedServices("your-agent-name")] AgentThreadStore threadStore,
     [FromBody] AIChatRequest request,
     [FromServices] ILogger<Program> logger,
     HttpResponse response) =>
@@ -324,11 +333,11 @@ app.MapPost("/agent/chat/stream", async (
     else
     {
         var message = request.Messages.LastOrDefault();
-        var session = await sessionStore.GetSessionAsync(agent, conversationId);
+        var thread = await threadStore.GetThreadAsync(agent, conversationId);
         var chatMessage = new ChatMessage(ChatRole.User, message.Content);
 
         // Stream responses
-        await foreach (var update in agent.RunStreamingAsync(chatMessage, session))
+        await foreach (var update in agent.RunStreamingAsync(chatMessage, thread))
         {
             await response.WriteAsync($"{JsonSerializer.Serialize(
                 new AIChatCompletionDelta(new AIChatMessageDelta() 
@@ -336,7 +345,7 @@ app.MapPost("/agent/chat/stream", async (
             await response.Body.FlushAsync();
         }
 
-        await sessionStore.SaveSessionAsync(agent, conversationId, session);
+        await threadStore.SaveThreadAsync(agent, conversationId, thread);
     }
 
     return;
@@ -428,7 +437,7 @@ builder.AddAIAgent("group-chat", (sp, key) =>
         .Build();
 
     return workflow.AsAgent(name: key);
-}).WithSessionStore((sp, key) => sp.GetRequiredService<CosmosAgentSessionStore>());
+}).WithCosmosSessionStore();
 ```
 
 ### Pattern 5: Sequential Workflow
@@ -512,7 +521,7 @@ builder.AddAIAgent("main-agent", (sp, key) =>
     var chatClient = sp.GetRequiredService<IChatClient>();
     var anotherAgent = sp.GetRequiredKeyedService<AIAgent>("helper-agent");
     
-    var agent = chatClient.AsAIAgent(
+    var agent = chatClient.CreateAIAgent(
         name: key,
         instructions: "Your instructions",
         tools: [
@@ -530,21 +539,23 @@ The session store manages conversation history and state, enabling stateful conv
 
 ### Using the Shared Cosmos Session Store
 
-The repository provides a ready-to-use Cosmos DB session store implementation in the `SharedServices` library. See `src/shared-services/CosmosAgentThreadStore.cs` for the complete implementation.
+The repository provides a ready-to-use Cosmos DB session store implementation in the `SharedServices` library. See `src/shared-services/CosmosAgentSessionStore.cs` for the complete implementation.
 
 To use it in your agent:
 
 ```csharp
-// In your Program.cs, register the Cosmos container and session store services
+// In your Program.cs, register the Cosmos containers and services
 using SharedServices;
 
-// Register Cosmos container with custom serializer
+// Register Cosmos containers with custom serializer
+builder.AddKeyedAzureCosmosContainer("sessions", 
+    configureClientOptions: (option) => option.Serializer = new CosmosSystemTextJsonSerializer());
 builder.AddKeyedAzureCosmosContainer("conversations", 
     configureClientOptions: (option) => option.Serializer = new CosmosSystemTextJsonSerializer());
 
-// Register the thread repository and store from shared services
-builder.Services.AddSingleton<ICosmosThreadRepository, CosmosThreadRepository>();
-builder.Services.AddSingleton<CosmosAgentSessionStore>();
+// Register session store and chat history provider
+builder.Services.AddCosmosAgentSessionStore("sessions");
+builder.Services.AddCosmosChatHistoryProvider("conversations");
 ```
 
 The `CosmosAgentSessionStore` handles:
@@ -555,22 +566,15 @@ The `CosmosAgentSessionStore` handles:
 
 ### Using the Session Store
 
-Register the session store with your agent and use it in endpoints:
+Register the session store with your agent using the extension method:
 
 ```csharp
-// Registration
-builder.Services.AddSingleton<CosmosAgentSessionStore>();
+// Registration with extension methods
+builder.Services.AddCosmosAgentSessionStore("sessions");
+builder.Services.AddCosmosChatHistoryProvider("conversations");
 
 builder.AddAIAgent("agent", (sp, key) => { /* ... */ })
-    .WithSessionStore((sp, key) => sp.GetRequiredService<CosmosAgentSessionStore>());
-
-// Usage in endpoint
-var session = await sessionStore.GetSessionAsync(agent, conversationId);
-await foreach (var update in agent.RunStreamingAsync(chatMessage, session))
-{
-    // Process updates
-}
-await sessionStore.SaveSessionAsync(agent, conversationId, session);
+    .WithCosmosSessionStore();
 ```
 
 ## Complete Examples
@@ -603,11 +607,15 @@ builder.AddAzureChatCompletionsClient(connectionName: "foundry",
 builder.Services.AddSingleton<DocumentService>();
 builder.Services.AddSingleton<DocumentTools>();
 
-// Register Cosmos for conversation storage
+// Register Cosmos containers for session and conversation storage
+builder.AddKeyedAzureCosmosContainer("sessions",
+    configureClientOptions: (option) => option.Serializer = new CosmosSystemTextJsonSerializer());
 builder.AddKeyedAzureCosmosContainer("conversations",
     configureClientOptions: (option) => option.Serializer = new CosmosSystemTextJsonSerializer());
-builder.Services.AddSingleton<ICosmosThreadRepository, CosmosThreadRepository>();
-builder.Services.AddSingleton<CosmosAgentSessionStore>();
+
+// Register session store and chat history provider
+builder.Services.AddCosmosAgentSessionStore("sessions");
+builder.Services.AddCosmosChatHistoryProvider("conversations");
 
 // Register the agent
 builder.AddAIAgent("doc-agent", (sp, key) =>
@@ -615,12 +623,19 @@ builder.AddAIAgent("doc-agent", (sp, key) =>
     var chatClient = sp.GetRequiredService<IChatClient>();
     var tools = sp.GetRequiredService<DocumentTools>().GetFunctions();
 
-    return chatClient.AsAIAgent(
-        name: key,
-        instructions: "You help users find and manage documents.",
-        tools: tools
-    );
-}).WithSessionStore((sp, key) => sp.GetRequiredService<CosmosAgentSessionStore>());
+    var agentOptions = new ChatClientAgentOptions()
+    {
+        Name = key,
+        Description = "A document management assistant",
+        ChatOptions = new ChatOptions()
+        {
+            Instructions = "You help users find and manage documents.",
+            Tools = tools
+        }
+    }.WithCosmosChatHistoryProvider(sp);
+
+    return chatClient.AsAIAgent(agentOptions, services: sp);
+}).WithCosmosSessionStore();
 
 var app = builder.Build();
 
@@ -681,11 +696,15 @@ builder.AddAzureChatCompletionsClient(connectionName: "foundry",
     })
     .AddChatClient("gpt-4.1");
 
-// Register Cosmos for conversation storage
+// Register Cosmos containers for session and conversation storage
+builder.AddKeyedAzureCosmosContainer("sessions",
+    configureClientOptions: (option) => option.Serializer = new CosmosSystemTextJsonSerializer());
 builder.AddKeyedAzureCosmosContainer("conversations",
     configureClientOptions: (option) => option.Serializer = new CosmosSystemTextJsonSerializer());
-builder.Services.AddSingleton<ICosmosThreadRepository, CosmosThreadRepository>();
-builder.Services.AddSingleton<CosmosAgentSessionStore>();
+
+// Register session store and chat history provider
+builder.Services.AddCosmosAgentSessionStore("sessions");
+builder.Services.AddCosmosChatHistoryProvider("conversations");
 
 // Configure CORS
 builder.Services.AddCors(options =>
@@ -719,18 +738,22 @@ builder.AddAIAgent("orchestrator-agent", (sp, key) =>
 {
     var chatClient = sp.GetRequiredService<IChatClient>();
 
-    var agent = chatClient.AsAIAgent(
-        instructions: @"You are a helpful orchestrator that coordinates multiple specialized agents.
+    var agentOptions = new ChatClientAgentOptions()
+    {
+        Name = key,
+        Description = "An orchestrator that coordinates multiple specialized agents",
+        ChatOptions = new ChatOptions()
+        {
+            Instructions = @"You are a helpful orchestrator that coordinates multiple specialized agents.
 When users ask questions, determine which specialized agent to use and invoke them as tools.",
-        description: "An orchestrator that coordinates multiple specialized agents",
-        name: key,
-        tools: [
-            specializedAgent.AsAIFunction()
-        ]
-    );
+            Tools = [
+                specializedAgent.AsAIFunction()
+            ]
+        }
+    }.WithCosmosChatHistoryProvider(sp);
 
-    return agent;
-}).WithSessionStore((sp, key) => sp.GetRequiredService<CosmosAgentSessionStore>());
+    return chatClient.AsAIAgent(agentOptions, services: sp);
+}).WithCosmosSessionStore();
 
 var app = builder.Build();
 

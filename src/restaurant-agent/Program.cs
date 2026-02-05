@@ -29,11 +29,15 @@ builder.Services.AddSingleton<RestaurantTools>();
 builder.Services.AddOpenAIResponses();
 builder.Services.AddOpenAIConversations();
 
-// Register Cosmos for conversation storage
+// Register Cosmos containers for session and conversation storage
+builder.AddKeyedAzureCosmosContainer("sessions",
+    configureClientOptions: (option) => option.Serializer = new CosmosSystemTextJsonSerializer());
 builder.AddKeyedAzureCosmosContainer("conversations",
     configureClientOptions: (option) => option.Serializer = new CosmosSystemTextJsonSerializer());
-builder.Services.AddSingleton<ICosmosThreadRepository, CosmosThreadRepository>();
-builder.Services.AddSingleton<CosmosAgentSessionStore>();
+
+// Register session store and chat history provider
+builder.Services.AddCosmosAgentSessionStore("sessions");
+builder.Services.AddCosmosChatHistoryProvider("conversations");
 
 // Register the restaurant agent
 builder.AddAIAgent("restaurant-agent", (sp, key) =>
@@ -41,18 +45,22 @@ builder.AddAIAgent("restaurant-agent", (sp, key) =>
     var chatClient = sp.GetRequiredService<IChatClient>();
     var restaurantTools = sp.GetRequiredService<RestaurantTools>().GetFunctions();
 
-    var agent = chatClient.AsAIAgent(
-        instructions: @"You are a helpful restaurant assistant. You help users find restaurants based on their preferences.
+    var agentOptions = new ChatClientAgentOptions()
+    {
+        Name = key,
+        Description = "A friendly restaurant assistant that helps find restaurants",
+        ChatOptions = new ChatOptions()
+        {
+            Instructions = @"You are a helpful restaurant assistant. You help users find restaurants based on their preferences.
 You can search for restaurants by category (vegetarian, pizza, japanese, mexican, french, indian, steakhouse) or by keywords.
 Always be friendly and provide detailed information about the restaurants including their name, address, phone, description, rating, and price range.
 When users ask about restaurants, use the available tools to retrieve the information.",
-        description: "A friendly restaurant assistant that helps find restaurants",
-        name: key,
-        tools: [.. restaurantTools]
-    );
+            Tools = [.. restaurantTools]
+        }
+    }.WithCosmosChatHistoryProvider(sp);
 
-    return agent;
-}).WithSessionStore((sp, key) => sp.GetRequiredService<CosmosAgentSessionStore>());
+    return chatClient.AsAIAgent(agentOptions, services: sp);
+}).WithCosmosSessionStore();
 
 var app = builder.Build();
 

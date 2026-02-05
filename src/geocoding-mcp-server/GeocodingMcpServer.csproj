@@ -9,7 +9,7 @@
 
   <ItemGroup>
     <!-- MCP SDK -->
-    <PackageReference Include="ModelContextProtocol.AspNetCore" Version="0.4.0-preview.3" />
+    <PackageReference Include="ModelContextProtocol.AspNetCore" Version="0.7.0-preview.1" />
   </ItemGroup>
 
   <ItemGroup>

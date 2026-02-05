@@ -5,6 +5,8 @@ using Microsoft.Agents.AI.Hosting;
 using Microsoft.Agents.AI.Hosting.A2A;
 using Microsoft.Extensions.AI;
 using SharedServices;
+using System.ComponentModel;
+//using SharedServices;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -30,11 +32,36 @@ builder.AddAzureChatCompletionsClient(connectionName: "foundry",
     })
     .AddChatClient("gpt-4.1");
 
-// Register Cosmos for conversation storage
-builder.AddKeyedAzureCosmosContainer("conversations",
-    configureClientOptions: (option) => option.Serializer = new CosmosSystemTextJsonSerializer());
-builder.Services.AddSingleton<ICosmosThreadRepository, CosmosThreadRepository>();
-builder.Services.AddSingleton<CosmosAgentSessionStore>();
+// Register Cosmos containers for session storage with a custom serializer to handle complex types
+builder.AddKeyedAzureCosmosContainer("sessions",
+    configureClientOptions: (option) => 
+    {
+        option.Serializer = new CosmosSystemTextJsonSerializer();
+    });
+
+// Register Cosmos containers for conversation storage with a custom serializer to handle complex types
+builder.AddKeyedAzureCosmosContainer("conversations", 
+    configureClientOptions: (option) =>
+    {
+        option.Serializer = new CosmosSystemTextJsonSerializer();
+    });
+
+
+// Register session and chat history providers using keyed containers
+builder.Services.AddCosmosAgentSessionStore("sessions", opt => { opt.TtlSeconds = 86400 * 7; });
+
+//Register the reducer for chat history
+#pragma warning disable MEAI001 // Type is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
+
+builder.Services.AddSingleton<IChatReducer, Microsoft.Extensions.AI.SummarizingChatReducer>( sp=> new SummarizingChatReducer(sp.GetRequiredService<IChatClient>(), 5,3));
+builder.Services.AddCosmosChatHistoryProvider("conversations", (sp, opt) => 
+{
+    opt.MessageTtlSeconds = (86400 * 7);
+    //opt.ChatReducer = sp.GetRequiredService<IChatReducer>();
+    //opt.ReductionStoragePolicy = ReductionStoragePolicy.Archive;
+});
+
+#pragma warning restore MEAI001 // Type is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
 
 // Connect to restaurant agent via A2A
 var restaurantAgentUrl = Environment.GetEnvironmentVariable("services__restaurantagent__https__0") ?? Environment.GetEnvironmentVariable("services__restaurantagent__http__0");
@@ -80,14 +107,22 @@ var accommodationCardResolver = new A2ACardResolver(
 
 var accommodationAgent = accommodationCardResolver.GetAIAgentAsync().Result;
 
+[Description("Get the weather for a given location.")]
+static string GetWeather([Description("The location to get the weather for.")] string location)
+ => $"The weather in {location} is cloudy with a high of 15°C.";
+
 // Register the orchestrator agent
 builder.AddAIAgent("orchestrator-agent", (sp, key) =>
 {
     var chatClient = sp.GetRequiredService<IChatClient>();
 
-    var agent = chatClient.AsAIAgent(
-        instructions: @"You are a helpful city assistant that helps users with various tasks.
-
+    var agentOptions = new ChatClientAgentOptions()
+    {
+        Name = key,
+        Description = "A city assistant that orchestrates multiple specialized agents",
+        ChatOptions = new ChatOptions()
+        {
+            Instructions = @"You are a helpful city assistant that helps users with various tasks.
 AVAILABLE AGENTS:
 1. restaurant-agent - Find restaurants by category or search
 2. activities-agent - Discover museums, theaters, cultural events, and attractions (has geocoding for location-based search)
@@ -101,17 +136,23 @@ ROUTING RULES:
 Both activities-agent and accommodation-agent have geocoding capabilities built-in, so they can handle location-based queries.
 
 Always be friendly, helpful, and provide comprehensive responses based on the information you receive from the tools.",
-        description: "A city assistant that orchestrates multiple specialized agents",
-        name: key,
-        tools: [
+            Tools = [
             restaurantAgent.AsAIFunction(),
             activitiesAgent.AsAIFunction(),
-            accommodationAgent.AsAIFunction()
+            accommodationAgent.AsAIFunction(),
+            AIFunctionFactory.Create(GetWeather)
         ]
-    );
+        },
+
+    }.WithCosmosChatHistoryProvider(sp);
+
+    var agent = chatClient.AsAIAgent(agentOptions, services: sp);
+
 
     return agent;
-}).WithSessionStore((sp, key) => sp.GetRequiredService<CosmosAgentSessionStore>());
+}).WithCosmosSessionStore();
+
+
 
 var app = builder.Build();
 
