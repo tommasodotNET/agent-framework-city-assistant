@@ -1,4 +1,3 @@
-using Azure.Core;
 using Microsoft.Agents.AI.Hosting;
 using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.DependencyInjection;
@@ -46,31 +45,14 @@ public static class CosmosAgentSessionStoreExtensions
     }
 
     /// <summary>
-    /// Adds <see cref="CosmosAgentSessionStore"/> using an existing Container.
-    /// </summary>
-    public static IServiceCollection AddCosmosAgentSessionStore(
-        this IServiceCollection services,
-        Container container,
-        Action<CosmosAgentSessionStoreOptions>? configure = null)
-    {
-        ArgumentNullException.ThrowIfNull(services);
-        ArgumentNullException.ThrowIfNull(container);
-
-        var options = new CosmosAgentSessionStoreOptions();
-        configure?.Invoke(options);
-
-        services.AddSingleton(sp =>
-            new CosmosAgentSessionStore(
-                container,
-                sp.GetRequiredService<ILogger<CosmosAgentSessionStore>>(),
-                options.TtlSeconds));
-
-        return services;
-    }
-
-    /// <summary>
     /// Adds <see cref="CosmosAgentSessionStore"/> using an existing CosmosClient.
     /// </summary>
+    /// <param name="services">The service collection.</param>
+    /// <param name="client">The CosmosClient instance (user manages lifecycle and credentials).</param>
+    /// <param name="databaseId">The database identifier.</param>
+    /// <param name="containerId">The container identifier.</param>
+    /// <param name="configure">Optional configuration action.</param>
+    /// <returns>The service collection for chaining.</returns>
     public static IServiceCollection AddCosmosAgentSessionStore(
         this IServiceCollection services,
         CosmosClient client,
@@ -78,30 +60,22 @@ public static class CosmosAgentSessionStoreExtensions
         string containerId,
         Action<CosmosAgentSessionStoreOptions>? configure = null)
     {
+        ArgumentNullException.ThrowIfNull(services);
         ArgumentNullException.ThrowIfNull(client);
         ArgumentNullException.ThrowIfNullOrWhiteSpace(databaseId);
         ArgumentNullException.ThrowIfNullOrWhiteSpace(containerId);
 
+        var options = new CosmosAgentSessionStoreOptions();
+        configure?.Invoke(options);
+
         var container = client.GetContainer(databaseId, containerId);
-        return services.AddCosmosAgentSessionStore(container, configure);
-    }
+        services.AddSingleton(sp =>
+            new CosmosAgentSessionStore(
+                container,
+                sp.GetRequiredService<ILogger<CosmosAgentSessionStore>>(),
+                options.TtlSeconds));
 
-    /// <summary>
-    /// Adds <see cref="CosmosAgentSessionStore"/> using Entra ID (Managed Identity) authentication.
-    /// </summary>
-    public static IServiceCollection AddCosmosAgentSessionStore(
-        this IServiceCollection services,
-        string accountEndpoint,
-        TokenCredential tokenCredential,
-        string databaseId,
-        string containerId,
-        Action<CosmosAgentSessionStoreOptions>? configure = null)
-    {
-        ArgumentNullException.ThrowIfNullOrWhiteSpace(accountEndpoint);
-        ArgumentNullException.ThrowIfNull(tokenCredential);
-
-        var client = new CosmosClient(accountEndpoint, tokenCredential);
-        return services.AddCosmosAgentSessionStore(client, databaseId, containerId, configure);
+        return services;
     }
 
     /// <summary>

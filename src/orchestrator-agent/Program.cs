@@ -3,7 +3,6 @@ using Azure.Identity;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Hosting;
 using Microsoft.Agents.AI.Hosting.A2A;
-using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.AI;
 using SharedServices;
 using System.ComponentModel;

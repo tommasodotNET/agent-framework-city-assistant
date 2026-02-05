@@ -1,4 +1,3 @@
-using Azure.Core;
 using Microsoft.Agents.AI;
 using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.AI;
@@ -24,31 +23,34 @@ namespace SharedServices;
 /// builder.AddKeyedAzureCosmosContainer("conversations", ...);
 /// builder.Services.AddCosmosChatHistoryProvider("conversations", opt => opt.MessageTtlSeconds = 3600);
 /// 
-/// // Then in agent options - no parameters needed
+/// // Then in agent options
 /// var agentOptions = new ChatClientAgentOptions()
-///     .WithCosmosChatHistoryProvider();
+///     .WithCosmosChatHistoryProvider(serviceProvider);
 /// </code>
 /// 
-/// <para><b>2. Using existing Container directly:</b></para>
+/// <para><b>2. With CosmosClient (user manages credentials):</b></para>
 /// <code>
+/// var client = new CosmosClient(endpoint, new DefaultAzureCredential());
+/// // or: new CosmosClient(connectionString);
+/// 
 /// var agentOptions = new ChatClientAgentOptions()
-///     .WithCosmosChatHistoryProvider(container, opt => opt.MaxMessagesToRetrieve = 50);
+///     .WithCosmosChatHistoryProvider(client, "DatabaseId", "ContainerId");
 /// </code>
 /// 
-/// <para><b>3. Using Managed Identity:</b></para>
+/// <para><b>3. Multi-tenant with hierarchical partition keys:</b></para>
 /// <code>
-/// var agentOptions = new ChatClientAgentOptions()
-///     .WithCosmosChatHistoryProvider(
-///         accountEndpoint: "https://myaccount.documents.azure.com:443/",
-///         tokenCredential: new DefaultAzureCredential(),
-///         databaseId: "ChatHistory",
-///         containerId: "Conversations");
+/// builder.Services.AddHttpContextAccessor();
+/// builder.Services.AddCosmosChatHistoryProvider("conversations", opt => 
+/// {
+///     opt.TenantIdFactory = sp => sp.GetService&lt;IHttpContextAccessor&gt;()?.HttpContext?.User?.FindFirst("tenant_id")?.Value;
+///     opt.UserIdFactory = sp => sp.GetService&lt;IHttpContextAccessor&gt;()?.HttpContext?.User?.FindFirst("sub")?.Value;
+/// });
+/// 
+/// // The provider will use partition key (tenantId, userId, conversationId) when both factories return values
 /// </code>
 /// </remarks>
 public static class CosmosChatHistoryProviderExtensions
 {
-    #region IServiceCollection Extensions
-
     /// <summary>
     /// Registers Cosmos DB chat history provider configuration using a keyed Container service.
     /// </summary>
@@ -121,29 +123,6 @@ public static class CosmosChatHistoryProviderExtensions
     }
 
     /// <summary>
-    /// Registers Cosmos DB chat history provider configuration using an existing Container.
-    /// </summary>
-    public static IServiceCollection AddCosmosChatHistoryProvider(
-        this IServiceCollection services,
-        Container container,
-        Action<CosmosChatHistoryProviderOptions>? configure = null)
-    {
-        ArgumentNullException.ThrowIfNull(services);
-        ArgumentNullException.ThrowIfNull(container);
-
-        var options = new CosmosChatHistoryProviderOptions();
-        configure?.Invoke(options);
-
-        services.AddSingleton(new CosmosChatHistoryProviderRegistration(container, options));
-
-        return services;
-    }
-
-    #endregion
-
-    #region ChatClientAgentOptions Extensions
-
-    /// <summary>
     /// Configures the agent to use Cosmos DB for chat history from pre-registered DI configuration.
     /// </summary>
     /// <param name="options">The agent options to configure.</param>
@@ -152,6 +131,17 @@ public static class CosmosChatHistoryProviderExtensions
     /// <returns>The configured options for method chaining.</returns>
     /// <remarks>
     /// Requires prior registration via <see cref="AddCosmosChatHistoryProvider(IServiceCollection, string, Action{CosmosChatHistoryProviderOptions}?)"/>.
+    /// <code>
+    /// // Register in Program.cs
+    /// builder.Services.AddCosmosChatHistoryProvider("conversations", (sp, opt) => 
+    /// {
+    ///     opt.ChatReducer = sp.GetRequiredService&lt;IChatReducer&gt;();
+    /// });
+    /// 
+    /// // Use in agent configuration
+    /// var agentOptions = new ChatClientAgentOptions()
+    ///     .WithCosmosChatHistoryProvider(serviceProvider);
+    /// </code>
     /// </remarks>
     public static ChatClientAgentOptions WithCosmosChatHistoryProvider(
         this ChatClientAgentOptions options,
@@ -163,9 +153,7 @@ public static class CosmosChatHistoryProviderExtensions
 
         var registration = serviceProvider.GetRequiredService<CosmosChatHistoryProviderRegistration>();
         var logger = serviceProvider.GetService<ILoggerFactory>()?.CreateLogger<CosmosChatHistoryProvider>();
-
-        var container = registration.Container 
-            ?? serviceProvider.GetRequiredKeyedService<Container>(registration.ContainerServiceKey);
+        var container = serviceProvider.GetRequiredKeyedService<Container>(registration.ContainerServiceKey);
 
         // Clone options from registration and apply additional configuration
         var providerOptions = CloneOptions(registration.Options);
@@ -179,35 +167,8 @@ public static class CosmosChatHistoryProviderExtensions
                 container.Id,
                 context,
                 providerOptions,
+                serviceProvider,
                 logger);
-            return new ValueTask<ChatHistoryProvider>(provider);
-        };
-
-        return options;
-    }
-
-    /// <summary>
-    /// Configures the agent to use Cosmos DB for chat history with Entra ID (Managed Identity) authentication.
-    /// </summary>
-    public static ChatClientAgentOptions WithCosmosChatHistoryProvider(
-        this ChatClientAgentOptions options,
-        string accountEndpoint,
-        TokenCredential tokenCredential,
-        string databaseId,
-        string containerId,
-        Action<CosmosChatHistoryProviderOptions>? configure = null)
-    {
-        ArgumentNullException.ThrowIfNull(options);
-        ArgumentNullException.ThrowIfNull(tokenCredential);
-        ArgumentNullException.ThrowIfNullOrWhiteSpace(accountEndpoint);
-
-        var providerOptions = new CosmosChatHistoryProviderOptions();
-        configure?.Invoke(providerOptions);
-
-        options.ChatHistoryProviderFactory = (context, _) =>
-        {
-            var client = new CosmosClient(accountEndpoint, tokenCredential);
-            var provider = CreateProvider(client, databaseId, containerId, context, providerOptions);
             return new ValueTask<ChatHistoryProvider>(provider);
         };
 
@@ -217,11 +178,43 @@ public static class CosmosChatHistoryProviderExtensions
     /// <summary>
     /// Configures the agent to use Cosmos DB for chat history with an existing <see cref="CosmosClient"/>.
     /// </summary>
+    /// <param name="options">The agent options to configure.</param>
+    /// <param name="client">The CosmosClient instance (user manages lifecycle and credentials).</param>
+    /// <param name="databaseId">The database identifier.</param>
+    /// <param name="containerId">The container identifier.</param>
+    /// <param name="serviceProvider">Optional service provider for resolving tenant/user IDs via factories. 
+    /// Required when using <see cref="CosmosChatHistoryProviderOptions.TenantIdFactory"/> or <see cref="CosmosChatHistoryProviderOptions.UserIdFactory"/>.</param>
+    /// <param name="configure">Optional configuration action.</param>
+    /// <returns>The configured options for method chaining.</returns>
+    /// <remarks>
+    /// Use this overload when not using Aspire or when you need full control over client configuration.
+    /// <code>
+    /// // With Managed Identity
+    /// var client = new CosmosClient(endpoint, new DefaultAzureCredential());
+    /// 
+    /// // Or with connection string
+    /// var client = new CosmosClient(connectionString);
+    /// 
+    /// var agentOptions = new ChatClientAgentOptions()
+    ///     .WithCosmosChatHistoryProvider(client, "ChatHistory", "Conversations");
+    /// </code>
+    /// 
+    /// <para><b>For multi-tenant scenarios with this overload:</b></para>
+    /// <code>
+    /// var agentOptions = new ChatClientAgentOptions()
+    ///     .WithCosmosChatHistoryProvider(client, "ChatHistory", "Conversations", serviceProvider, opt =>
+    ///     {
+    ///         opt.TenantIdFactory = sp => sp.GetService&lt;IHttpContextAccessor&gt;()?.HttpContext?.User?.FindFirst("tenant_id")?.Value;
+    ///         opt.UserIdFactory = sp => sp.GetService&lt;IHttpContextAccessor&gt;()?.HttpContext?.User?.FindFirst("sub")?.Value;
+    ///     });
+    /// </code>
+    /// </remarks>
     public static ChatClientAgentOptions WithCosmosChatHistoryProvider(
         this ChatClientAgentOptions options,
         CosmosClient client,
         string databaseId,
         string containerId,
+        IServiceProvider? serviceProvider = null,
         Action<CosmosChatHistoryProviderOptions>? configure = null)
     {
         ArgumentNullException.ThrowIfNull(options);
@@ -234,66 +227,24 @@ public static class CosmosChatHistoryProviderExtensions
 
         options.ChatHistoryProviderFactory = (context, _) =>
         {
-            var provider = CreateProvider(client, databaseId, containerId, context, providerOptions);
+            var provider = CreateProvider(client, databaseId, containerId, context, providerOptions, serviceProvider);
             return new ValueTask<ChatHistoryProvider>(provider);
         };
 
         return options;
     }
 
-    /// <summary>
-    /// Configures the agent to use Cosmos DB for chat history with an existing <see cref="Container"/>.
-    /// </summary>
-    public static ChatClientAgentOptions WithCosmosChatHistoryProvider(
-        this ChatClientAgentOptions options,
-        Container container,
-        Action<CosmosChatHistoryProviderOptions>? configure = null)
+    private static CosmosChatHistoryProviderOptions CloneOptions(CosmosChatHistoryProviderOptions source) => new()
     {
-        return options.WithCosmosChatHistoryProvider(container, configure, null);
-    }
-
-    private static ChatClientAgentOptions WithCosmosChatHistoryProvider(
-        this ChatClientAgentOptions options,
-        Container container,
-        Action<CosmosChatHistoryProviderOptions>? configure,
-        CosmosChatHistoryProviderOptions? preConfiguredOptions)
-    {
-        ArgumentNullException.ThrowIfNull(options);
-        ArgumentNullException.ThrowIfNull(container);
-
-        var providerOptions = preConfiguredOptions ?? new CosmosChatHistoryProviderOptions();
-        configure?.Invoke(providerOptions);
-
-        options.ChatHistoryProviderFactory = (context, _) =>
-        {
-            var provider = CreateProvider(
-                container.Database.Client,
-                container.Database.Id,
-                container.Id,
-                context,
-                providerOptions);
-            return new ValueTask<ChatHistoryProvider>(provider);
-        };
-
-        return options;
-    }
-
-    #endregion
-
-    #region Private Helpers
-
-    private static CosmosChatHistoryProviderOptions CloneOptions(CosmosChatHistoryProviderOptions source)
-    {
-        return new CosmosChatHistoryProviderOptions
-        {
-            MessageTtlSeconds = source.MessageTtlSeconds,
-            MaxMessagesToRetrieve = source.MaxMessagesToRetrieve,
-            MaxItemCount = source.MaxItemCount,
-            MaxBatchSize = source.MaxBatchSize,
-            ChatReducer = source.ChatReducer,
-            ReductionStoragePolicy = source.ReductionStoragePolicy
-        };
-    }
+        MessageTtlSeconds = source.MessageTtlSeconds,
+        MaxMessagesToRetrieve = source.MaxMessagesToRetrieve,
+        MaxItemCount = source.MaxItemCount,
+        MaxBatchSize = source.MaxBatchSize,
+        ChatReducer = source.ChatReducer,
+        ReductionStoragePolicy = source.ReductionStoragePolicy,
+        TenantIdFactory = source.TenantIdFactory,
+        UserIdFactory = source.UserIdFactory
+    };
 
     private static CosmosChatHistoryProvider CreateProvider(
         CosmosClient client,
@@ -301,36 +252,25 @@ public static class CosmosChatHistoryProviderExtensions
         string containerId,
         ChatClientAgentOptions.ChatHistoryProviderFactoryContext context,
         CosmosChatHistoryProviderOptions options,
+        IServiceProvider? serviceProvider = null,
         ILogger<CosmosChatHistoryProvider>? logger = null)
     {
-        CosmosChatHistoryProvider provider;
-        if (context.SerializedState.ValueKind == JsonValueKind.Object)
-        {
-            provider = CosmosChatHistoryProvider.CreateFromSerializedState(
-                client,
-                context.SerializedState,
-                databaseId,
-                containerId,
-                context.JsonSerializerOptions,
-                options.ChatReducer,
-                options.ReductionStoragePolicy ?? default,
-                logger);
+        // Resolve tenant and user IDs at runtime via factories
+        var tenantId = serviceProvider is not null ? options.TenantIdFactory?.Invoke(serviceProvider) : null;
+        var userId = serviceProvider is not null ? options.UserIdFactory?.Invoke(serviceProvider) : null;
+        var useHierarchicalPartitioning = !string.IsNullOrWhiteSpace(tenantId) && !string.IsNullOrWhiteSpace(userId);
 
-        }
-        else
-        {
-            provider = new CosmosChatHistoryProvider(
-                client,
-                databaseId,
-                containerId,
-                logger)
-            {
-                ChatReducer = options.ChatReducer,
-                ReductionStoragePolicy = options.ReductionStoragePolicy ?? default
-            };
-        }
+        CosmosChatHistoryProvider provider = context.SerializedState.ValueKind == JsonValueKind.Object
+            ? CosmosChatHistoryProvider.CreateFromSerializedState(
+                client, context.SerializedState, databaseId, containerId,
+                context.JsonSerializerOptions, options.ChatReducer, 
+                options.ReductionStoragePolicy ?? default, logger)
+            : useHierarchicalPartitioning
+                ? new CosmosChatHistoryProvider(client, databaseId, containerId, tenantId!, userId!, Guid.NewGuid().ToString("N"), logger)
+                  { ChatReducer = options.ChatReducer, ReductionStoragePolicy = options.ReductionStoragePolicy ?? default }
+                : new CosmosChatHistoryProvider(client, databaseId, containerId, logger)
+                  { ChatReducer = options.ChatReducer, ReductionStoragePolicy = options.ReductionStoragePolicy ?? default };
 
-        // Set other properties as before
         if (options.MessageTtlSeconds.HasValue)
             provider.MessageTtlSeconds = options.MessageTtlSeconds;
 
@@ -345,8 +285,6 @@ public static class CosmosChatHistoryProviderExtensions
 
         return provider;
     }
-
-    #endregion
 }
 
 /// <summary>
@@ -354,19 +292,12 @@ public static class CosmosChatHistoryProviderExtensions
 /// </summary>
 internal sealed class CosmosChatHistoryProviderRegistration
 {
-    public string? ContainerServiceKey { get; }
-    public Container? Container { get; }
+    public string ContainerServiceKey { get; }
     public CosmosChatHistoryProviderOptions Options { get; }
 
     public CosmosChatHistoryProviderRegistration(string containerServiceKey, CosmosChatHistoryProviderOptions options)
     {
         ContainerServiceKey = containerServiceKey;
-        Options = options;
-    }
-
-    public CosmosChatHistoryProviderRegistration(Container container, CosmosChatHistoryProviderOptions options)
-    {
-        Container = container;
         Options = options;
     }
 }
@@ -421,4 +352,47 @@ public sealed class CosmosChatHistoryProviderOptions
     /// Use <see cref="ReductionStoragePolicy.Archive"/> to preserve original messages with an archived suffix.
     /// </summary>
     public ReductionStoragePolicy? ReductionStoragePolicy { get; set; }
+
+    /// <summary>
+    /// Factory function to resolve tenant ID at runtime from the current request context.
+    /// When both <see cref="TenantIdFactory"/> and <see cref="UserIdFactory"/> return non-null values, 
+    /// the provider uses a hierarchical partition key of (tenantId, userId, conversationId) for multi-tenant isolation.
+    /// </summary>
+    /// <remarks>
+    /// <para><b>Example with JWT claims:</b></para>
+    /// <code>
+    /// builder.Services.AddHttpContextAccessor();
+    /// builder.Services.AddCosmosChatHistoryProvider("conversations", opt => 
+    /// {
+    ///     opt.TenantIdFactory = sp => 
+    ///     {
+    ///         var httpContext = sp.GetService&lt;IHttpContextAccessor&gt;()?.HttpContext;
+    ///         return httpContext?.User?.FindFirst("tenant_id")?.Value;
+    ///     };
+    /// });
+    /// </code>
+    /// </remarks>
+    public Func<IServiceProvider, string?>? TenantIdFactory { get; set; }
+
+    /// <summary>
+    /// Factory function to resolve user ID at runtime from the current request context.
+    /// When both <see cref="TenantIdFactory"/> and <see cref="UserIdFactory"/> return non-null values, 
+    /// the provider uses a hierarchical partition key of (tenantId, userId, conversationId) for multi-tenant isolation.
+    /// </summary>
+    /// <remarks>
+    /// <para><b>Example with JWT claims:</b></para>
+    /// <code>
+    /// builder.Services.AddHttpContextAccessor();
+    /// builder.Services.AddCosmosChatHistoryProvider("conversations", opt => 
+    /// {
+    ///     opt.UserIdFactory = sp => 
+    ///     {
+    ///         var httpContext = sp.GetService&lt;IHttpContextAccessor&gt;()?.HttpContext;
+    ///         return httpContext?.User?.FindFirst("sub")?.Value 
+    ///             ?? httpContext?.User?.FindFirst(ClaimTypes.NameIdentifier)?.Value;
+    ///     };
+    /// });
+    /// </code>
+    /// </remarks>
+    public Func<IServiceProvider, string?>? UserIdFactory { get; set; }
 }
