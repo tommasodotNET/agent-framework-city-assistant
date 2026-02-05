@@ -6,6 +6,7 @@ using Microsoft.Agents.AI.Hosting.A2A;
 using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.AI;
 using SharedServices;
+using System.ComponentModel;
 //using SharedServices;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -32,22 +33,36 @@ builder.AddAzureChatCompletionsClient(connectionName: "foundry",
     })
     .AddChatClient("gpt-4.1");
 
-// Register Cosmos containers for session and conversation storage
+// Register Cosmos containers for session storage with a custom serializer to handle complex types
 builder.AddKeyedAzureCosmosContainer("sessions",
     configureClientOptions: (option) => 
     {
         option.Serializer = new CosmosSystemTextJsonSerializer();
     });
 
+// Register Cosmos containers for conversation storage with a custom serializer to handle complex types
 builder.AddKeyedAzureCosmosContainer("conversations", 
     configureClientOptions: (option) =>
     {
         option.Serializer = new CosmosSystemTextJsonSerializer();
     });
 
+
 // Register session and chat history providers using keyed containers
-builder.Services.AddCosmosAgentSessionStore("sessions");
-builder.Services.AddCosmosChatHistoryProvider("conversations");
+builder.Services.AddCosmosAgentSessionStore("sessions", opt => { opt.TtlSeconds = 86400 * 7; });
+
+//Register the reducer for chat history
+#pragma warning disable MEAI001 // Type is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
+
+builder.Services.AddSingleton<IChatReducer, Microsoft.Extensions.AI.SummarizingChatReducer>( sp=> new SummarizingChatReducer(sp.GetRequiredService<IChatClient>(), 5,3));
+builder.Services.AddCosmosChatHistoryProvider("conversations", (sp, opt) => 
+{
+    opt.MessageTtlSeconds = (86400 * 7);
+    opt.ChatReducer = sp.GetRequiredService<IChatReducer>();
+    opt.ReductionStoragePolicy = ReductionStoragePolicy.Archive;
+});
+
+#pragma warning restore MEAI001 // Type is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
 
 // Connect to restaurant agent via A2A
 var restaurantAgentUrl = Environment.GetEnvironmentVariable("services__restaurantagent__https__0") ?? Environment.GetEnvironmentVariable("services__restaurantagent__http__0");
@@ -93,6 +108,10 @@ var accommodationCardResolver = new A2ACardResolver(
 
 var accommodationAgent = accommodationCardResolver.GetAIAgentAsync().Result;
 
+[Description("Get the weather for a given location.")]
+static string GetWeather([Description("The location to get the weather for.")] string location)
+ => $"The weather in {location} is cloudy with a high of 15°C.";
+
 // Register the orchestrator agent
 builder.AddAIAgent("orchestrator-agent", (sp, key) =>
 {
@@ -121,7 +140,8 @@ Always be friendly, helpful, and provide comprehensive responses based on the in
             Tools = [
             restaurantAgent.AsAIFunction(),
             activitiesAgent.AsAIFunction(),
-            accommodationAgent.AsAIFunction()
+            accommodationAgent.AsAIFunction(),
+            AIFunctionFactory.Create(GetWeather)
         ]
         },
 

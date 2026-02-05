@@ -6,14 +6,12 @@ using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using System.Diagnostics.CodeAnalysis;
 using System.Text.Json;
-using static Microsoft.Agents.AI.InMemoryChatHistoryProvider;
-
 namespace SharedServices;
 
 /// <summary>
-/// Specifies the strategy to use when reducing chat history.
+/// Specifies the storage policy to apply when chat history reduction occurs.
 /// </summary>
-public enum ChatHistoryReductionStrategy
+public enum ReductionStoragePolicy
 {
     /// <summary>
     /// Clears the existing messages and replaces them with the reduced set.
@@ -126,16 +124,11 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
 #pragma warning restore MEAI001 // Type is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
 
     /// <summary>
-    /// Gets the event that triggers the reducer invocation in this provider.
+    /// Gets the storage policy to apply when chat history reduction occurs.
+    /// Default is <see cref="ReductionStoragePolicy.Clear"/> which deletes old messages.
+    /// Use <see cref="ReductionStoragePolicy.Archive"/> to preserve original messages with an archived suffix.
     /// </summary>
-    public ChatReducerTriggerEvent ReducerTriggerEvent { get; init; } = ChatReducerTriggerEvent.BeforeMessagesRetrieval;
-
-    /// <summary>
-    /// Gets the strategy to use when reducing chat history.
-    /// Default is <see cref="ChatHistoryReductionStrategy.Clear"/> which deletes old messages.
-    /// Use <see cref="ChatHistoryReductionStrategy.Archive"/> to preserve original messages with an archived suffix.
-    /// </summary>
-    public ChatHistoryReductionStrategy ReductionStrategy { get; init; } = ChatHistoryReductionStrategy.Clear;
+    public ReductionStoragePolicy ReductionStoragePolicy { get; init; } = ReductionStoragePolicy.Clear;
 
     /// <summary>
     /// Determines if the given CosmosClient is connected to the local emulator.
@@ -340,11 +333,9 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
     /// <param name="jsonSerializerOptions">Optional settings for customizing the JSON deserialization process.</param>
     /// <param name="reducer">Optional chat reducer to process or reduce chat messages before retrieval. 
     /// If null, no reduction logic will be applied.</param>
-    /// <param name="reducerTriggerEvent">The event that triggers the reducer invocation. 
-    /// Default is <see cref="ChatReducerTriggerEvent.BeforeMessagesRetrieval"/>.</param>
-    /// <param name="reductionStrategy">The strategy to use when reducing chat history. 
-    /// Default is <see cref="ChatHistoryReductionStrategy.Clear"/> which deletes old messages. 
-    /// Use <see cref="ChatHistoryReductionStrategy.Archive"/> to preserve original messages with an archived suffix.</param>
+    /// <param name="reductionStoragePolicy">The storage policy to apply when chat history reduction occurs. 
+    /// Default is <see cref="ReductionStoragePolicy.Clear"/> which deletes old messages. 
+    /// Use <see cref="ReductionStoragePolicy.Archive"/> to preserve original messages with an archived suffix.</param>
     /// <param name="logger">Optional logger for diagnostics.</param>
     /// <returns>A new instance of <see cref="CosmosChatHistoryProvider"/> initialized from the serialized state.</returns>
     /// <exception cref="ArgumentNullException">Thrown when <paramref name="cosmosClient"/> is null.</exception>
@@ -354,8 +345,7 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
 #pragma warning disable MEAI001 // Type is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
         IChatReducer? reducer = null,
 #pragma warning restore MEAI001 // Type is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
-        ChatReducerTriggerEvent reducerTriggerEvent = ChatReducerTriggerEvent.BeforeMessagesRetrieval,
-        ChatHistoryReductionStrategy reductionStrategy = ChatHistoryReductionStrategy.Clear,
+        ReductionStoragePolicy reductionStoragePolicy = ReductionStoragePolicy.Clear,
         ILogger<CosmosChatHistoryProvider>? logger = null)
     {
         ArgumentNullException.ThrowIfNull(cosmosClient, nameof(cosmosClient));
@@ -376,9 +366,9 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
         // Use the internal constructor with all parameters to ensure partition key logic is centralized
         return state.UseHierarchicalPartitioning && state.TenantId != null && state.UserId != null
             ? new CosmosChatHistoryProvider(cosmosClient, databaseId, containerId, conversationId, ownsClient: false, logger, state.TenantId, state.UserId) 
-              { ChatReducer = reducer, ReducerTriggerEvent = reducerTriggerEvent, ReductionStrategy = reductionStrategy }
+              { ChatReducer = reducer, ReductionStoragePolicy = reductionStoragePolicy }
             : new CosmosChatHistoryProvider(cosmosClient, databaseId, containerId, conversationId, ownsClient: false, logger) 
-              { ChatReducer = reducer, ReducerTriggerEvent = reducerTriggerEvent, ReductionStrategy = reductionStrategy };
+              { ChatReducer = reducer, ReductionStoragePolicy = reductionStoragePolicy };
     }
 
     /// <inheritdoc />
@@ -412,7 +402,7 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
         _logger.LogDebug("Retrieved {MessageCount} messages for conversation {ConversationId}, RU: {RequestCharge:F2}", 
             messages.Count, ConversationId, totalRu);
 
-        if (ChatReducer is not null && ReducerTriggerEvent is ChatReducerTriggerEvent.BeforeMessagesRetrieval)
+        if (!MaxMessagesToRetrieve.HasValue && ChatReducer is not null)
         {
             var initialCount = messages.Count;
             _logger.LogDebug("Evaluating reduce for conversation {ConversationId}", ConversationId);
@@ -453,9 +443,9 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
     }
 
     /// <summary>
-    /// Applies the configured reduction strategy to replace conversation history with reduced messages.
-    /// For <see cref="ChatHistoryReductionStrategy.Clear"/>: deletes old messages permanently.
-    /// For <see cref="ChatHistoryReductionStrategy.Archive"/>: copies old messages with a timestamp suffix, then deletes originals.
+    /// Applies the configured storage policy to replace conversation history with reduced messages.
+    /// For <see cref="ReductionStoragePolicy.Clear"/>: deletes old messages permanently.
+    /// For <see cref="ReductionStoragePolicy.Archive"/>: copies old messages with a timestamp suffix, then deletes originals.
     /// </summary>
     /// <param name="reducedMessages">The reduced set of messages to store.</param>
     /// <param name="cancellationToken">A token to cancel the operation.</param>
@@ -464,14 +454,14 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
 
-        _logger.LogInformation("[{Strategy} Strategy] Applying reduction for {ConversationId} with {MessageCount} reduced messages",
-            ReductionStrategy.ToString(), ConversationId, reducedMessages.Count);
+        _logger.LogInformation("[{Policy} Policy] Applying reduction for {ConversationId} with {MessageCount} reduced messages",
+            ReductionStoragePolicy.ToString(), ConversationId, reducedMessages.Count);
 
         string? archivedConversationId = null;
         var archivedCount = 0;
 
-        // Step 1: Archive messages if strategy requires it (copy only)
-        if (ReductionStrategy == ChatHistoryReductionStrategy.Archive)
+        // Step 1: Archive messages if policy requires it (copy only)
+        if (ReductionStoragePolicy == ReductionStoragePolicy.Archive)
         {
             var archiveTimestamp = DateTimeOffset.UtcNow.ToUnixTimeSeconds();
             archivedConversationId = $"{ConversationId}_archived_{archiveTimestamp}";

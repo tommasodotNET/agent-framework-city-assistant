@@ -5,8 +5,6 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System.Text.Json;
-using static Microsoft.Agents.AI.InMemoryChatHistoryProvider;
-
 namespace SharedServices;
 
 /// <summary>
@@ -82,6 +80,42 @@ public static class CosmosChatHistoryProviderExtensions
 
         // Register a factory that creates the provider configuration
         services.AddSingleton(new CosmosChatHistoryProviderRegistration(containerServiceKey, options));
+
+        return services;
+    }
+
+    /// <summary>
+    /// Registers Cosmos DB chat history provider configuration using a keyed Container service with access to the service provider.
+    /// </summary>
+    /// <param name="services">The service collection.</param>
+    /// <param name="containerServiceKey">The key used to register the Container (e.g., "conversations").</param>
+    /// <param name="configure">Configuration action with access to the service provider for resolving dependencies.</param>
+    /// <returns>The service collection for chaining.</returns>
+    /// <remarks>
+    /// Use this overload when you need to resolve services from DI during configuration:
+    /// <code>
+    /// builder.Services.AddCosmosChatHistoryProvider("conversations", (sp, opt) => 
+    /// {
+    ///     opt.ChatReducer = sp.GetRequiredService&lt;IChatReducer&gt;();
+    /// });
+    /// </code>
+    /// </remarks>
+    public static IServiceCollection AddCosmosChatHistoryProvider(
+        this IServiceCollection services,
+        string containerServiceKey,
+        Action<IServiceProvider, CosmosChatHistoryProviderOptions> configure)
+    {
+        ArgumentNullException.ThrowIfNull(services);
+        ArgumentNullException.ThrowIfNullOrWhiteSpace(containerServiceKey);
+        ArgumentNullException.ThrowIfNull(configure);
+
+        // Register a factory that defers configuration until the service provider is available
+        services.AddSingleton(sp =>
+        {
+            var options = new CosmosChatHistoryProviderOptions();
+            configure(sp, options);
+            return new CosmosChatHistoryProviderRegistration(containerServiceKey, options);
+        });
 
         return services;
     }
@@ -257,8 +291,7 @@ public static class CosmosChatHistoryProviderExtensions
             MaxItemCount = source.MaxItemCount,
             MaxBatchSize = source.MaxBatchSize,
             ChatReducer = source.ChatReducer,
-            ReducerTriggerEvent = source.ReducerTriggerEvent,
-            ReductionStrategy = source.ReductionStrategy
+            ReductionStoragePolicy = source.ReductionStoragePolicy
         };
     }
 
@@ -280,8 +313,7 @@ public static class CosmosChatHistoryProviderExtensions
                 containerId,
                 context.JsonSerializerOptions,
                 options.ChatReducer,
-                options.ReducerTriggerEvent ?? default,
-                options.ReductionStrategy ?? default,
+                options.ReductionStoragePolicy ?? default,
                 logger);
 
         }
@@ -294,8 +326,7 @@ public static class CosmosChatHistoryProviderExtensions
                 logger)
             {
                 ChatReducer = options.ChatReducer,
-                ReducerTriggerEvent = options.ReducerTriggerEvent ?? default,
-                ReductionStrategy = options.ReductionStrategy ?? default
+                ReductionStoragePolicy = options.ReductionStoragePolicy ?? default
             };
         }
 
@@ -385,14 +416,9 @@ public sealed class CosmosChatHistoryProviderOptions
 #pragma warning restore MEAI001 // Type is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
 
     /// <summary>
-    /// Gets the event that triggers the reducer invocation in this provider.
+    /// Gets or sets the storage policy to apply when chat history reduction occurs.
+    /// Default is <see cref="ReductionStoragePolicy.Clear"/> which deletes old messages.
+    /// Use <see cref="ReductionStoragePolicy.Archive"/> to preserve original messages with an archived suffix.
     /// </summary>
-    public ChatReducerTriggerEvent? ReducerTriggerEvent { get; set; }
-
-    /// <summary>
-    /// Gets or sets the strategy to use when reducing chat history.
-    /// Default is <see cref="ChatHistoryReductionStrategy.Clear"/> which deletes old messages.
-    /// Use <see cref="ChatHistoryReductionStrategy.Archive"/> to preserve original messages with an archived suffix.
-    /// </summary>
-    public ChatHistoryReductionStrategy? ReductionStrategy { get; set; }
+    public ReductionStoragePolicy? ReductionStoragePolicy { get; set; }
 }
