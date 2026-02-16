@@ -1,6 +1,5 @@
-using System.IO;
-using System.Text;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using Microsoft.Azure.Cosmos;
 
 namespace SharedServices;
@@ -14,7 +13,7 @@ public class CosmosSystemTextJsonSerializer : CosmosSerializer
         _options = new JsonSerializerOptions
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-            DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
+            DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull
         };
     }
 
@@ -33,7 +32,9 @@ public class CosmosSystemTextJsonSerializer : CosmosSerializer
 
     public override Stream ToStream<T>(T input)
     {
-        var json = JsonSerializer.Serialize(input, _options);
-        return new MemoryStream(Encoding.UTF8.GetBytes(json));
+        var stream = new MemoryStream();
+        JsonSerializer.Serialize(stream, input, _options);
+        stream.Position = 0;
+        return stream;
     }
 }
