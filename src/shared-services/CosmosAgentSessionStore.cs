@@ -96,7 +96,7 @@ public sealed class CosmosAgentSessionStore : AgentSessionStore
         catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
             _logger.LogDebug("No existing session found, creating new session for {ConversationId}", conversationId);
-            return await agent.GetNewSessionAsync(cancellationToken).ConfigureAwait(false);
+            return await agent.CreateSessionAsync(cancellationToken).ConfigureAwait(false);
         }
     }
 
@@ -115,7 +115,7 @@ public sealed class CosmosAgentSessionStore : AgentSessionStore
 
         _logger.LogDebug("Saving session for conversation {ConversationId}, agent {AgentId}", conversationId, agent.Id);
 
-        var serializedSession = session.Serialize(_serializationOptions);
+        var serializedSession = await agent.SerializeSessionAsync(session, jsonSerializerOptions: _serializationOptions, cancellationToken: cancellationToken).ConfigureAwait(false);
 
         var sessionItem = new CosmosSessionItem
         {

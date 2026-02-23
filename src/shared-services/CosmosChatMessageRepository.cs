@@ -1,4 +1,4 @@
-using Microsoft.Azure.Cosmos;
+﻿using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
 using System.Diagnostics.CodeAnalysis;
@@ -8,42 +8,90 @@ using System.Text.Json.Serialization;
 namespace SharedServices;
 
 /// <summary>
-/// Internal repository for Cosmos DB chat message CRUD operations.
-/// This class handles all direct interactions with Cosmos DB, including batch operations,
-/// emulator compatibility, and RU tracking.
+/// Represents a chat message document stored in Cosmos DB.
 /// </summary>
-[RequiresUnreferencedCode("The CosmosChatMessageRepository uses JSON serialization which is incompatible with trimming.")]
-[RequiresDynamicCode("The CosmosChatMessageRepository uses JSON serialization which is incompatible with NativeAOT.")]
+[SuppressMessage("Performance", "CA1812:Avoid uninstantiated internal classes", Justification = "Deserialized by Cosmos DB")]
+sealed class CosmosMessageDocument
+{
+    [JsonPropertyName("id")] public string Id { get; set; } = string.Empty;
+    [JsonPropertyName("conversationId")] public string ConversationId { get; set; } = string.Empty;
+    [JsonPropertyName("timestamp")] public long Timestamp { get; set; }
+    [JsonPropertyName("messageId")] public string? MessageId { get; set; }
+    [JsonPropertyName("role")] public string? Role { get; set; }
+    [JsonPropertyName("message")] public string Message { get; set; } = string.Empty;
+    [JsonPropertyName("type")] public string Type { get; set; } = string.Empty;
+    [JsonPropertyName("ttl")] public int? Ttl { get; set; }
+    [JsonPropertyName("tenantId")] public string? TenantId { get; set; }
+    [JsonPropertyName("userId")] public string? UserId { get; set; }
+    [JsonPropertyName("sessionId")] public string? SessionId { get; set; }
+}
+
+
 internal sealed class CosmosChatMessageRepository
 {
     private readonly Container _container;
     private readonly ILogger _logger;
     private readonly bool _isEmulator;
+    private int _maxItemCount = 100;
+    private int _maxBatchSize = 100;
 
     /// <summary>
     /// Gets or sets the maximum number of messages to return in a single query batch.
     /// Default is 100 for optimal performance.
     /// </summary>
-    public int MaxItemCount { get; set; } = 100;
+    public int MaxItemCount
+    {
+        get => _maxItemCount;
+        set
+        {
+            if (value <= 0)
+            {
+                throw new ArgumentOutOfRangeException(nameof(value), "MaxItemCount must be greater than 0.");
+            }
+
+            _maxItemCount = value;
+        }
+    }
 
     /// <summary>
     /// Gets or sets the maximum number of items per transactional batch operation.
     /// Default is 100, maximum allowed by Cosmos DB is 100.
     /// Note: This setting is ignored when connected to the emulator.
     /// </summary>
-    public int MaxBatchSize { get; set; } = 100;
+    public int MaxBatchSize
+    {
+        get => _maxBatchSize;
+        set
+        {
+            if (value <= 0 || value > 100)
+            {
+                throw new ArgumentOutOfRangeException(nameof(value), "MaxBatchSize must be between 1 and 100.");
+            }
+
+            _maxBatchSize = value;
+        }
+    }
 
     /// <summary>
-    /// Initializes a new instance of the <see cref="CosmosChatMessageRepository"/> class.
+    /// Determines if the given CosmosClient is connected to the local emulator.
     /// </summary>
-    /// <param name="container">The Cosmos DB container.</param>
-    /// <param name="isEmulator">Whether connected to the Cosmos DB emulator.</param>
-    /// <param name="logger">Optional logger for diagnostics.</param>
-    public CosmosChatMessageRepository(Container container, bool isEmulator, ILogger? logger = null)
+    /// <param name="cosmosClient">The CosmosClient to check.</param>
+    /// <returns>True if connected to the emulator, false otherwise.</returns>
+    private static bool DetectEmulator(CosmosClient cosmosClient) =>
+        cosmosClient.Endpoint?.Host is { } host &&
+        (host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
+         host.StartsWith("127.", StringComparison.OrdinalIgnoreCase) ||
+         host.Equals("host.docker.internal", StringComparison.OrdinalIgnoreCase));
+
+
+    public CosmosChatMessageRepository(CosmosClient cosmosClient, string databaseId, string containerId, ILogger? logger=null)
     {
-        ArgumentNullException.ThrowIfNull(container);
-        _container = container;
-        _isEmulator = isEmulator;
+        ArgumentNullException.ThrowIfNull(cosmosClient, nameof(cosmosClient));
+        ArgumentException.ThrowIfNullOrWhiteSpace(databaseId, nameof(databaseId));
+        ArgumentException.ThrowIfNullOrEmpty(containerId, nameof(containerId));
+
+        _container = cosmosClient.GetContainer(databaseId, containerId);
+        _isEmulator = DetectEmulator(cosmosClient);
         _logger = logger ?? NullLogger.Instance;
     }
 
@@ -55,7 +103,7 @@ internal sealed class CosmosChatMessageRepository
     /// <param name="maxMessages">Optional maximum number of messages to retrieve.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
     /// <returns>A list of message documents and the total RU consumed.</returns>
-    public async Task<(List<CosmosMessageDocument> Documents, double RequestCharge)> GetMessagesAsync(
+    public async Task<List<CosmosMessageDocument>> GetMessageDocumentAsync(
         string conversationId,
         PartitionKey partitionKey,
         int? maxMessages = null,
@@ -85,23 +133,33 @@ internal sealed class CosmosChatMessageRepository
             foreach (var document in response)
             {
                 if (maxMessages.HasValue && documents.Count >= maxMessages.Value)
+                { 
                     break;
+                }
 
-                documents.Add(document);
+                if (!string.IsNullOrEmpty(document.Message))
+                {
+                    documents.Add(document);
+                }
+
             }
 
             if (maxMessages.HasValue && documents.Count >= maxMessages.Value)
+            {
                 break;
+            }
         }
 
         // If we fetched in descending order (most recent first), reverse to ascending order
         if (maxMessages.HasValue)
+        {
             documents.Reverse();
+        }
 
-        _logger.LogDebug("Retrieved {DocumentCount} documents for conversation {ConversationId}, RU: {RequestCharge:F2}",
+        _logger.LogDebug("Retrieved {MessageCount} message documents for conversation {ConversationId}, RU: {RequestCharge:F2}",
             documents.Count, conversationId, totalRu);
 
-        return (documents, totalRu);
+        return documents;
     }
 
     /// <summary>
@@ -111,20 +169,18 @@ internal sealed class CosmosChatMessageRepository
     /// <param name="documents">The documents to store.</param>
     /// <param name="partitionKey">The partition key for the documents.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>The total RU consumed.</returns>
-    public async Task<double> StoreDocumentsAsync(
-        IList<CosmosMessageDocument> documents,
+    public async Task StoreDocumentsAsync(
+        List<CosmosMessageDocument> documents,
         PartitionKey partitionKey,
         CancellationToken cancellationToken = default)
     {
         if (documents.Count == 0)
         {
             _logger.LogDebug("No documents to store");
-            return 0.0;
+            return;
         }
 
         _logger.LogDebug("Storing {DocumentCount} documents", documents.Count);
-
         double totalRu;
         if (_isEmulator)
         {
@@ -136,7 +192,8 @@ internal sealed class CosmosChatMessageRepository
         }
 
         _logger.LogDebug("Successfully stored {DocumentCount} documents, RU: {RequestCharge:F2}", documents.Count, totalRu);
-        return totalRu;
+        
+        return;
     }
 
     /// <summary>
@@ -145,13 +202,12 @@ internal sealed class CosmosChatMessageRepository
     /// <param name="conversationId">The conversation ID.</param>
     /// <param name="partitionKey">The partition key.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>The number of deleted messages and total RU consumed.</returns>
-    public async Task<(int DeletedCount, double RequestCharge)> DeleteMessagesAsync(
+    public async Task<int> DeleteDocumentsAsync(
         string conversationId,
         PartitionKey partitionKey,
         CancellationToken cancellationToken = default)
     {
-        _logger.LogDebug("Deleting all messages for conversation {ConversationId}", conversationId);
+        _logger.LogDebug("Deleting all documents for conversation {ConversationId}", conversationId);
 
         var query = new QueryDefinition("SELECT VALUE c.id FROM c WHERE c.conversationId = @conversationId AND c.type = @type")
             .WithParameter("@conversationId", conversationId)
@@ -185,7 +241,9 @@ internal sealed class CosmosChatMessageRepository
             {
                 var batch = _container.CreateTransactionalBatch(partitionKey);
                 foreach (var itemId in itemIds)
+                {
                     batch.DeleteItem(itemId);
+                }
 
                 var batchResponse = await batch.ExecuteAsync(cancellationToken).ConfigureAwait(false);
                 totalRu += batchResponse.RequestCharge;
@@ -196,7 +254,7 @@ internal sealed class CosmosChatMessageRepository
         _logger.LogDebug("Deleted {DeletedCount} messages for conversation {ConversationId}, RU: {RequestCharge:F2}",
             deletedCount, conversationId, totalRu);
 
-        return (deletedCount, totalRu);
+        return deletedCount;
     }
 
     /// <summary>
@@ -205,8 +263,8 @@ internal sealed class CosmosChatMessageRepository
     /// <param name="conversationId">The conversation ID.</param>
     /// <param name="partitionKey">The partition key.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>The message count and RU consumed.</returns>
-    public async Task<(int Count, double RequestCharge)> GetMessageCountAsync(
+    /// <returns>The document count </returns>
+    public async Task<int> GetDocumentCountAsync(
         string conversationId,
         PartitionKey partitionKey,
         CancellationToken cancellationToken = default)
@@ -226,8 +284,11 @@ internal sealed class CosmosChatMessageRepository
         _logger.LogDebug("Message count for conversation {ConversationId}: {Count}, RU: {RequestCharge:F2}",
             conversationId, count, response.RequestCharge);
 
-        return (count, response.RequestCharge);
+        return count;
     }
+
+
+    //TODO: da rivedere tutti i nuovi usano la stessa target per cui lo posso fare transazioneale!!!!
 
     /// <summary>
     /// Copies documents to a new conversation ID (for archiving).
@@ -238,26 +299,22 @@ internal sealed class CosmosChatMessageRepository
     /// <param name="tenantId">Optional tenant ID for hierarchical partitioning.</param>
     /// <param name="userId">Optional user ID for hierarchical partitioning.</param>
     /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>The total RU consumed.</returns>
-    public async Task<double> CopyDocumentsToConversationAsync(
+    public async Task CopyDocumentsAsync(
         IList<CosmosMessageDocument> documents,
         string targetConversationId,
         PartitionKey targetPartitionKey,
-        string? tenantId = null,
-        string? userId = null,
         CancellationToken cancellationToken = default)
     {
         if (documents.Count == 0)
         {
             _logger.LogDebug("No documents to copy");
-            return 0.0;
+            return;
         }
 
         _logger.LogDebug("Copying {DocumentCount} documents to conversation {TargetConversationId}",
             documents.Count, targetConversationId);
 
-        var totalRu = 0.0;
-        var useHierarchicalPartitioning = tenantId is not null && userId is not null;
+        List<CosmosMessageDocument> archivedDocuments = new List<CosmosMessageDocument>(documents.Count);
 
         // Note: We can't use transactional batch across different partition keys
         foreach (var doc in documents)
@@ -272,20 +329,27 @@ internal sealed class CosmosChatMessageRepository
                 Message = doc.Message,
                 Type = doc.Type,
                 Ttl = null, // Archived messages don't expire
-                TenantId = useHierarchicalPartitioning ? tenantId : null,
-                UserId = useHierarchicalPartitioning ? userId : null,
-                SessionId = useHierarchicalPartitioning ? targetConversationId : null
+                TenantId = doc.TenantId,
+                UserId = doc.UserId,
+                SessionId = doc.SessionId
             };
 
-            var createResponse = await _container.CreateItemAsync(archivedDoc, targetPartitionKey, cancellationToken: cancellationToken).ConfigureAwait(false);
-            totalRu += createResponse.RequestCharge;
+            archivedDocuments.Add(archivedDoc);
         }
 
-        _logger.LogDebug("Copied {DocumentCount} documents to {TargetConversationId}, RU: {RequestCharge:F2}",
-            documents.Count, targetConversationId, totalRu);
+        double totalRu;
+        if (_isEmulator)
+        {
+            totalRu = await AddDocumentsSequentiallyAsync(archivedDocuments, targetPartitionKey, cancellationToken).ConfigureAwait(false);
+        }
+        else
+        {
+            totalRu = await AddDocumentsWithBatchAsync(archivedDocuments, targetPartitionKey, cancellationToken).ConfigureAwait(false);
+        }
 
-        return totalRu;
+        _logger.LogDebug("Copied {DocumentCount} documents to {TargetConversationId}, RU: {RequestCharge:F2}",  documents.Count, targetConversationId, totalRu);
     }
+
 
     #region Private Helpers
 
@@ -373,23 +437,6 @@ internal sealed class CosmosChatMessageRepository
     }
 
     #endregion
+
 }
 
-/// <summary>
-/// Represents a chat message document stored in Cosmos DB.
-/// </summary>
-[SuppressMessage("Performance", "CA1812:Avoid uninstantiated internal classes", Justification = "Deserialized by Cosmos DB")]
-internal sealed class CosmosMessageDocument
-{
-    [JsonPropertyName("id")] public string Id { get; set; } = string.Empty;
-    [JsonPropertyName("conversationId")] public string ConversationId { get; set; } = string.Empty;
-    [JsonPropertyName("timestamp")] public long Timestamp { get; set; }
-    [JsonPropertyName("messageId")] public string? MessageId { get; set; }
-    [JsonPropertyName("role")] public string? Role { get; set; }
-    [JsonPropertyName("message")] public string Message { get; set; } = string.Empty;
-    [JsonPropertyName("type")] public string Type { get; set; } = string.Empty;
-    [JsonPropertyName("ttl")] public int? Ttl { get; set; }
-    [JsonPropertyName("tenantId")] public string? TenantId { get; set; }
-    [JsonPropertyName("userId")] public string? UserId { get; set; }
-    [JsonPropertyName("sessionId")] public string? SessionId { get; set; }
-}

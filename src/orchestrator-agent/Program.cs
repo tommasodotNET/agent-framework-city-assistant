@@ -6,7 +6,6 @@ using Microsoft.Agents.AI.Hosting.A2A;
 using Microsoft.Extensions.AI;
 using SharedServices;
 using System.ComponentModel;
-//using SharedServices;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -53,10 +52,10 @@ builder.Services.AddCosmosAgentSessionStore("sessions", opt => { opt.TtlSeconds 
 //Register the reducer for chat history
 #pragma warning disable MEAI001 // Type is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
 
-builder.Services.AddSingleton<IChatReducer, Microsoft.Extensions.AI.SummarizingChatReducer>( sp=> new SummarizingChatReducer(sp.GetRequiredService<IChatClient>(), 5,3));
-builder.Services.AddCosmosChatHistoryProvider("conversations", (sp, opt) => 
+builder.Services.AddSingleton<IChatReducer, Microsoft.Extensions.AI.SummarizingChatReducer>(sp => new SummarizingChatReducer(sp.GetRequiredService<IChatClient>(), 5, 3));
+builder.Services.AddCosmosChatHistoryProvider("conversations", (sp, opt) =>
 {
-    opt.MessageTtlSeconds = (86400 * 7);
+    opt.MessageTtlSeconds = 86400 * 7;
     //opt.ChatReducer = sp.GetRequiredService<IChatReducer>();
     //opt.ReductionStoragePolicy = ReductionStoragePolicy.Archive;
 });
