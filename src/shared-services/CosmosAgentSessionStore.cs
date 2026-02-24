@@ -120,7 +120,7 @@ public sealed class CosmosAgentSessionStore : AgentSessionStore
         var sessionItem = new CosmosSessionItem
         {
             Id = key,
-            AgentName = agent.Name??string.Empty,
+            AgentName = agent.Name ?? string.Empty,
             ConversationId = key,
             SerializedSession = JsonSerializer.Serialize(serializedSession, _serializationOptions),
             LastUpdated = DateTime.UtcNow,
