@@ -192,8 +192,6 @@ internal sealed class CosmosChatMessageRepository
         }
 
         _logger.LogDebug("Successfully stored {DocumentCount} documents, RU: {RequestCharge:F2}", documents.Count, totalRu);
-        
-        return;
     }
 
     /// <summary>
