@@ -1,9 +1,9 @@
-#:sdk Aspire.AppHost.Sdk@13.0.0
+﻿#:sdk Aspire.AppHost.Sdk@13.1.1
 #:package Aspire.Hosting.AppHost@13.0.0
-#:package Aspire.Hosting.Azure.AIFoundry@13.0.0-preview.1.25560.3
-#:package Aspire.Hosting.Azure.CosmosDB@13.0.0
-#:package Aspire.Hosting.JavaScript@13.0.0
-#:package Aspire.Hosting.Yarp@13.0.0
+#:package Aspire.Hosting.Azure.AIFoundry@13.1.1-preview.1.26105.8
+#:package Aspire.Hosting.Azure.CosmosDB@13.1.1
+#:package Aspire.Hosting.JavaScript@13.1.1
+#:package Aspire.Hosting.Yarp@13.1.1
 
 #:project ../restaurant-agent/RestaurantAgent.csproj
 #:project ../activities-agent/ActivitiesAgent.csproj
@@ -36,12 +36,15 @@ var cosmos = builder.AddAzureCosmosDB("cosmos-db")
             emulator.WithDataExplorer();
             emulator.WithLifetime(ContainerLifetime.Persistent);
         });
+        
 var db = cosmos.AddCosmosDatabase("db");
+var sessions = db.AddContainer("sessions", "/conversationId");
 var conversations = db.AddContainer("conversations", "/conversationId");
 
 var restaurantAgent = builder.AddProject("restaurantagent", "../restaurant-agent/RestaurantAgent.csproj")
     .WithHttpHealthCheck("/health")
     .WithReference(foundry).WaitFor(foundry)
+    .WithReference(sessions).WaitFor(sessions)
     .WithReference(conversations).WaitFor(conversations)
     .WithEnvironment("AZURE_TENANT_ID", tenantId)
     .WithUrls((e) =>
@@ -55,6 +58,7 @@ var geocodingMcpServer = builder.AddProject("geocodingmcpserver", "../geocoding-
 var activitiesAgent = builder.AddProject("activitiesagent", "../activities-agent/ActivitiesAgent.csproj")
     .WithHttpHealthCheck("/health")
     .WithReference(foundry).WaitFor(foundry)
+    .WithReference(sessions).WaitFor(sessions)
     .WithReference(conversations).WaitFor(conversations)
     .WithReference(geocodingMcpServer).WaitFor(geocodingMcpServer)
     .WithEnvironment("AZURE_TENANT_ID", tenantId)
@@ -66,6 +70,7 @@ var activitiesAgent = builder.AddProject("activitiesagent", "../activities-agent
 var accommodationAgent = builder.AddProject("accommodationagent", "../accommodation-agent/AccommodationAgent.csproj")
     .WithHttpHealthCheck("/health")
     .WithReference(foundry).WaitFor(foundry)
+    .WithReference(sessions).WaitFor(sessions)
     .WithReference(conversations).WaitFor(conversations)
     .WithReference(geocodingMcpServer).WaitFor(geocodingMcpServer)
     .WithEnvironment("AZURE_TENANT_ID", tenantId)
@@ -77,6 +82,7 @@ var accommodationAgent = builder.AddProject("accommodationagent", "../accommodat
 var orchestratorAgent = builder.AddProject("orchestratoragent", "../orchestrator-agent/OrchestratorAgent.csproj")
     .WithHttpHealthCheck("/health")
     .WithReference(foundry).WaitFor(foundry)
+    .WithReference(sessions).WaitFor(sessions)
     .WithReference(conversations).WaitFor(conversations)
     .WithReference(restaurantAgent).WaitFor(restaurantAgent)
     .WithReference(activitiesAgent).WaitFor(activitiesAgent)
