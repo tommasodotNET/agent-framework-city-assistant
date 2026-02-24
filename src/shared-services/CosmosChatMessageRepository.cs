@@ -286,7 +286,7 @@ internal sealed class CosmosChatMessageRepository
     }
 
 
-    //TODO: da rivedere tutti i nuovi usano la stessa target per cui lo posso fare transazioneale!!!!
+    // All new archived documents share the same target partition; batching logic below handles this efficiently.
 
     /// <summary>
     /// Copies documents to a new conversation ID (for archiving).
