@@ -29,7 +29,7 @@ builder.AddAzureChatCompletionsClient(connectionName: "foundry",
         settings.TokenCredential = new DefaultAzureCredential();
         settings.EnableSensitiveTelemetryData = true;
     })
-    .AddChatClient("gpt-4.1");
+    .AddChatClient("gpt-4.1").ConfigureOptions(options => options.AllowMultipleToolCalls = true);
 
 // Register Cosmos containers for session storage with a custom serializer to handle complex types
 builder.AddKeyedAzureCosmosContainer("sessions",
@@ -147,6 +147,8 @@ Always be friendly, helpful, and provide comprehensive responses based on the in
 
     var agent = chatClient.AsAIAgent(agentOptions, services: sp);
 
+    var ficc = agent.GetService<FunctionInvokingChatClient>();
+    ficc?.AllowConcurrentInvocation = true;
 
     return agent;
 }).WithCosmosSessionStore();
