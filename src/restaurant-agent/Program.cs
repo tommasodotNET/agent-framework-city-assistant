@@ -7,6 +7,7 @@ using Microsoft.Extensions.AI;
 using RestaurantAgent.Services;
 using RestaurantAgent.Tools;
 using SharedServices;
+using ModelContextProtocol.Client;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -24,6 +25,27 @@ builder.AddAzureChatCompletionsClient(connectionName: "foundry",
 // Register services
 builder.Services.AddSingleton<RestaurantService>();
 builder.Services.AddSingleton<RestaurantTools>();
+
+// Configure MCP Client for geocoding server
+var geocodingMcpUrl = builder.Configuration["services__geocodingmcpserver__https__0"]
+    ?? builder.Configuration["services__geocodingmcpserver__http__0"]
+    ?? "https://localhost:7299";
+
+// Append the MCP endpoint path
+var mcpEndpoint = new Uri(new Uri(geocodingMcpUrl), "/mcp");
+
+var transport = new HttpClientTransport(new HttpClientTransportOptions
+{
+    Endpoint = mcpEndpoint
+});
+
+var mcpClient = await McpClient.CreateAsync(transport);
+
+// Retrieve the list of tools available on the MCP geocoding server
+var mcpTools = await mcpClient.ListToolsAsync();
+
+// Register MCP client as a singleton
+builder.Services.AddSingleton(mcpClient);
 
 // Register OpenAI endpoints
 builder.Services.AddOpenAIResponses();
@@ -50,11 +72,11 @@ builder.AddAIAgent("restaurant-agent", (sp, key) =>
     var agentOptions = new ChatClientAgentOptions()
     {
         Name = key,
-        Description = "A friendly restaurant assistant that helps find restaurants",
+        Description = "A friendly restaurant assistant that helps find restaurants in Agentburg",
         ChatOptions = new ChatOptions()
         {
             Instructions = systemPrompt,
-            Tools = [.. restaurantTools]
+            Tools = [.. restaurantTools, .. mcpTools.Cast<AITool>()]
         }
     }.WithCosmosChatHistoryProvider(sp);
 
@@ -68,7 +90,7 @@ app.MapA2A("restaurant-agent", "/agenta2a", new AgentCard
 {
     Name = "restaurant-agent",
     Url = app.Configuration["ASPNETCORE_URLS"]?.Split(';')[0] + "/agenta2a" ?? "http://localhost:5196/agenta2a",
-    Description = "A restaurant assistant that helps find and recommend restaurants based on user preferences",
+    Description = "A restaurant assistant that helps find and recommend restaurants in Agentburg based on user preferences and location",
     Version = "1.0",
     DefaultInputModes = ["text"],
     DefaultOutputModes = ["text"],
@@ -81,11 +103,13 @@ app.MapA2A("restaurant-agent", "/agenta2a", new AgentCard
         new AgentSkill
         {
             Name = "Restaurant Search",
-            Description = "Find restaurants by category or keywords",
+            Description = "Find restaurants by category, keywords, or location in Agentburg",
             Examples = [
                 "Find me a vegetarian restaurant",
                 "What pizza places do you recommend?",
-                "Show me all restaurants"
+                "Show me all restaurants",
+                "Find a vegetarian restaurant near the Old Town Square",
+                "Japanese food near the Cultural Center"
             ]
         }
     ]

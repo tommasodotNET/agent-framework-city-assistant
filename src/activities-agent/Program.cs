@@ -91,7 +91,7 @@ app.MapA2A("activities-agent", "/agenta2a", new AgentCard
 {
     Name = "activities-agent",
     Url = app.Configuration["ASPNETCORE_URLS"]?.Split(';')[0] + "/agenta2a" ?? "http://localhost:5198/agenta2a",
-    Description = "An activities assistant that helps users discover and plan activities including museums, theaters, cultural events, and attractions",
+    Description = "An activities assistant that helps users discover and plan activities in Agentburg including museums, theaters, cultural events, and attractions",
     Version = "1.0",
     DefaultInputModes = ["text"],
     DefaultOutputModes = ["text"],
@@ -104,12 +104,14 @@ app.MapA2A("activities-agent", "/agenta2a", new AgentCard
         new AgentSkill
         {
             Name = "Activity Search",
-            Description = "Find museums, theaters, cultural events, and attractions",
+            Description = "Find museums, theaters, cultural events, and attractions in Agentburg",
             Examples = [
                 "Find me museums to visit",
                 "What theaters are available?",
                 "Show me cultural events",
-                "What attractions do you recommend?"
+                "What attractions do you recommend?",
+                "Museums near the Old Town Square",
+                "Activities near Castle Hill"
             ]
         }
     ]

@@ -74,7 +74,7 @@ builder.AddAIAgent("accommodation-agent", (sp, key) =>
     var agentOptions = new ChatClientAgentOptions()
     {
         Name = key,
-        Description = "A friendly accommodation assistant that helps find hotels, B&Bs, and other lodging",
+        Description = "A friendly accommodation assistant that helps find hotels, B&Bs, and other lodging in Agentburg",
         ChatOptions = new ChatOptions()
         {
             Instructions = systemPrompt,
@@ -92,7 +92,7 @@ app.MapA2A("accommodation-agent", "/agenta2a", new AgentCard
 {
     Name = "accommodation-agent",
     Url = app.Configuration["ASPNETCORE_URLS"]?.Split(';')[0] + "/agenta2a" ?? "http://localhost:5198/agenta2a",
-    Description = "An accommodation assistant that helps find and recommend hotels, B&Bs, and other lodging based on user preferences",
+    Description = "An accommodation assistant that helps find and recommend hotels, B&Bs, and other lodging in Agentburg based on user preferences",
     Version = "1.0",
     DefaultInputModes = ["text"],
     DefaultOutputModes = ["text"],
@@ -105,12 +105,13 @@ app.MapA2A("accommodation-agent", "/agenta2a", new AgentCard
         new AgentSkill
         {
             Name = "Accommodation Search",
-            Description = "Find accommodations by rating, location, amenities, price, and type",
+            Description = "Find accommodations by rating, location, amenities, price, and type in Agentburg",
             Examples = [
                 "Find me the best hotels",
-                "Show me hotels near the Colosseum",
+                "Show me hotels near the Old Town Square",
                 "Find a B&B with parking for less than 80€ per night",
-                "Hotels in Latina rated more than 4 stars"
+                "Hotels near Museum Mile rated more than 4 stars",
+                "Budget accommodation near the main station"
             ]
         }
     ]

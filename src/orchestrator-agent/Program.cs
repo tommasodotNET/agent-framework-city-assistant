@@ -170,15 +170,15 @@ app.MapA2A("orchestrator-agent", "/agenta2a", new AgentCard
             Description = "Help users with city-related tasks including restaurant recommendations, activity planning, and accommodation recommendations",
             Examples = [
                 "Find me a good restaurant",
-                "What's the best pizza place in the city?",
-                "Recommend a vegetarian restaurant",
+                "What's the best pizza place in Agentburg?",
+                "Recommend a vegetarian restaurant near the Old Town Square",
                 "What museums can I visit?",
-                "Show me theaters in the city",
+                "Show me theaters in Agentburg",
                 "What cultural events are happening?",
                 "What attractions do you recommend?",
-                "Find me a hotel near the Colosseum",
+                "Find me a hotel near the Castle Hill",
                 "Show me B&Bs with parking for less than 80€ per night",
-                "Where can I stay in Rome?"
+                "Where can I stay in Agentburg?"
             ]
         }
     ]
