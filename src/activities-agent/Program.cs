@@ -62,6 +62,8 @@ builder.AddKeyedAzureCosmosContainer("conversations",
 builder.Services.AddCosmosAgentSessionStore("sessions");
 builder.Services.AddCosmosChatHistoryProvider("conversations");
 
+var systemPrompt = File.ReadAllText(Path.Combine(builder.Environment.ContentRootPath, "Prompts", "system-prompt.txt"));
+
 // Register the activities agent
 builder.AddAIAgent("activities-agent", (sp, key) =>
 {
@@ -74,33 +76,7 @@ builder.AddAIAgent("activities-agent", (sp, key) =>
         Description = "A friendly activities assistant that helps discover museums, theaters, cultural events, and attractions",
         ChatOptions = new ChatOptions()
         {
-            Instructions = @"You are a helpful activities assistant for the city of Agentburg. You help users discover and plan activities during their trip.
-
-AVAILABLE TOOLS:
-1. geocode_location (MCP) - Convert addresses, city names, or landmark names to coordinates (latitude, longitude). Location must be in English.
-2. SearchActivitiesAsync - Search for activities using coordinates and other filters
-3. GetAllActivities - Get all available activities
-4. GetActivitiesByCategory - Get activities by category (museums, theaters, cultural_events, attractions)
-
-SEARCH WORKFLOW:
-ALWAYS geocode locations first! When users mention ANY location (landmark, neighborhood, or area), you MUST:
-1. Use geocode_location to convert the location to coordinates (pass English location names like 'Old Town Square', 'Castle Hill', 'Central Park', 'Museum Mile')
-2. Parse the JSON response to extract latitude and longitude
-3. Then use those coordinates with SearchActivitiesAsync
-
-You can search for activities by:
-- Category (museums, theaters, cultural_events, attractions)
-- Location using coordinates:
-  * ALWAYS use geocode_location first for ANY location in Agentburg (landmarks like 'Castle Hill Fortress', 'Old Town Square', neighborhoods like 'Harbor District' or 'University Quarter')
-  * Parse the returned JSON to get latitude and longitude values
-  * Then pass the latitude/longitude to SearchActivitiesAsync
-  * The default search radius is 1 km from the coordinates
-- Keywords in name or description
-
-Multiple criteria can be combined (e.g., 'find me museums near the Old Town Square').
-
-Each activity includes detailed information about hours, dates, pricing, restrictions, accessibility, location, and user reviews.
-Always be friendly and provide comprehensive information to help users plan their visit to Agentburg.",
+            Instructions = systemPrompt,
             Tools = [.. activitiesTools, .. mcpTools.Cast<AITool>()]
         }
     }.WithCosmosChatHistoryProvider(sp);

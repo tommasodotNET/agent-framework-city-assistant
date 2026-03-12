@@ -61,6 +61,8 @@ builder.AddKeyedAzureCosmosContainer("conversations",
 builder.Services.AddCosmosAgentSessionStore("sessions");
 builder.Services.AddCosmosChatHistoryProvider("conversations");
 
+var systemPrompt = File.ReadAllText(Path.Combine(builder.Environment.ContentRootPath, "Prompts", "system-prompt.txt"));
+
 // Register the restaurant agent
 builder.AddAIAgent("restaurant-agent", (sp, key) =>
 {
@@ -73,24 +75,7 @@ builder.AddAIAgent("restaurant-agent", (sp, key) =>
         Description = "A friendly restaurant assistant that helps find restaurants in Agentburg",
         ChatOptions = new ChatOptions()
         {
-            Instructions = @"You are a helpful restaurant assistant for the city of Agentburg. You help users find restaurants based on their preferences.
-
-AVAILABLE TOOLS:
-1. geocode_location (MCP) - Convert addresses, city names, or landmark names to coordinates (latitude, longitude). Location must be in English.
-2. SearchRestaurantsByLocation - Search for restaurants near a location using coordinates and optional filters
-3. GetRestaurantsByCategory - Get restaurants by category
-4. SearchRestaurants - Search restaurants by keywords
-5. GetAllRestaurants - Get all available restaurants
-
-SEARCH WORKFLOW FOR LOCATION-BASED QUERIES:
-When users mention ANY location (landmark, neighborhood, or attraction), you MUST:
-1. Use geocode_location to convert the location to coordinates (pass English location names like 'Old Town Square', 'Castle Hill', 'Central Park')
-2. Parse the JSON response to extract latitude and longitude
-3. Then use SearchRestaurantsByLocation with those coordinates
-
-Supported categories: vegetarian, pizza, japanese, seafood, french, indian, steakhouse
-
-All restaurants are located in Agentburg. Always be friendly and provide detailed information including name, address, phone, description, rating, and price range.",
+            Instructions = systemPrompt,
             Tools = [.. restaurantTools, .. mcpTools.Cast<AITool>()]
         }
     }.WithCosmosChatHistoryProvider(sp);
