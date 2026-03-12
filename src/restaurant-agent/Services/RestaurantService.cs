@@ -10,120 +10,120 @@ public class RestaurantService
     {
         _restaurants = new List<Restaurant>
         {
-            // Vegetarian Restaurants
+            // Vegetarian Restaurants (near public attractions in Agentburg)
             new Restaurant
             {
-                Name = "Green Garden",
+                Name = "The Green Sprout",
                 Category = "vegetarian",
-                Address = "123 Veggie Lane, Downtown",
-                Phone = "+1-555-0101",
-                Description = "A cozy vegetarian restaurant with fresh organic ingredients and creative plant-based dishes.",
+                Address = "3 Old Town Square, Old Town, Agentburg",
+                Phone = "+49-800-0101",
+                Description = "A cozy vegetarian restaurant just steps from the Old Town Square fountain, serving creative plant-based dishes made from locally sourced produce.",
                 Rating = 4.7,
-                PriceRange = "$$"
+                PriceRange = "$$",
+                Position = new Position { Latitude = 48.1006, Longitude = 11.0991 }
             },
             new Restaurant
             {
-                Name = "The Herbivore",
+                Name = "Herb & Garden Bistro",
                 Category = "vegetarian",
-                Address = "456 Plant Street, Midtown",
-                Phone = "+1-555-0102",
-                Description = "Modern vegetarian cuisine with a focus on local and seasonal produce.",
+                Address = "12 Park Lane, Central Park, Agentburg",
+                Phone = "+49-800-0102",
+                Description = "Modern vegetarian bistro overlooking Agentburg's Central Park, with a seasonal menu celebrating the freshest local vegetables and herbs.",
                 Rating = 4.5,
-                PriceRange = "$$$"
+                PriceRange = "$$$",
+                Position = new Position { Latitude = 48.1021, Longitude = 11.1028 }
             },
             new Restaurant
             {
-                Name = "Veggie Delight",
+                Name = "Roots & Leaves",
                 Category = "vegetarian",
-                Address = "789 Green Avenue, Uptown",
-                Phone = "+1-555-0103",
-                Description = "Family-friendly vegetarian restaurant offering comfort food classics made plant-based.",
-                Rating = 4.3,
-                PriceRange = "$"
+                Address = "8 Museum Avenue, Museum Mile, Agentburg",
+                Phone = "+49-800-0103",
+                Description = "Upscale vegetarian dining on Museum Mile, beloved by culture seekers after a visit to the History Museum. Known for its tasting menus and natural wines.",
+                Rating = 4.6,
+                PriceRange = "$$$",
+                Position = new Position { Latitude = 48.1048, Longitude = 11.1012 }
             },
 
             // Pizza Restaurants
             new Restaurant
             {
-                Name = "Napoli Pizza",
+                Name = "Casa Agentburg",
                 Category = "pizza",
-                Address = "321 Italian Way, Little Italy",
-                Phone = "+1-555-0201",
-                Description = "Authentic Neapolitan pizza made with imported Italian ingredients in a traditional wood-fired oven.",
+                Address = "5 Market Square, Agentburg",
+                Phone = "+49-800-0201",
+                Description = "Wood-fired Neapolitan-style pizza at the heart of Market Square. A local favourite for quick lunches and evening dinners.",
                 Rating = 4.8,
-                PriceRange = "$$"
+                PriceRange = "$$",
+                Position = new Position { Latitude = 48.1012, Longitude = 11.0962 }
             },
             new Restaurant
             {
-                Name = "Pizza Palace",
+                Name = "Old Town Pizza",
                 Category = "pizza",
-                Address = "654 Cheese Boulevard, Downtown",
-                Phone = "+1-555-0202",
-                Description = "New York-style pizza with generous toppings and crispy thin crust.",
+                Address = "17 Cobblestone Lane, Old Town, Agentburg",
+                Phone = "+49-800-0202",
+                Description = "Charming Old Town pizzeria tucked in a historic alley, serving crispy thin-crust pizzas with artisanal toppings since 1987.",
                 Rating = 4.6,
-                PriceRange = "$"
-            },
-            new Restaurant
-            {
-                Name = "Artisan Pizza Co",
-                Category = "pizza",
-                Address = "987 Gourmet Street, Arts District",
-                Phone = "+1-555-0203",
-                Description = "Creative gourmet pizzas with unique toppings and artisanal ingredients.",
-                Rating = 4.9,
-                PriceRange = "$$$"
+                PriceRange = "$",
+                Position = new Position { Latitude = 48.1004, Longitude = 11.0988 }
             },
 
             // Other Categories
             new Restaurant
             {
-                Name = "Sakura Sushi",
-                Category = "japanese",
-                Address = "111 Cherry Blossom Way, Japantown",
-                Phone = "+1-555-0301",
-                Description = "Traditional Japanese sushi restaurant with fresh fish and authentic preparation.",
+                Name = "Harbor Fish House",
+                Category = "seafood",
+                Address = "1 Quayside Walk, Harbor District, Agentburg",
+                Phone = "+49-800-0301",
+                Description = "Fresh seafood restaurant right on the harbor waterfront, with daily catches from the region's lakes and rivers.",
                 Rating = 4.7,
-                PriceRange = "$$$"
+                PriceRange = "$$$",
+                Position = new Position { Latitude = 48.0952, Longitude = 11.1098 }
             },
             new Restaurant
             {
-                Name = "Taco Fiesta",
-                Category = "mexican",
-                Address = "222 Salsa Street, Mission District",
-                Phone = "+1-555-0302",
-                Description = "Vibrant Mexican restaurant serving authentic tacos, burritos, and margaritas.",
-                Rating = 4.4,
-                PriceRange = "$"
+                Name = "Sakura Garden",
+                Category = "japanese",
+                Address = "22 Cultural Plaza, Cultural Center, Agentburg",
+                Phone = "+49-800-0302",
+                Description = "Authentic Japanese cuisine near the Cultural Center, featuring sushi, ramen, and seasonal omakase menus.",
+                Rating = 4.7,
+                PriceRange = "$$$",
+                Position = new Position { Latitude = 48.1016, Longitude = 11.0975 }
             },
             new Restaurant
             {
-                Name = "The French Table",
-                Category = "french",
-                Address = "333 Champagne Avenue, Financial District",
-                Phone = "+1-555-0303",
-                Description = "Elegant French bistro with classic dishes and an extensive wine selection.",
-                Rating = 4.8,
-                PriceRange = "$$$$"
-            },
-            new Restaurant
-            {
-                Name = "Curry House",
+                Name = "Spice Route",
                 Category = "indian",
-                Address = "444 Spice Road, Little India",
-                Phone = "+1-555-0304",
-                Description = "Aromatic Indian cuisine with a wide variety of curries, tandoori, and vegetarian options.",
-                Rating = 4.6,
-                PriceRange = "$$"
+                Address = "44 University Road, University Quarter, Agentburg",
+                Phone = "+49-800-0303",
+                Description = "Vibrant Indian restaurant beloved by students and faculty from the nearby university, with an extensive menu of curries, tandoori, and vegetarian options.",
+                Rating = 4.5,
+                PriceRange = "$$",
+                Position = new Position { Latitude = 48.1077, Longitude = 11.0950 }
             },
             new Restaurant
             {
-                Name = "The Steakhouse",
+                Name = "Castle Bistro",
+                Category = "french",
+                Address = "2 Fortress Road, Castle Hill, Agentburg",
+                Phone = "+49-800-0304",
+                Description = "Elegant French bistro at the foot of Castle Hill, offering classic Gallic cuisine with panoramic views of the old fortress.",
+                Rating = 4.8,
+                PriceRange = "$$$$",
+                Position = new Position { Latitude = 48.1058, Longitude = 11.0932 }
+            },
+            new Restaurant
+            {
+                Name = "Prime Steaks Agentburg",
                 Category = "steakhouse",
-                Address = "555 Prime Cut Lane, Financial District",
-                Phone = "+1-555-0305",
-                Description = "Premium steakhouse featuring aged beef, seafood, and an extensive wine cellar.",
+                Address = "9 Downtown Boulevard, City Center, Agentburg",
+                Phone = "+49-800-0305",
+                Description = "Premium steakhouse in the heart of Agentburg's city center, serving dry-aged cuts and an extensive cellar of regional wines.",
                 Rating = 4.9,
-                PriceRange = "$$$$"
+                PriceRange = "$$$$",
+                Position = new Position { Latitude = 48.1001, Longitude = 11.1003 }
             }
         };
     }
@@ -147,5 +147,49 @@ public class RestaurantService
             r.Category.ToLowerInvariant().Contains(normalizedQuery) ||
             r.Description.ToLowerInvariant().Contains(normalizedQuery)
         ).ToList();
+    }
+
+    public List<Restaurant> SearchRestaurantsByLocation(
+        double latitude,
+        double longitude,
+        double maxDistanceKm = 1.0,
+        string? category = null,
+        string? keywords = null)
+    {
+        var query = _restaurants.AsQueryable();
+
+        // Filter by distance
+        query = query.Where(r =>
+            CalculateDistance(latitude, longitude, r.Position.Latitude, r.Position.Longitude) <= maxDistanceKm);
+
+        // Filter by category
+        if (!string.IsNullOrWhiteSpace(category))
+        {
+            var normalizedCategory = category.ToLowerInvariant();
+            query = query.Where(r => r.Category.ToLowerInvariant() == normalizedCategory);
+        }
+
+        // Filter by keywords
+        if (!string.IsNullOrWhiteSpace(keywords))
+        {
+            var normalizedKeywords = keywords.ToLowerInvariant();
+            query = query.Where(r =>
+                r.Name.ToLowerInvariant().Contains(normalizedKeywords) ||
+                r.Description.ToLowerInvariant().Contains(normalizedKeywords));
+        }
+
+        return query.ToList();
+    }
+
+    private static double CalculateDistance(double lat1, double lon1, double lat2, double lon2)
+    {
+        const double earthRadiusKm = 6371.0;
+        var dLat = (lat2 - lat1) * Math.PI / 180.0;
+        var dLon = (lon2 - lon1) * Math.PI / 180.0;
+        var a = Math.Sin(dLat / 2) * Math.Sin(dLat / 2) +
+                Math.Cos(lat1 * Math.PI / 180.0) * Math.Cos(lat2 * Math.PI / 180.0) *
+                Math.Sin(dLon / 2) * Math.Sin(dLon / 2);
+        var c = 2 * Math.Atan2(Math.Sqrt(a), Math.Sqrt(1 - a));
+        return earthRadiusKm * c;
     }
 }

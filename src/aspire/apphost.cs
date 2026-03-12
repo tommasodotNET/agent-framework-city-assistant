@@ -42,19 +42,20 @@ var db = cosmos.AddCosmosDatabase("db");
 var sessions = db.AddContainer("sessions", "/conversationId");
 var conversations = db.AddContainer("conversations", "/conversationId");
 
+var geocodingMcpServer = builder.AddProject("geocodingmcpserver", "../geocoding-mcp-server/GeocodingMcpServer.csproj")
+    .WithHttpHealthCheck("/health");
+
 var restaurantAgent = builder.AddProject("restaurantagent", "../restaurant-agent/RestaurantAgent.csproj")
     .WithHttpHealthCheck("/health")
     .WithReference(foundry).WaitFor(foundry)
     .WithReference(sessions).WaitFor(sessions)
     .WithReference(conversations).WaitFor(conversations)
+    .WithReference(geocodingMcpServer).WaitFor(geocodingMcpServer)
     .WithEnvironment("AZURE_TENANT_ID", tenantId)
     .WithUrls((e) =>
     {
         e.Urls.Add(new() { Url = "/agenta2a/v1/card", DisplayText = "🤖Restaurant Agent A2A Card", Endpoint = e.GetEndpoint("https") });
     });
-
-var geocodingMcpServer = builder.AddProject("geocodingmcpserver", "../geocoding-mcp-server/GeocodingMcpServer.csproj")
-    .WithHttpHealthCheck("/health");
 
 var activitiesAgent = builder.AddProject("activitiesagent", "../activities-agent/ActivitiesAgent.csproj")
     .WithHttpHealthCheck("/health")

@@ -8,32 +8,40 @@ This MCP server exposes a geocoding tool that can be used by AI agents and other
 
 ## Features
 
-- **Mock Geocoding Data**: Includes pre-configured coordinates for Rome landmarks and cities
-- **Fallback Handling**: Returns Rome city center coordinates for unknown locations
+- **Mock Geocoding Data**: Includes pre-configured coordinates for Agentburg landmarks and neighborhoods
+- **Fallback Handling**: Returns Agentburg city center coordinates for unknown locations
 - **MCP Protocol**: Fully compliant with the Model Context Protocol specification
 - **HTTP Transport**: Accessible via HTTP/HTTPS endpoints
 
 ## Known Locations
 
-The server includes mock data for the following locations:
+The server includes mock data for the following locations in the fictional city of **Agentburg**:
 
-### Rome Landmarks
-- Colosseum / Coliseum
-- Roman Forum
-- Vatican / Vatican City
-- Pantheon
-- Trevi Fountain
-- Spanish Steps
-- Trastevere
+### Agentburg Landmarks & Attractions
+- Old Town Square
+- Castle Hill / Castle Hill Fortress
+- Agentburg History Museum / History Museum
+- Central Park
+- Botanical Garden
+- Harbor Waterfront
+- Market Square
+- Cultural Center / Grand Opera House / Agentburg Grand Opera
+- Tech Hub / Innovation District
+- Observation Tower
+- Harbor Lighthouse
 
-### Cities
-- Rome / Roma
-- Latina
+### Agentburg City
+- Agentburg
+- Agentburg City Center
+- Downtown Agentburg
 
-### Rome Areas
-- Downtown Rome
-- Rome City Center
-- Termini Station
+### Agentburg Neighborhoods
+- Old Town
+- Harbor District
+- Museum Mile
+- University Quarter / University District
+- Main Station
+- Science Park
 
 ## MCP Tool
 
@@ -42,7 +50,7 @@ The server includes mock data for the following locations:
 Geocodes an address or landmark to get its coordinates (latitude, longitude).
 
 **Parameters:**
-- `location` (string, required): Address or landmark name to geocode
+- `location` (string, required): Address or landmark name to geocode in English
 
 **Returns:**
 A JSON object containing:
@@ -57,10 +65,10 @@ A JSON object containing:
 ```json
 {
   "success": true,
-  "location": "Colosseum",
-  "latitude": 41.8902,
-  "longitude": 12.4922,
-  "message": "Successfully geocoded 'Colosseum' to coordinates"
+  "location": "Old Town Square",
+  "latitude": 48.1005,
+  "longitude": 11.0990,
+  "message": "Successfully geocoded 'Old Town Square' to coordinates"
 }
 ```
 
