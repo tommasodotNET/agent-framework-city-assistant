@@ -1,15 +1,17 @@
-﻿#:sdk Aspire.AppHost.Sdk@13.3.0-pr.14149.gd67070ad
-#:package Aspire.Hosting.Azure.AIFoundry@13.3.0-pr.14149.gd67070ad
-#:package Aspire.Hosting.Azure.CosmosDB@13.3.0-pr.14149.gd67070ad
-#:package Aspire.Hosting.JavaScript@13.3.0-pr.14149.gd67070ad
+﻿#:sdk Aspire.AppHost.Sdk@13.2.0-pr.14149.g805bf3d2
+#:package Aspire.Hosting.Foundry@13.2.0-pr.14149.g805bf3d2
+#:package Aspire.Hosting.Azure.CosmosDB@13.2.0-pr.14149.g805bf3d2
+#:package Aspire.Hosting.JavaScript@13.2.0-pr.14149.g805bf3d2
 #:package Aspire.Hosting.Yarp@13.2.0-pr.14149.g805bf3d2
 
 #:project ../restaurant-agent/RestaurantAgent.csproj
 #:project ../activities-agent/ActivitiesAgent.csproj
 #:project ../accommodation-agent/AccommodationAgent.csproj
+
 #:project ../orchestrator-agent/OrchestratorAgent.csproj
 #:project ../geocoding-mcp-server/GeocodingMcpServer.csproj
 
+using Aspire.Hosting.Foundry;
 using Aspire.Hosting.Yarp.Transforms;
 
 var builder = DistributedApplication.CreateBuilder(args);
@@ -20,7 +22,7 @@ var existingFoundryName = builder.AddParameter("existingFoundryName")
 var existingFoundryResourceGroup = builder.AddParameter("existingFoundryResourceGroup")
     .WithDescription("The resource group of the existing Azure Foundry resource.");
 
-var foundry = builder.AddAzureAIFoundry("foundry")
+var foundry = builder.AddFoundry("foundry")
     .AsExisting(existingFoundryName, existingFoundryResourceGroup);
 
 tenantId.WithParentRelationship(foundry);
