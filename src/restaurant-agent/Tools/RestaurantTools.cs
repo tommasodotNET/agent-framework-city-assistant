@@ -21,7 +21,7 @@ public class RestaurantTools
         return JsonSerializer.Serialize(restaurants);
     }
 
-    [Description("Search for restaurants by category. Supported categories: vegetarian, pizza, japanese, mexican, french, indian, steakhouse")]
+    [Description("Search for restaurants by category. Supported categories: vegetarian, pizza, japanese, seafood, french, indian, steakhouse")]
     public string GetRestaurantsByCategory(
         [Description("The category to filter restaurants by (e.g., 'vegetarian', 'pizza', 'japanese')")] string category)
     {
@@ -37,10 +37,23 @@ public class RestaurantTools
         return JsonSerializer.Serialize(restaurants);
     }
 
+    [Description("Search for restaurants near a specific location using coordinates. Use geocode_location first to obtain latitude and longitude for any named place.")]
+    public string SearchRestaurantsByLocation(
+        [Description("Latitude of the reference location")] double latitude,
+        [Description("Longitude of the reference location")] double longitude,
+        [Description("Maximum search radius in kilometers (default: 1.0)")] double maxDistanceKm = 1.0,
+        [Description("Optional category filter (e.g., 'vegetarian', 'pizza')")] string? category = null,
+        [Description("Optional keywords to narrow down results")] string? keywords = null)
+    {
+        var restaurants = _restaurantService.SearchRestaurantsByLocation(latitude, longitude, maxDistanceKm, category, keywords);
+        return JsonSerializer.Serialize(restaurants);
+    }
+
     public IEnumerable<AIFunction> GetFunctions()
     {
         yield return AIFunctionFactory.Create(GetAllRestaurants);
         yield return AIFunctionFactory.Create(GetRestaurantsByCategory);
         yield return AIFunctionFactory.Create(SearchRestaurants);
+        yield return AIFunctionFactory.Create(SearchRestaurantsByLocation);
     }
 }

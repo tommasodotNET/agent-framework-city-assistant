@@ -10,242 +10,166 @@ public class AccommodationService : IAccommodationService
     {
         _accommodations = new List<Accommodation>
         {
-            // Hotels in Rome near Colosseum
+            // Hotels
             new Accommodation
             {
                 Id = "1",
-                Name = "Grand Hotel Colosseo",
+                Name = "Grand Hotel Agentburg",
                 Type = AccommodationType.Hotel,
                 Rating = 4.8,
                 Amenities = ["parking", "room-service", "breakfast", "wifi", "gym", "restaurant"],
-                Position = new Location { Latitude = 41.8902, Longitude = 12.4922 },
+                Position = new Location { Latitude = 48.1005, Longitude = 11.0992 },
                 Address = new Address
                 {
-                    Street = "Via Labicana 125",
-                    City = "Rome",
-                    State = "Lazio",
-                    ZipCode = "00184",
-                    Country = "Italy"
+                    Street = "3 Old Town Square",
+                    City = "Agentburg",
+                    State = "Agentburg State",
+                    ZipCode = "AG1001",
+                    Country = "Agentland"
                 },
                 PricePerNight = 180.00m,
-                Description = "Luxury hotel strategically located just 200 meters from the iconic Colosseum, offering breathtaking ancient monument views from select rooms. Features elegantly appointed suites with marble bathrooms, a rooftop terrace restaurant serving authentic Italian cuisine, and a modern fitness center. Perfect for history enthusiasts and travelers seeking upscale comfort in the heart of ancient Rome. The property combines classical Roman architecture with contemporary amenities, including secure underground parking and 24/7 concierge service."
+                Description = "Luxury hotel overlooking Old Town Square, just steps from the Historic Fountain. Features elegant rooms with views of cobblestone streets, a rooftop restaurant, and a wellness spa."
             },
             new Accommodation
             {
                 Id = "2",
-                Name = "Hotel Forum",
+                Name = "Castle View Hotel",
                 Type = AccommodationType.Hotel,
                 Rating = 4.6,
-                Amenities = ["breakfast", "wifi", "restaurant", "bar"],
-                Position = new Location { Latitude = 41.8925, Longitude = 12.4853 },
+                Amenities = ["breakfast", "wifi", "restaurant", "bar", "parking"],
+                Position = new Location { Latitude = 48.1062, Longitude = 11.0933 },
                 Address = new Address
                 {
-                    Street = "Via Tor de' Conti 25",
-                    City = "Rome",
-                    State = "Lazio",
-                    ZipCode = "00184",
-                    Country = "Italy"
+                    Street = "5 Fortress Road",
+                    City = "Agentburg",
+                    State = "Agentburg State",
+                    ZipCode = "AG1060",
+                    Country = "Agentland"
                 },
                 PricePerNight = 150.00m,
-                Description = "Charming boutique hotel perched on a hilltop overlooking the majestic Roman Forum and Imperial Forums. The panoramic rooftop terrace offers stunning sunset views of ancient Rome's archaeological wonders. Rooms feature classic Italian decor with modern comforts, complimentary high-speed WiFi, and quality linens. The on-site restaurant specializes in traditional Roman cuisine with locally sourced ingredients. Ideal for couples and culture lovers seeking an intimate, authentic Roman experience in a historic setting."
+                Description = "Four-star hotel at the foot of Castle Hill with stunning fortress views from every room. Perfect for guests who want to explore the castle by day and dine at Agentburg's finest restaurants by night."
             },
             new Accommodation
             {
                 Id = "3",
-                Name = "Palazzo Manfredi",
+                Name = "Harbor Inn",
                 Type = AccommodationType.Hotel,
-                Rating = 4.9,
-                Amenities = ["parking", "room-service", "breakfast", "wifi", "gym", "spa", "restaurant", "pool"],
-                Position = new Location { Latitude = 41.8897, Longitude = 12.4964 },
+                Rating = 4.5,
+                Amenities = ["breakfast", "wifi", "parking", "restaurant", "bar"],
+                Position = new Location { Latitude = 48.0951, Longitude = 11.1099 },
                 Address = new Address
                 {
-                    Street = "Via Labicana 125",
-                    City = "Rome",
-                    State = "Lazio",
-                    ZipCode = "00184",
-                    Country = "Italy"
+                    Street = "8 Quayside Walk",
+                    City = "Agentburg",
+                    State = "Agentburg State",
+                    ZipCode = "AG0950",
+                    Country = "Agentland"
                 },
-                PricePerNight = 450.00m,
-                Description = "Five-star luxury boutique hotel offering unparalleled exclusive views of the Colosseum from every room and the Michelin-starred rooftop restaurant Aroma. This intimate palace features only 18 elegantly designed suites with bespoke furnishings, Italian marble bathrooms with chromotherapy showers, and state-of-the-art technology. Guests enjoy personalized butler service, a tranquil spa with Roman-inspired treatments, an outdoor pool, and valet parking. The hotel seamlessly blends Renaissance elegance with contemporary luxury, catering to discerning travelers seeking the ultimate Roman experience."
+                PricePerNight = 120.00m,
+                Description = "Charming waterfront hotel in the vibrant Harbor District, with panoramic views of the marina. Home to the award-winning Harbor Fish House restaurant next door. Great for seafood lovers."
             },
-            
-            // B&Bs in Rome
+
+            // Bed & Breakfasts
             new Accommodation
             {
                 Id = "4",
-                Name = "Colosseum B&B",
+                Name = "Old Town B&B",
                 Type = AccommodationType.BedAndBreakfast,
-                Rating = 4.5,
-                Amenities = ["breakfast", "wifi", "parking"],
-                Position = new Location { Latitude = 41.8905, Longitude = 12.4930 },
+                Rating = 4.7,
+                Amenities = ["breakfast", "wifi", "air-conditioning"],
+                Position = new Location { Latitude = 48.1007, Longitude = 11.0988 },
                 Address = new Address
                 {
-                    Street = "Via Capo d'Africa 21",
-                    City = "Rome",
-                    State = "Lazio",
-                    ZipCode = "00184",
-                    Country = "Italy"
+                    Street = "12 Cobblestone Lane",
+                    City = "Agentburg",
+                    State = "Agentburg State",
+                    ZipCode = "AG1005",
+                    Country = "Agentland"
                 },
                 PricePerNight = 75.00m,
-                Description = "Cozy family-run bed and breakfast located just 150 steps from the Colosseum, offering warm Italian hospitality in a residential neighborhood. Each morning, guests enjoy a generous homemade breakfast featuring fresh pastries, local cheeses, seasonal fruits, and Italian espresso. The bright, comfortable rooms are decorated with traditional Italian furnishings and equipped with air conditioning and free WiFi. Street parking is available nearby. Perfect for budget-conscious travelers who want proximity to major attractions while experiencing authentic Roman living. The friendly owners provide personalized recommendations for local restaurants and hidden gems."
+                Description = "Cozy family-run bed and breakfast in Agentburg's historic Old Town, just around the corner from the Old Town Square. Homemade breakfasts with local products, and the owners are a goldmine of local tips."
             },
             new Accommodation
             {
                 Id = "5",
-                Name = "Trastevere Hideaway",
+                Name = "University Guesthouse",
                 Type = AccommodationType.BedAndBreakfast,
-                Rating = 4.7,
-                Amenities = ["breakfast", "wifi", "air-conditioning"],
-                Position = new Location { Latitude = 41.8899, Longitude = 12.4707 },
+                Rating = 4.4,
+                Amenities = ["breakfast", "wifi", "shared-kitchen", "parking"],
+                Position = new Location { Latitude = 48.1079, Longitude = 11.0949 },
                 Address = new Address
                 {
-                    Street = "Via della Paglia 15",
-                    City = "Rome",
-                    State = "Lazio",
-                    ZipCode = "00153",
-                    Country = "Italy"
+                    Street = "33 Campus Road",
+                    City = "Agentburg",
+                    State = "Agentburg State",
+                    ZipCode = "AG1080",
+                    Country = "Agentland"
                 },
-                PricePerNight = 65.00m,
-                Description = "Charming bed and breakfast nestled in the vibrant, bohemian Trastevere neighborhood, known for its cobblestone streets, artisan shops, and lively trattorias. This restored 17th-century building offers uniquely decorated rooms with original frescoed ceilings, terracotta floors, and antique furnishings that capture Rome's artistic soul. Guests savor authentic Roman breakfast with homemade jams and fresh bread on a sunny courtyard terrace. The area comes alive at night with street musicians and local wine bars. Ideal for travelers seeking an immersive cultural experience in Rome's most authentic neighborhood, away from tourist crowds."
+                PricePerNight = 60.00m,
+                Description = "Welcoming guesthouse in the heart of the University Quarter, popular with academics and budget-conscious travellers. Communal kitchen, leafy courtyard, and close to Spice Route restaurant."
             },
-            
-            // Hotels in Latina
+
+            // Hostel
             new Accommodation
             {
                 Id = "6",
-                Name = "Hotel Latina",
-                Type = AccommodationType.Hotel,
-                Rating = 4.2,
-                Amenities = ["breakfast", "wifi", "parking", "restaurant", "bar"],
-                Position = new Location { Latitude = 41.4677, Longitude = 12.9037 },
+                Name = "Central Park Hostel",
+                Type = AccommodationType.Hostel,
+                Rating = 4.1,
+                Amenities = ["wifi", "breakfast", "shared-kitchen"],
+                Position = new Location { Latitude = 48.1019, Longitude = 11.1029 },
                 Address = new Address
                 {
-                    Street = "Viale Kennedy 50",
-                    City = "Latina",
-                    State = "Lazio",
-                    ZipCode = "04100",
-                    Country = "Italy"
+                    Street = "20 Park Lane",
+                    City = "Agentburg",
+                    State = "Agentburg State",
+                    ZipCode = "AG1020",
+                    Country = "Agentland"
                 },
-                PricePerNight = 85.00m,
-                Description = "Modern business-oriented hotel in the heart of Latina's city center, ideal for both corporate travelers and tourists exploring the region. Features contemporary, functional rooms with work desks, complimentary WiFi, and soundproofing for a peaceful stay. The on-site restaurant serves Mediterranean cuisine with a focus on regional Lazio specialties, while the bar offers a relaxed atmosphere for evening drinks. Ample free parking available. Conveniently located within walking distance of Latina's main shopping district, government offices, and the train station for day trips to Rome or the nearby coastal towns."
+                PricePerNight = 28.00m,
+                Description = "Budget-friendly hostel facing Agentburg's Central Park and Botanical Garden. Offers dorm beds and private rooms. A great base for young travellers wanting to explore the city on foot."
             },
+
+            // Boutique
             new Accommodation
             {
                 Id = "7",
-                Name = "Park Hotel",
-                Type = AccommodationType.Hotel,
-                Rating = 4.4,
-                Amenities = ["breakfast", "wifi", "parking", "gym", "restaurant", "pool"],
-                Position = new Location { Latitude = 41.4701, Longitude = 12.9049 },
+                Name = "Museum Mile Boutique Hotel",
+                Type = AccommodationType.Boutique,
+                Rating = 4.9,
+                Amenities = ["wifi", "room-service", "breakfast", "bar", "concierge", "spa"],
+                Position = new Location { Latitude = 48.1052, Longitude = 11.1012 },
                 Address = new Address
                 {
-                    Street = "Via Isonzo 45",
-                    City = "Latina",
-                    State = "Lazio",
-                    ZipCode = "04100",
-                    Country = "Italy"
+                    Street = "6 Museum Avenue",
+                    City = "Agentburg",
+                    State = "Agentburg State",
+                    ZipCode = "AG1050",
+                    Country = "Agentland"
                 },
-                PricePerNight = 110.00m,
-                Description = "Elegant four-star hotel set in a tranquil location with beautifully landscaped gardens and mature trees. The property features a seasonal outdoor swimming pool surrounded by sun loungers, a modern wellness center with sauna and spa treatments, and a well-equipped fitness room. Spacious rooms blend classic Italian style with modern comfort, featuring balconies overlooking the gardens. The gourmet restaurant emphasizes farm-to-table cuisine using ingredients from local producers. Perfect for families and wellness seekers looking for a relaxing retreat while maintaining easy access to both Latina city center and the pristine beaches of the Tyrrhenian coast."
+                PricePerNight = 320.00m,
+                Description = "Exquisite boutique hotel on the prestigious Museum Mile, minutes from the Agentburg History Museum and the Modern Art Gallery. Each suite is individually designed with curated artworks, blending cultural immersion with luxury comfort."
             },
-            
-            // Budget-friendly options
+
+            // Budget hotel
             new Accommodation
             {
                 Id = "8",
-                Name = "Hostel Roma",
-                Type = AccommodationType.Hostel,
-                Rating = 4.0,
-                Amenities = ["wifi", "breakfast", "shared-kitchen"],
-                Position = new Location { Latitude = 41.9028, Longitude = 12.4964 },
-                Address = new Address
-                {
-                    Street = "Via Castro Pretorio 25",
-                    City = "Rome",
-                    State = "Lazio",
-                    ZipCode = "00185",
-                    Country = "Italy"
-                },
-                PricePerNight = 30.00m,
-                Description = "Budget-friendly hostel strategically located near Termini Central Station, Rome's main transportation hub, making it ideal for backpackers and budget travelers. Offers both dormitory beds and private rooms, all maintained to high cleanliness standards. Features include a fully equipped communal kitchen where guests can prepare meals, free WiFi throughout, lockers for secure storage, and a common area perfect for meeting fellow travelers. Continental breakfast included. The multilingual staff organizes regular social events and walking tours. Located in a safe neighborhood with easy access to metro lines connecting to all major attractions, supermarkets, and affordable eateries."
-            },
-            new Accommodation
-            {
-                Id = "9",
-                Name = "Budget Inn Rome",
-                Type = AccommodationType.Hotel,
-                Rating = 3.8,
-                Amenities = ["wifi", "breakfast"],
-                Position = new Location { Latitude = 41.8980, Longitude = 12.4872 },
-                Address = new Address
-                {
-                    Street = "Via Nazionale 230",
-                    City = "Rome",
-                    State = "Lazio",
-                    ZipCode = "00184",
-                    Country = "Italy"
-                },
-                PricePerNight = 45.00m,
-                Description = "Affordable no-frills hotel on Via Nazionale, one of Rome's main shopping streets connecting Termini Station to Piazza Venezia. Provides clean, basic accommodations perfect for travelers prioritizing location over luxury. Rooms are compact but functional, equipped with essential amenities including air conditioning, free WiFi, and private bathrooms. Continental breakfast served in a simple dining room. The exceptional central location allows guests to walk to the Colosseum, Trevi Fountain, and Spanish Steps within 15-20 minutes. Surrounded by restaurants, cafes, and shops offering various price points. Excellent value for money for independent travelers and those spending most time sightseeing."
-            },
-            
-            // More variety
-            new Accommodation
-            {
-                Id = "10",
-                Name = "Vatican View B&B",
-                Type = AccommodationType.BedAndBreakfast,
-                Rating = 4.6,
-                Amenities = ["breakfast", "wifi", "parking", "air-conditioning"],
-                Position = new Location { Latitude = 41.9029, Longitude = 12.4534 },
-                Address = new Address
-                {
-                    Street = "Via Germanico 198",
-                    City = "Rome",
-                    State = "Lazio",
-                    ZipCode = "00192",
-                    Country = "Italy"
-                },
-                PricePerNight = 80.00m,
-                Description = "Lovely bed and breakfast in the prestigious Prati district, offering stunning views of St. Peter's Basilica dome from the terrace breakfast area. This elegant guesthouse occupies the top floor of a classic Roman building with an elevator, featuring beautifully decorated rooms that combine antique furniture with modern comforts. The abundant breakfast spread includes fresh Italian pastries, premium coffee, homemade cakes, and organic products. Located in a quiet residential area just 500 meters from the Vatican Museums, surrounded by authentic local markets, artisan gelaterias, and family-owned restaurants. Secure parking garage available. Perfect for pilgrims, art enthusiasts, and visitors seeking a peaceful base near Vatican City."
-            },
-            new Accommodation
-            {
-                Id = "11",
-                Name = "Pantheon Suites",
-                Type = AccommodationType.Boutique,
-                Rating = 4.8,
-                Amenities = ["wifi", "room-service", "breakfast", "bar", "concierge"],
-                Position = new Location { Latitude = 41.8986, Longitude = 12.4768 },
-                Address = new Address
-                {
-                    Street = "Piazza della Rotonda 73",
-                    City = "Rome",
-                    State = "Lazio",
-                    ZipCode = "00186",
-                    Country = "Italy"
-                },
-                PricePerNight = 280.00m,
-                Description = "Exclusive boutique hotel occupying a prime position directly on the iconic Piazza della Rotonda, with front-facing rooms offering spectacular views of the ancient Pantheon, one of Rome's most perfectly preserved monuments. This luxurious property features individually designed suites with high frescoed ceilings, designer furnishings, rainfall showers, and Nespresso machines. The attentive concierge team arranges private tours, restaurant reservations at Rome's finest establishments, and exclusive experiences. Gourmet breakfast served in-room or on the panoramic terrace. The location is unbeatable—steps from Piazza Navona, Trevi Fountain, and surrounded by high-end boutiques, historic cafes, and artisan workshops. Ideal for romantic getaways and luxury travelers."
-            },
-            new Accommodation
-            {
-                Id = "12",
-                Name = "Termini Budget Hotel",
+                Name = "Main Station Budget Hotel",
                 Type = AccommodationType.Hotel,
                 Rating = 3.9,
                 Amenities = ["wifi", "breakfast", "24-hour-reception"],
-                Position = new Location { Latitude = 41.9008, Longitude = 12.5015 },
+                Position = new Location { Latitude = 48.0991, Longitude = 11.1021 },
                 Address = new Address
                 {
-                    Street = "Via Marsala 80",
-                    City = "Rome",
-                    State = "Lazio",
-                    ZipCode = "00185",
-                    Country = "Italy"
+                    Street = "1 Station Road",
+                    City = "Agentburg",
+                    State = "Agentburg State",
+                    ZipCode = "AG0990",
+                    Country = "Agentland"
                 },
                 PricePerNight = 55.00m,
-                Description = "Simple, practical hotel located directly across from Termini Railway Station, Rome's central transportation hub for trains, buses, and metro lines. Ideal for travelers with early departures, late arrivals, or those planning day trips to Naples, Florence, or other Italian cities. Rooms are basic but clean, equipped with essential amenities including air conditioning, private bathroom, and free WiFi. The 24-hour reception provides flexibility for any arrival time and luggage storage. While lacking luxury touches, the hotel offers unbeatable convenience for exploring Rome via public transport, with direct metro access to all major sites. Surrounded by numerous budget restaurants, grocery stores, and travel services."
+                Description = "Convenient budget hotel directly opposite Agentburg Main Station. Ideal for transit passengers and early-morning travellers. Basic but clean rooms, 24-hour reception, and easy walking distance to the city center."
             }
         };
     }

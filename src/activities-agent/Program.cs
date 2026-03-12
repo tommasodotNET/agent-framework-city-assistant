@@ -74,7 +74,7 @@ builder.AddAIAgent("activities-agent", (sp, key) =>
         Description = "A friendly activities assistant that helps discover museums, theaters, cultural events, and attractions",
         ChatOptions = new ChatOptions()
         {
-            Instructions = @"You are a helpful activities assistant. You help users discover and plan activities during their trip.
+            Instructions = @"You are a helpful activities assistant for the city of Agentburg. You help users discover and plan activities during their trip.
 
 AVAILABLE TOOLS:
 1. geocode_location (MCP) - Convert addresses, city names, or landmark names to coordinates (latitude, longitude). Location must be in English.
@@ -83,24 +83,24 @@ AVAILABLE TOOLS:
 4. GetActivitiesByCategory - Get activities by category (museums, theaters, cultural_events, attractions)
 
 SEARCH WORKFLOW:
-ALWAYS geocode locations first! When users mention ANY location (city, landmark, or address), you MUST:
-1. Use geocode_location to convert the location to coordinates (pass English location names)
+ALWAYS geocode locations first! When users mention ANY location (landmark, neighborhood, or area), you MUST:
+1. Use geocode_location to convert the location to coordinates (pass English location names like 'Old Town Square', 'Castle Hill', 'Central Park', 'Museum Mile')
 2. Parse the JSON response to extract latitude and longitude
 3. Then use those coordinates with SearchActivitiesAsync
 
 You can search for activities by:
 - Category (museums, theaters, cultural_events, attractions)
 - Location using coordinates:
-  * ALWAYS use geocode_location first for ANY location (cities like 'Rome' or 'Latina', landmarks like 'Colosseum' or 'Vatican', addresses)
+  * ALWAYS use geocode_location first for ANY location in Agentburg (landmarks like 'Castle Hill Fortress', 'Old Town Square', neighborhoods like 'Harbor District' or 'University Quarter')
   * Parse the returned JSON to get latitude and longitude values
   * Then pass the latitude/longitude to SearchActivitiesAsync
   * The default search radius is 1 km from the coordinates
 - Keywords in name or description
 
-Multiple criteria can be combined (e.g., 'find me museums near the Colosseum').
+Multiple criteria can be combined (e.g., 'find me museums near the Old Town Square').
 
 Each activity includes detailed information about hours, dates, pricing, restrictions, accessibility, location, and user reviews.
-Always be friendly and provide comprehensive information to help users plan their visit.",
+Always be friendly and provide comprehensive information to help users plan their visit to Agentburg.",
             Tools = [.. activitiesTools, .. mcpTools.Cast<AITool>()]
         }
     }.WithCosmosChatHistoryProvider(sp);
@@ -115,7 +115,7 @@ app.MapA2A("activities-agent", "/agenta2a", new AgentCard
 {
     Name = "activities-agent",
     Url = app.Configuration["ASPNETCORE_URLS"]?.Split(';')[0] + "/agenta2a" ?? "http://localhost:5198/agenta2a",
-    Description = "An activities assistant that helps users discover and plan activities including museums, theaters, cultural events, and attractions",
+    Description = "An activities assistant that helps users discover and plan activities in Agentburg including museums, theaters, cultural events, and attractions",
     Version = "1.0",
     DefaultInputModes = ["text"],
     DefaultOutputModes = ["text"],
@@ -128,12 +128,14 @@ app.MapA2A("activities-agent", "/agenta2a", new AgentCard
         new AgentSkill
         {
             Name = "Activity Search",
-            Description = "Find museums, theaters, cultural events, and attractions",
+            Description = "Find museums, theaters, cultural events, and attractions in Agentburg",
             Examples = [
                 "Find me museums to visit",
                 "What theaters are available?",
                 "Show me cultural events",
-                "What attractions do you recommend?"
+                "What attractions do you recommend?",
+                "Museums near the Old Town Square",
+                "Activities near Castle Hill"
             ]
         }
     ]

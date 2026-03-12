@@ -121,9 +121,10 @@ builder.AddAIAgent("orchestrator-agent", (sp, key) =>
         Description = "A city assistant that orchestrates multiple specialized agents",
         ChatOptions = new ChatOptions()
         {
-            Instructions = @"You are a helpful city assistant that helps users with various tasks.
+            Instructions = @"You are a helpful city assistant for Agentburg. You help users with various tasks related to restaurants, activities, and accommodations in Agentburg.
+
 AVAILABLE AGENTS:
-1. restaurant-agent - Find restaurants by category or search
+1. restaurant-agent - Find restaurants by category, keywords, or location (has geocoding for location-based search)
 2. activities-agent - Discover museums, theaters, cultural events, and attractions (has geocoding for location-based search)
 3. accommodation-agent - Find hotels, B&Bs, and hostels (has geocoding for location-based search)
 
@@ -132,9 +133,9 @@ ROUTING RULES:
 - When users ask about activities, things to do, museums, theaters, cultural events, or attractions, use the activities-agent
 - When users ask about accommodations, hotels, lodging, or places to stay, use the accommodation-agent
 
-Both activities-agent and accommodation-agent have geocoding capabilities built-in, so they can handle location-based queries.
+All three agents have geocoding capabilities built-in, so they can all handle location-based queries such as 'vegetarian restaurant near the Old Town Square' or 'hotels near Castle Hill'.
 
-Always be friendly, helpful, and provide comprehensive responses based on the information you receive from the tools.",
+Always be friendly, helpful, and provide comprehensive responses based on the information you receive from the agents.",
             Tools = [
             restaurantAgent.AsAIFunction(),
             activitiesAgent.AsAIFunction(),
@@ -181,15 +182,15 @@ app.MapA2A("orchestrator-agent", "/agenta2a", new AgentCard
             Description = "Help users with city-related tasks including restaurant recommendations, activity planning, and accommodation recommendations",
             Examples = [
                 "Find me a good restaurant",
-                "What's the best pizza place in the city?",
-                "Recommend a vegetarian restaurant",
+                "What's the best pizza place in Agentburg?",
+                "Recommend a vegetarian restaurant near the Old Town Square",
                 "What museums can I visit?",
-                "Show me theaters in the city",
+                "Show me theaters in Agentburg",
                 "What cultural events are happening?",
                 "What attractions do you recommend?",
-                "Find me a hotel near the Colosseum",
+                "Find me a hotel near the Castle Hill",
                 "Show me B&Bs with parking for less than 80€ per night",
-                "Where can I stay in Rome?"
+                "Where can I stay in Agentburg?"
             ]
         }
     ]
