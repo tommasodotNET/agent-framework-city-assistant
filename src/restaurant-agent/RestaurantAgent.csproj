@@ -30,4 +30,8 @@
     <ProjectReference Include="..\shared-services\SharedServices.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Content Include="Prompts\*.txt" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
 </Project>

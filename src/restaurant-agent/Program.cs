@@ -39,6 +39,8 @@ builder.AddKeyedAzureCosmosContainer("conversations",
 builder.Services.AddCosmosAgentSessionStore("sessions");
 builder.Services.AddCosmosChatHistoryProvider("conversations");
 
+var systemPrompt = File.ReadAllText(Path.Combine(builder.Environment.ContentRootPath, "Prompts", "system-prompt.txt"));
+
 // Register the restaurant agent
 builder.AddAIAgent("restaurant-agent", (sp, key) =>
 {
@@ -51,10 +53,7 @@ builder.AddAIAgent("restaurant-agent", (sp, key) =>
         Description = "A friendly restaurant assistant that helps find restaurants",
         ChatOptions = new ChatOptions()
         {
-            Instructions = @"You are a helpful restaurant assistant. You help users find restaurants based on their preferences.
-You can search for restaurants by category (vegetarian, pizza, japanese, mexican, french, indian, steakhouse) or by keywords.
-Always be friendly and provide detailed information about the restaurants including their name, address, phone, description, rating, and price range.
-When users ask about restaurants, use the available tools to retrieve the information.",
+            Instructions = systemPrompt,
             Tools = [.. restaurantTools]
         }
     }.WithCosmosChatHistoryProvider(sp);

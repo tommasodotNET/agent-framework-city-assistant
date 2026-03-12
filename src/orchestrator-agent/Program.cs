@@ -110,6 +110,8 @@ var accommodationAgent = accommodationCardResolver.GetAIAgentAsync().Result;
 static string GetWeather([Description("The location to get the weather for.")] string location)
  => $"The weather in {location} is cloudy with a high of 15°C.";
 
+var systemPrompt = File.ReadAllText(Path.Combine(builder.Environment.ContentRootPath, "Prompts", "system-prompt.txt"));
+
 // Register the orchestrator agent
 builder.AddAIAgent("orchestrator-agent", (sp, key) =>
 {
@@ -121,20 +123,7 @@ builder.AddAIAgent("orchestrator-agent", (sp, key) =>
         Description = "A city assistant that orchestrates multiple specialized agents",
         ChatOptions = new ChatOptions()
         {
-            Instructions = @"You are a helpful city assistant that helps users with various tasks.
-AVAILABLE AGENTS:
-1. restaurant-agent - Find restaurants by category or search
-2. activities-agent - Discover museums, theaters, cultural events, and attractions (has geocoding for location-based search)
-3. accommodation-agent - Find hotels, B&Bs, and hostels (has geocoding for location-based search)
-
-ROUTING RULES:
-- When users ask about restaurants, food, or dining, use the restaurant-agent
-- When users ask about activities, things to do, museums, theaters, cultural events, or attractions, use the activities-agent
-- When users ask about accommodations, hotels, lodging, or places to stay, use the accommodation-agent
-
-Both activities-agent and accommodation-agent have geocoding capabilities built-in, so they can handle location-based queries.
-
-Always be friendly, helpful, and provide comprehensive responses based on the information you receive from the tools.",
+            Instructions = systemPrompt,
             Tools = [
             restaurantAgent.AsAIFunction(),
             activitiesAgent.AsAIFunction(),
