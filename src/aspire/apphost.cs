@@ -1,8 +1,8 @@
-﻿#:sdk Aspire.AppHost.Sdk@13.2.0-preview.1.26162.21
-#:package Aspire.Hosting.Foundry@ 13.2.0-preview.1.26162.21
-#:package Aspire.Hosting.Azure.CosmosDB@ 13.2.0-preview.1.26162.21
-#:package Aspire.Hosting.JavaScript@ 13.2.0-preview.1.26162.21
-#:package Aspire.Hosting.Yarp@ 13.2.0-preview.1.26162.21
+﻿#:sdk Aspire.AppHost.Sdk@13.2.0
+#:package Aspire.Hosting.Foundry@13.2.0-ci
+#:package Aspire.Hosting.Azure.CosmosDB@13.2.0
+#:package Aspire.Hosting.JavaScript@13.2.0
+#:package Aspire.Hosting.Yarp@13.2.0-ci
 
 #:project ../restaurant-agent/RestaurantAgent.csproj
 #:project ../activities-agent/ActivitiesAgent.csproj
