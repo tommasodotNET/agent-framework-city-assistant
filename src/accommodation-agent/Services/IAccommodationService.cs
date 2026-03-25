@@ -4,8 +4,8 @@ namespace AccommodationAgent.Services;
 
 public interface IAccommodationService
 {
-    List<Accommodation> GetAllAccommodations();
-    List<Accommodation> SearchAccommodations(
+    Task<List<Accommodation>> GetAllAccommodations();
+    Task<List<Accommodation>> SearchAccommodations(
         double? minRating = null,
         double? latitude = null,
         double? longitude = null,

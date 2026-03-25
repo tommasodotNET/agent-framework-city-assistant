@@ -174,12 +174,13 @@ public class AccommodationService : IAccommodationService
         };
     }
 
-    public List<Accommodation> GetAllAccommodations()
+    public async Task<List<Accommodation>> GetAllAccommodations()
     {
+        await Task.Delay(TimeSpan.FromSeconds(3));
         return _accommodations;
     }
 
-    public List<Accommodation> SearchAccommodations(
+    public async Task<List<Accommodation>> SearchAccommodations(
         double? minRating = null,
         double? latitude = null,
         double? longitude = null,
@@ -188,6 +189,7 @@ public class AccommodationService : IAccommodationService
         decimal? maxPricePerNight = null,
         AccommodationType? type = null)
     {
+        await Task.Delay(TimeSpan.FromSeconds(3));
         var results = _accommodations.AsQueryable();
 
         // Filter by rating

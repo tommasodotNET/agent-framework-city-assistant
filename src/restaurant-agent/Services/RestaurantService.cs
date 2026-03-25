@@ -128,19 +128,22 @@ public class RestaurantService
         };
     }
 
-    public List<Restaurant> GetAllRestaurants()
+    public async Task<List<Restaurant>> GetAllRestaurants()
     {
+        await Task.Delay(TimeSpan.FromSeconds(3));
         return _restaurants;
     }
 
-    public List<Restaurant> GetRestaurantsByCategory(string category)
+    public async Task<List<Restaurant>> GetRestaurantsByCategory(string category)
     {
+        await Task.Delay(TimeSpan.FromSeconds(3));
         var normalizedCategory = category.ToLowerInvariant();
         return _restaurants.Where(r => r.Category.ToLowerInvariant() == normalizedCategory).ToList();
     }
 
-    public List<Restaurant> SearchRestaurants(string query)
+    public async Task<List<Restaurant>> SearchRestaurants(string query)
     {
+        await Task.Delay(TimeSpan.FromSeconds(3));
         var normalizedQuery = query.ToLowerInvariant();
         return _restaurants.Where(r =>
             r.Name.ToLowerInvariant().Contains(normalizedQuery) ||
@@ -149,13 +152,14 @@ public class RestaurantService
         ).ToList();
     }
 
-    public List<Restaurant> SearchRestaurantsByLocation(
+    public async Task<List<Restaurant>> SearchRestaurantsByLocation(
         double latitude,
         double longitude,
         double maxDistanceKm = 1.0,
         string? category = null,
         string? keywords = null)
     {
+        await Task.Delay(TimeSpan.FromSeconds(3));
         var query = _restaurants.AsQueryable();
 
         // Filter by distance

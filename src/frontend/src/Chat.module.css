@@ -747,3 +747,80 @@
 .dark .typingDots span {
   background: #9CA3AF;
 }
+
+/* Voice button and status */
+.voiceContainer {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.voiceButton {
+  width: 36px;
+  height: 36px;
+  border-radius: 50%;
+  border: 2px solid #e0e0e0;
+  background: #f5f5f5;
+  color: #333;
+  font-size: 16px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.3s ease;
+  padding: 0;
+  flex-shrink: 0;
+}
+
+.voiceButton:hover:not(:disabled) {
+  background: #e8e8e8;
+  border-color: #ccc;
+  transform: scale(1.05);
+}
+
+.voiceButton:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.voiceButton.voiceActive {
+  background: rgba(239, 68, 68, 0.15);
+  border-color: rgba(239, 68, 68, 0.8);
+  animation: voicePulse 1.5s ease-in-out infinite;
+}
+
+@keyframes voicePulse {
+  0%, 100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.4);
+  }
+  50% {
+    box-shadow: 0 0 0 8px rgba(239, 68, 68, 0);
+  }
+}
+
+.voiceStatus {
+  font-size: 12px;
+  color: #666;
+  white-space: nowrap;
+  animation: fadeIn 0.3s ease;
+}
+
+.voiceError {
+  cursor: help;
+  font-size: 14px;
+}
+
+.dark .voiceButton {
+  background: #374151;
+  border-color: #4B5563;
+  color: #e5e7eb;
+}
+
+.dark .voiceButton:hover:not(:disabled) {
+  background: #4B5563;
+  border-color: #6B7280;
+}
+
+.dark .voiceStatus {
+  color: #9CA3AF;
+}

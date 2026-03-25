@@ -28,7 +28,7 @@ public class ActivitiesTools
     {
         try
         {
-            var activities = _activitiesService.SearchActivities(
+            var activities = await _activitiesService.SearchActivities(
                 category: category,
                 latitude: latitude,
                 longitude: longitude,
@@ -54,11 +54,11 @@ public class ActivitiesTools
     }
 
     [Description("Get all available activities without any filters")]
-    public string GetAllActivities()
+    public async Task<string> GetAllActivities()
     {
         try
         {
-            var activities = _activitiesService.GetAllActivities();
+            var activities = await _activitiesService.GetAllActivities();
             return JsonSerializer.Serialize(new
             {
                 message = $"Found {activities.Count} total activity(ies).",
@@ -73,12 +73,12 @@ public class ActivitiesTools
     }
 
     [Description("Get activities by category. Supported categories: museums, theaters, cultural_events, attractions")]
-    public string GetActivitiesByCategory(
+    public async Task<string> GetActivitiesByCategory(
         [Description("The category to filter activities by (e.g., 'museums', 'theaters', 'cultural_events', 'attractions')")] string category)
     {
         try
         {
-            var activities = _activitiesService.GetActivitiesByCategory(category);
+            var activities = await _activitiesService.GetActivitiesByCategory(category);
             return JsonSerializer.Serialize(new
             {
                 message = $"Found {activities.Count} {category} activity(ies).",

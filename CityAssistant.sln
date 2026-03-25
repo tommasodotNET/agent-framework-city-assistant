@@ -33,6 +33,10 @@ Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "GeocodingMcpServer", "src\g
 EndProject
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SharedServices", "src\shared-services\SharedServices.csproj", "{2C1F3CA6-86DB-8F87-0B15-D0CFFABE2B24}"
 EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "voice-orchestrator-agent", "voice-orchestrator-agent", "{ED862CA8-D32A-7415-90F5-B060201BAE68}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "VoiceOrchestratorAgent", "src\voice-orchestrator-agent\VoiceOrchestratorAgent.csproj", "{F1018B01-A8A5-4BE1-93B4-B7B98190969B}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|Any CPU = Debug|Any CPU
@@ -127,6 +131,18 @@ Global
 		{2C1F3CA6-86DB-8F87-0B15-D0CFFABE2B24}.Release|x64.Build.0 = Release|Any CPU
 		{2C1F3CA6-86DB-8F87-0B15-D0CFFABE2B24}.Release|x86.ActiveCfg = Release|Any CPU
 		{2C1F3CA6-86DB-8F87-0B15-D0CFFABE2B24}.Release|x86.Build.0 = Release|Any CPU
+		{F1018B01-A8A5-4BE1-93B4-B7B98190969B}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F1018B01-A8A5-4BE1-93B4-B7B98190969B}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F1018B01-A8A5-4BE1-93B4-B7B98190969B}.Debug|x64.ActiveCfg = Debug|Any CPU
+		{F1018B01-A8A5-4BE1-93B4-B7B98190969B}.Debug|x64.Build.0 = Debug|Any CPU
+		{F1018B01-A8A5-4BE1-93B4-B7B98190969B}.Debug|x86.ActiveCfg = Debug|Any CPU
+		{F1018B01-A8A5-4BE1-93B4-B7B98190969B}.Debug|x86.Build.0 = Debug|Any CPU
+		{F1018B01-A8A5-4BE1-93B4-B7B98190969B}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F1018B01-A8A5-4BE1-93B4-B7B98190969B}.Release|Any CPU.Build.0 = Release|Any CPU
+		{F1018B01-A8A5-4BE1-93B4-B7B98190969B}.Release|x64.ActiveCfg = Release|Any CPU
+		{F1018B01-A8A5-4BE1-93B4-B7B98190969B}.Release|x64.Build.0 = Release|Any CPU
+		{F1018B01-A8A5-4BE1-93B4-B7B98190969B}.Release|x86.ActiveCfg = Release|Any CPU
+		{F1018B01-A8A5-4BE1-93B4-B7B98190969B}.Release|x86.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
@@ -146,6 +162,8 @@ Global
 		{48458EF2-8F66-569A-CB79-F4B91E0AE1BC} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
 		{8485D59C-84AD-41AD-ADD0-CA52DA31A9C5} = {48458EF2-8F66-569A-CB79-F4B91E0AE1BC}
 		{2C1F3CA6-86DB-8F87-0B15-D0CFFABE2B24} = {6B03B287-C748-4A89-2EBC-ED491E6F1504}
+		{ED862CA8-D32A-7415-90F5-B060201BAE68} = {827E0CD3-B72D-47B6-A68D-7590B98EB39B}
+		{F1018B01-A8A5-4BE1-93B4-B7B98190969B} = {ED862CA8-D32A-7415-90F5-B060201BAE68}
 	EndGlobalSection
 	GlobalSection(ExtensibilityGlobals) = postSolution
 		SolutionGuid = {3438E1EA-6587-4B0C-A578-FBFE5F1C5E3C}

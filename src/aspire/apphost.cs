@@ -1,26 +1,26 @@
 ﻿#:sdk Aspire.AppHost.Sdk@13.2.0
-#:package Aspire.Hosting.Foundry@13.2.0-ci
+#:package Aspire.Hosting.Foundry@13.2.0-preview.1.26170.3
 #:package Aspire.Hosting.Azure.CosmosDB@13.2.0
 #:package Aspire.Hosting.JavaScript@13.2.0
-#:package Aspire.Hosting.Yarp@13.2.0-ci
+#:package Aspire.Hosting.Yarp@13.2.0
 
 #:project ../restaurant-agent/RestaurantAgent.csproj
 #:project ../activities-agent/ActivitiesAgent.csproj
 #:project ../accommodation-agent/AccommodationAgent.csproj
 
 #:project ../orchestrator-agent/OrchestratorAgent.csproj
+#:project ../voice-orchestrator-agent/VoiceOrchestratorAgent.csproj
 #:project ../geocoding-mcp-server/GeocodingMcpServer.csproj
 
-using Aspire.Hosting.Foundry;
 using Aspire.Hosting.Yarp.Transforms;
 
 var builder = DistributedApplication.CreateBuilder(args);
 
 var tenantId = builder.AddParameterFromConfiguration("tenant", "Azure:TenantId");
 var existingFoundryName = builder.AddParameter("existingFoundryName")
-    .WithDescription("The name of the existing Azure Foundry resource.");
+    .WithDescription("The name of the existing Foundry resource.");
 var existingFoundryResourceGroup = builder.AddParameter("existingFoundryResourceGroup")
-    .WithDescription("The resource group of the existing Azure Foundry resource.");
+    .WithDescription("The resource group of the existing Foundry resource.");
 
 var foundry = builder.AddFoundry("foundry")
     .AsExisting(existingFoundryName, existingFoundryResourceGroup);
@@ -95,8 +95,18 @@ var orchestratorAgent = builder.AddProject("orchestratoragent", "../orchestrator
         e.Urls.Add(new() { Url = "/agenta2a/v1/card", DisplayText = "🤖Orchestrator Agent A2A Card", Endpoint = e.GetEndpoint("https") });
     });
 
+var voiceOrchestratorAgent = builder.AddProject("voiceorchestratoragent", "../voice-orchestrator-agent/VoiceOrchestratorAgent.csproj")
+    .WithHttpHealthCheck("/health")
+    .WithReference(foundry).WaitFor(foundry)
+    .WithReference(conversations).WaitFor(conversations)
+    .WithReference(restaurantAgent).WaitFor(restaurantAgent)
+    .WithReference(activitiesAgent).WaitFor(activitiesAgent)
+    .WithReference(accommodationAgent).WaitFor(accommodationAgent)
+    .WithEnvironment("AZURE_TENANT_ID", tenantId);
+
 var frontend = builder.AddViteApp("frontend", "../frontend")
     .WithReference(orchestratorAgent).WaitFor(orchestratorAgent)
+    .WithReference(voiceOrchestratorAgent).WaitFor(voiceOrchestratorAgent)
     .WithUrls((e) =>
     {
         e.Urls.Clear();

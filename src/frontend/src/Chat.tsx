@@ -2,12 +2,14 @@
 // Licensed under the MIT License.
 
 import { Button } from "@fluentui/react-components";
-import { useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import TextareaAutosize from "react-textarea-autosize";
 import styles from "./Chat.module.css";
 import gfm from "remark-gfm";
 import { A2AClientWrapper, A2AChatMessage } from "./A2AClientWrapper";
+import VoiceButton from "./VoiceButton";
+import { VoiceTranscript } from "./VoiceSession";
 
 type ChatEntry = A2AChatMessage | ChatError;
 type Theme = 'light' | 'dark' | 'system';
@@ -36,6 +38,44 @@ export default function Chat({ style }: { style: React.CSSProperties }) {
     const [effectiveTheme, setEffectiveTheme] = useState<'light' | 'dark'>('light');
     const messagesEndRef = useRef<HTMLDivElement>(null);
     const initialFetchStarted = useRef(false);
+    // Track the in-progress assistant voice transcript for real-time streaming
+    const pendingAssistantTranscript = useRef<string>("");
+
+    const handleVoiceTranscript = useCallback((transcript: VoiceTranscript) => {
+        if (transcript.role === 'user' && transcript.isFinal) {
+            // Add final user transcript as a chat message
+            setMessages(prev => [...prev, { role: 'user', content: transcript.text }]);
+            pendingAssistantTranscript.current = "";
+        } else if (transcript.role === 'assistant') {
+            if (transcript.isFinal) {
+                // Replace streaming message with final transcript
+                const finalText = transcript.text;
+                pendingAssistantTranscript.current = "";
+                setMessages(prev => {
+                    const last = prev[prev.length - 1];
+                    if (last && !isChatError(last) && last.role === 'assistant' &&
+                        (last as A2AChatMessage & { isVoiceStreaming?: boolean }).isVoiceStreaming) {
+                        return [...prev.slice(0, -1), { role: 'assistant' as const, content: finalText }];
+                    }
+                    return [...prev, { role: 'assistant' as const, content: finalText }];
+                });
+            } else {
+                // Streaming assistant transcript delta
+                pendingAssistantTranscript.current += transcript.text;
+                const streamingText = pendingAssistantTranscript.current;
+                setMessages(prev => {
+                    const last = prev[prev.length - 1];
+                    if (last && !isChatError(last) && last.role === 'assistant' &&
+                        (last as A2AChatMessage & { isVoiceStreaming?: boolean }).isVoiceStreaming) {
+                        return [...prev.slice(0, -1),
+                            Object.assign({ role: 'assistant' as const, content: streamingText }, { isVoiceStreaming: true })];
+                    }
+                    return [...prev,
+                        Object.assign({ role: 'assistant' as const, content: streamingText }, { isVoiceStreaming: true })];
+                });
+            }
+        }
+    }, []);
 
     const invokeAgentWithEmptyMessage = async () => {
         if (isLoading || !contextId) return;
@@ -311,6 +351,11 @@ export default function Chat({ style }: { style: React.CSSProperties }) {
                     <Button onClick={sendMessage} className={styles.sendButton} disabled={isLoading || !input.trim()}>
                         {isLoading ? "⋯" : "➤"}
                     </Button>
+                    <VoiceButton
+                        onTranscript={handleVoiceTranscript}
+                        disabled={isLoading}
+                        conversationId={contextId}
+                    />
                 </div>
             </div>
         </div>
