@@ -1,6 +1,6 @@
 # Voice Orchestrator Agent
 
-A real-time voice assistant that mirrors the text-based orchestrator agent, using the `Azure.AI.VoiceLive` SDK to connect to a **GPT Realtime model deployed in Azure AI Foundry**. The backend bridges a browser WebSocket to the model's WebSocket, enabling speech-to-speech conversation with function calling. Downstream agents (restaurant, activities, accommodation) are invoked as tools via Microsoft Agent Framework (MAF) A2A protocol.
+A real-time voice assistant that mirrors the text-based orchestrator agent, using the `Azure.AI.VoiceLive` SDK to connect to a **GPT Realtime model deployed in Azure AI Foundry**. The Voice Orchestrator Agent bridges a browser WebSocket to the model's WebSocket, enabling speech-to-speech conversation with function calling. Downstream agents (restaurant, activities, accommodation) are invoked as tools via Microsoft Agent Framework (MAF) A2A protocol.
 
 ## Architecture Overview
 
@@ -19,9 +19,11 @@ A real-time voice assistant that mirrors the text-based orchestrator agent, usin
                    └────────────┘ └──────────┘ └───────────────┘
 ```
 
-## Connecting to the GPT Realtime Model
+## Voice Orchestrator Agent
 
-The backend uses the `Azure.AI.VoiceLive` SDK to open a WebSocket connection to a GPT Realtime model deployed in Azure AI Foundry. Authentication uses `DefaultAzureCredential`.
+### Connecting to the GPT Realtime Model
+
+The Voice Orchestrator Agent uses the `Azure.AI.VoiceLive` SDK to open a WebSocket connection to a GPT Realtime model deployed in Azure AI Foundry. Authentication uses `DefaultAzureCredential`.
 
 ```csharp
 // Parse the Foundry connection string to extract the cognitiveservices endpoint
@@ -62,71 +64,43 @@ foreach (var tool in functionTools)
 await session.ConfigureSessionAsync(options);
 ```
 
-## Frontend ↔ Backend Communication
 
-### WebSocket Protocol
 
-The frontend connects to the backend via a WebSocket at `/ws/voice?conversationId={contextId}`.
+### Starting and Stopping a Voice Session
 
-**Browser → Backend messages:**
-
-| Type | Payload | Description |
-|------|---------|-------------|
-| `audio` | `{ type: "audio", data: "<base64>" }` | PCM16 audio chunk from microphone |
-| `stop` | `{ type: "stop" }` | User clicked stop |
-
-**Backend → Browser messages:**
-
-| Type | Payload | Description |
-|------|---------|-------------|
-| `ready` | `{ type: "ready" }` | Model session established |
-| `audio` | `{ type: "audio", data: "<base64>" }` | PCM16 audio from assistant |
-| `transcript` | `{ type: "transcript", role, text, final_ }` | Streaming or final transcript |
-| `status` | `{ type: "status", status }` | Status change (ready, listening, processing, function_calling) |
-| `clear_audio` | `{ type: "clear_audio" }` | Stop playback (barge-in) |
-| `error` | `{ type: "error", message }` | Error occurred |
-
-### Audio Pipeline
-
-- **Capture**: Browser uses an `AudioWorklet` processor to capture microphone at 24kHz PCM16. Chunks of 1200 samples (~50ms) are base64-encoded and sent over WebSocket.
-- **Playback**: Backend sends base64 PCM16 audio deltas. Browser decodes Int16 → Float32 and schedules sequential `AudioBufferSource` nodes via `AudioContext` for gapless playback.
-- **Echo cancellation & noise reduction**: Handled server-side by the model session (`AudioEchoCancellation` + `AzureDeepNoiseSuppression`).
-
-## Starting and Stopping a Voice Session
-
-### Start Flow
+#### Start Flow
 
 1. User clicks the 🎙️ button in the UI
 2. Frontend creates a `VoiceSession`, opens WebSocket to `/ws/voice?conversationId={contextId}`
 3. Frontend requests microphone access, creates `AudioContext` at 24kHz, loads `AudioWorklet`
-4. Backend accepts WebSocket, loads previous conversation history from Cosmos DB
-5. Backend opens a WebSocket to the GPT Realtime model via `VoiceLiveClient.StartSessionAsync`
-6. Backend configures the session: system prompt (+ conversation history), tools, voice, VAD settings
-7. Backend sends `{ type: "ready" }` to frontend
+4. Voice Orchestrator Agent accepts WebSocket, loads previous conversation history from Cosmos DB
+5. Voice Orchestrator Agent opens a WebSocket to the GPT Realtime model via `VoiceLiveClient.StartSessionAsync`
+6. Voice Orchestrator Agent configures the session: system prompt (+ conversation history), tools, voice, VAD settings
+7. Voice Orchestrator Agent sends `{ type: "ready" }` to frontend
 8. Two concurrent loops run:
    - **Client → Model**: forwards browser audio to `session.SendInputAudioAsync`
    - **Model → Client**: processes model events and forwards audio/transcripts to browser
 
-### Stop Flow
+#### Stop Flow
 
 1. User clicks the 🔊 button (or closes the page)
 2. Frontend sends `{ type: "stop" }`, closes the WebSocket
-3. Backend detects the close, cancels both processing loops via `CancellationTokenSource`
+3. Voice Orchestrator Agent detects the close, cancels both processing loops via `CancellationTokenSource`
 4. In the `finally` block, **after the WebSocket session has ended**:
    - Conversation transcript is saved to Cosmos DB
    - OpenTelemetry gen_ai traces are emitted post-hoc
 
 Both persistence and telemetry happen **after** the voice session is fully closed — they cannot be emitted during the session because the conversation is a continuous WebSocket stream with no discrete request/response boundaries.
 
-## Barge-in (Interruption)
+### Barge-in (Interruption)
 
 When the model detects the user started speaking while the assistant is talking (`SessionUpdateInputAudioBufferSpeechStarted`):
 
-1. Backend sends `{ type: "clear_audio" }` to the frontend
+1. Voice Orchestrator Agent sends `{ type: "clear_audio" }` to the frontend
 2. Frontend immediately stops all scheduled `AudioBufferSource` nodes and resets the playback timeline
 3. The model automatically truncates the assistant's response and processes the user's new input
 
-## Manual Function Calling (No Framework Automation)
+### Manual Function Calling (No Framework Automation)
 
 > **Key difference from the text orchestrator:** The text orchestrator uses MAF's `ChatClientAgent` which **automatically** handles function calling — it detects tool calls in the model response, invokes the tools, and feeds results back in a loop. With the GPT Realtime model, **there is no such automation**. We must manually process the model's event stream, detect function call requests, execute them ourselves, and submit the results back to the model. This is because the Voice Live SDK provides a raw event stream, not a request/response abstraction.
 
@@ -281,7 +255,7 @@ private async Task ExecuteFunctionCall(VoiceLiveSession session, Dictionary<stri
 | `accommodation_agent` | Finds hotels, B&Bs, hostels, and accommodations |
 | `get_weather` | Returns mock weather data for a location |
 
-## Conversation Persistence (Cosmos DB)
+### Conversation Persistence (Cosmos DB)
 
 Voice conversations are persisted to the same `conversations` Cosmos DB container used by the text orchestrator. **All persistence happens after the voice session ends** — since the conversation is a continuous WebSocket stream, messages are collected in memory during the session and batch-saved to Cosmos once the user disconnects.
 
@@ -331,7 +305,7 @@ Assistant: Here are some great vegetarian restaurants...
 
 This allows the voice assistant to maintain context across sessions without replaying past messages.
 
-## Telemetry (OpenTelemetry gen_ai Traces)
+### Telemetry (OpenTelemetry gen_ai Traces)
 
 Since the conversation is a continuous WebSocket stream, standard gen_ai traces can't be emitted in real-time. Instead, conversation events are collected in memory during the session and traces are emitted **post-hoc after the session ends**, alongside conversation persistence.
 
@@ -380,10 +354,63 @@ chat gpt-realtime (CLIENT span)
 
 Tool spans have accurate start/end timestamps from actual A2A execution, providing visibility into agent latency.
 
-## Configuration
+### Configuration
 
 | Setting | Default | Description |
 |---------|---------|-------------|
 | `VoiceLive:Model` | `gpt-realtime` | Model deployment name in Foundry |
 | `VoiceLive:Voice` | `en-US-Ava:DragonHDLatestNeural` | Azure HD voice |
 | `ConnectionStrings:foundry` | (from Aspire) | Foundry connection string (uses `Endpoint` key for the cognitiveservices endpoint) |
+
+## Frontend
+
+This section provides guidance on how to build a browser-based frontend to interact with the Voice Orchestrator Agent's WebSocket endpoint.
+
+### WebSocket Connection
+
+Connect to the Voice Orchestrator Agent via a WebSocket at `/ws/voice?conversationId={contextId}`. The `conversationId` is the same context identifier used by the text-based chat interface, allowing voice and text conversations to share context.
+
+### Message Protocol
+
+**Browser → Voice Orchestrator Agent messages:**
+
+| Type | Payload | Description |
+|------|---------|-------------|
+| `audio` | `{ type: "audio", data: "<base64>" }` | PCM16 audio chunk from microphone |
+| `stop` | `{ type: "stop" }` | User clicked stop |
+
+**Voice Orchestrator Agent → Browser messages:**
+
+| Type | Payload | Description |
+|------|---------|-------------|
+| `ready` | `{ type: "ready" }` | Model session established — start sending audio |
+| `audio` | `{ type: "audio", data: "<base64>" }` | PCM16 audio from assistant to play back |
+| `transcript` | `{ type: "transcript", role, text, final_ }` | Streaming or final transcript to display |
+| `status` | `{ type: "status", status }` | Status change (ready, listening, processing, function_calling) |
+| `clear_audio` | `{ type: "clear_audio" }` | Stop current audio playback (barge-in detected) |
+| `error` | `{ type: "error", message }` | Error occurred |
+
+### Audio Pipeline
+
+- **Capture**: Use an `AudioWorklet` processor to capture microphone input at 24 kHz PCM16. Encode chunks of 1200 samples (~50 ms) as base64 and send them over the WebSocket as `{ type: "audio", data: "<base64>" }` messages.
+- **Playback**: The Voice Orchestrator Agent sends base64-encoded PCM16 audio deltas. Decode each chunk from Int16 to Float32 and schedule sequential `AudioBufferSource` nodes via `AudioContext` for gapless playback.
+- **Echo cancellation & noise reduction**: These are handled server-side by the model session, so no additional processing is required in the browser.
+
+### Starting a Voice Session
+
+1. Create a WebSocket connection to `/ws/voice?conversationId={contextId}`
+2. Request microphone access and create an `AudioContext` at 24 kHz
+3. Load the `AudioWorklet` for microphone capture
+4. Wait for `{ type: "ready" }` before sending audio — this signals that the Voice Orchestrator Agent has established the model session
+5. Begin forwarding microphone audio chunks over the WebSocket
+
+### Stopping a Voice Session
+
+1. Send `{ type: "stop" }` over the WebSocket
+2. Close the WebSocket connection
+3. Stop microphone capture and release `AudioContext` resources
+4. Stop any in-progress audio playback
+
+### Handling Barge-in
+
+When the user starts speaking while the assistant is talking, the Voice Orchestrator Agent sends `{ type: "clear_audio" }`. The frontend should immediately cancel all pending `AudioBufferSource` nodes and reset the playback timeline so the assistant's current speech is cut off and the new response can begin without overlap.
