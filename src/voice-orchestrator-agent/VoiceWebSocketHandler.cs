@@ -548,15 +548,23 @@ public sealed class VoiceWebSocketHandler
                 messages.Count, _conversationId);
 
             var sb = new StringBuilder();
-            sb.AppendLine("\n\nPREVIOUS CONVERSATION HISTORY:");
-            sb.AppendLine("The following is a transcript of your previous conversation with this user. Use this context to provide continuity.");
+            sb.AppendLine("\n\nPREVIOUS CONVERSATION HISTORY (for context only):");
+            sb.AppendLine("Below is a transcript of a previous conversation with this user.");
+            sb.AppendLine("DO NOT respond to or repeat any of this — it is background context only.");
+            sb.AppendLine("Wait for the user to speak first, then use this context to provide continuity if relevant.");
             sb.AppendLine("---");
             foreach (var (role, text) in messages)
             {
-                sb.AppendLine($"{(role == "user" ? "User" : "Assistant")}: {text}");
+                var label = role switch
+                {
+                    "user" => "User",
+                    "assistant" => "Assistant",
+                    "tool" => "Tool Result",
+                    _ => role
+                };
+                sb.AppendLine($"{label}: {text}");
             }
             sb.AppendLine("---");
-            sb.AppendLine("Continue the conversation naturally, referencing this context when relevant.");
             return sb.ToString();
         }
         catch (Exception ex)
@@ -573,15 +581,21 @@ public sealed class VoiceWebSocketHandler
     {
         if (_conversationId is null || _cosmosContainer is null) return;
 
-        var textMessages = _messages.Where(m => m.Type == "text").ToList();
-        if (textMessages.Count == 0) return;
+        var messagesToSave = _messages.ToList();
+        if (messagesToSave.Count == 0) return;
 
         var partitionKey = new PartitionKey(_conversationId);
 
-        foreach (var msg in textMessages)
+        foreach (var msg in messagesToSave)
         {
-            // Serialize message content as safe JSON to avoid unicode escape issues with the Cosmos emulator
-            var content = msg.Content ?? "";
+            // Build the message content based on type
+            var content = msg.Type switch
+            {
+                "text" => msg.Content ?? "",
+                "tool_call" => JsonSerializer.Serialize(new { tool = msg.ToolName, arguments = msg.ToolArguments }),
+                "tool_call_response" => JsonSerializer.Serialize(new { tool = msg.ToolName, result = msg.ToolResult }),
+                _ => msg.Content ?? ""
+            };
 
             var doc = new VoiceConversationDocument
             {
@@ -605,7 +619,7 @@ public sealed class VoiceWebSocketHandler
         }
 
         _logger.LogInformation("Saved {Count} conversation messages to Cosmos for {ConversationId}",
-            textMessages.Count, _conversationId);
+            messagesToSave.Count, _conversationId);
     }
 
     /// <summary>
