@@ -354,6 +354,7 @@ export default function Chat({ style }: { style: React.CSSProperties }) {
                     <VoiceButton
                         onTranscript={handleVoiceTranscript}
                         disabled={isLoading}
+                        conversationId={contextId}
                     />
                 </div>
             </div>

@@ -8,6 +8,7 @@ import styles from "./Chat.module.css";
 interface VoiceButtonProps {
     onTranscript: (transcript: VoiceTranscript) => void;
     disabled?: boolean;
+    conversationId?: string;
 }
 
 const STATUS_LABELS: Record<VoiceStatus, string> = {
@@ -19,7 +20,7 @@ const STATUS_LABELS: Record<VoiceStatus, string> = {
     function_calling: '🔧 Searching...',
 };
 
-export default function VoiceButton({ onTranscript, disabled }: VoiceButtonProps) {
+export default function VoiceButton({ onTranscript, disabled, conversationId }: VoiceButtonProps) {
     const [status, setStatus] = useState<VoiceStatus>('disconnected');
     const [error, setError] = useState<string | null>(null);
     const sessionRef = useRef<VoiceSession | null>(null);
@@ -41,10 +42,10 @@ export default function VoiceButton({ onTranscript, disabled }: VoiceButtonProps
                 setError(msg);
                 console.error('Voice error:', msg);
             },
-        });
+        }, conversationId);
         sessionRef.current = session;
         await session.start();
-    }, [isActive, onTranscript]);
+    }, [isActive, onTranscript, conversationId]);
 
     const statusLabel = STATUS_LABELS[status];
 

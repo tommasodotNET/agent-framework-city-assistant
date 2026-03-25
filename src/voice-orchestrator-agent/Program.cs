@@ -2,12 +2,22 @@ using A2A;
 using Azure.Identity;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Hosting.A2A;
+using Microsoft.Azure.Cosmos;
 using OpenTelemetry.Trace;
+using SharedServices;
 using VoiceOrchestratorAgent;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.AddServiceDefaults();
+
+builder.AddKeyedAzureCosmosContainer("conversations",
+    configureClientOptions: (option) =>
+    {
+        option.Serializer = new CosmosSystemTextJsonSerializer();
+    });
+
+builder.Services.AddSingleton(sp => sp.GetRequiredKeyedService<Container>("conversations"));
 
 // Register custom ActivitySource for gen_ai tracing
 builder.Services.AddOpenTelemetry()
@@ -88,6 +98,11 @@ app.Map("/ws/voice", async (HttpContext context) =>
 
     var credential = context.RequestServices.GetRequiredService<DefaultAzureCredential>();
     var a2aAgents = context.RequestServices.GetRequiredService<Dictionary<string, AIAgent>>();
+    var cosmosContainer = context.RequestServices.GetRequiredService<Container>();
+
+    var conversationId = context.Request.Query["conversationId"].FirstOrDefault();
+    if (!string.IsNullOrEmpty(conversationId))
+        conversationId = conversationId + "-voice";
 
     using var webSocket = await context.WebSockets.AcceptWebSocketAsync();
 
@@ -99,7 +114,9 @@ app.Map("/ws/voice", async (HttpContext context) =>
         voice,
         systemPrompt,
         a2aAgents,
-        logger);
+        logger,
+        conversationId,
+        cosmosContainer);
 
     await handler.RunAsync(context.RequestAborted);
 });

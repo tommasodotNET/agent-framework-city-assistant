@@ -4,11 +4,14 @@
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
     <RootNamespace>VoiceOrchestratorAgent</RootNamespace>
+    <AzureCosmosDisableNewtonsoftJsonCheck>true</AzureCosmosDisableNewtonsoftJsonCheck>
   </PropertyGroup>
 
   <ItemGroup>
     <PackageReference Include="Azure.AI.VoiceLive" Version="1.0.0" />
-    <PackageReference Include="Azure.Identity" Version="1.13.2" />
+    <PackageReference Include="Azure.Identity" Version="1.18.0" />
+    <PackageReference Include="Aspire.Microsoft.Azure.Cosmos" Version=" 13.2.0-preview.1.26162.21" />
+    <PackageReference Include="Microsoft.Azure.Cosmos" Version="3.58.0-preview.0" />
 
     <!-- Microsoft Agent Framework (MAF) for A2A agent invocation -->
     <PackageReference Include="Microsoft.Agents.AI" Version="1.0.0-rc1" />
@@ -19,6 +22,7 @@
 
   <ItemGroup>
     <ProjectReference Include="..\service-defaults\ServiceDefaults.csproj" />
+    <ProjectReference Include="..\shared-services\SharedServices.csproj" />
   </ItemGroup>
 
   <ItemGroup>

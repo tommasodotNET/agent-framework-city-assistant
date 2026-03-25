@@ -5,6 +5,7 @@ using System.Text.Json;
 using Azure.AI.VoiceLive;
 using Azure.Core;
 using Microsoft.Agents.AI;
+using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.AI;
 
 namespace VoiceOrchestratorAgent;
@@ -26,6 +27,8 @@ public sealed class VoiceWebSocketHandler
     private readonly string _instructions;
     private readonly Dictionary<string, AIAgent> _a2aAgents;
     private readonly ILogger<VoiceWebSocketHandler> _logger;
+    private readonly string? _conversationId;
+    private readonly Container? _cosmosContainer;
 
     // Conversation tracking for post-hoc telemetry
     private readonly List<ConversationMessage> _messages = new();
@@ -43,7 +46,9 @@ public sealed class VoiceWebSocketHandler
         string voice,
         string instructions,
         Dictionary<string, AIAgent> a2aAgents,
-        ILogger<VoiceWebSocketHandler> logger)
+        ILogger<VoiceWebSocketHandler> logger,
+        string? conversationId = null,
+        Container? cosmosContainer = null)
     {
         _clientSocket = clientSocket;
         _credential = credential;
@@ -53,6 +58,8 @@ public sealed class VoiceWebSocketHandler
         _instructions = instructions;
         _a2aAgents = a2aAgents;
         _logger = logger;
+        _conversationId = conversationId;
+        _cosmosContainer = cosmosContainer;
     }
 
     public async Task RunAsync(CancellationToken cancellationToken)
@@ -60,12 +67,16 @@ public sealed class VoiceWebSocketHandler
         _logger.LogInformation("Starting Voice Live session with endpoint {Endpoint}, model {Model}", _endpoint, _model);
         _sessionStartTime = DateTimeOffset.UtcNow;
 
+        // Load previous conversation history
+        var conversationHistory = await LoadConversationHistoryAsync();
+        var effectiveInstructions = _instructions + conversationHistory;
+
         try
         {
             var client = new VoiceLiveClient(new Uri(_endpoint), _credential);
             await using var session = await client.StartSessionAsync(_model, cancellationToken);
 
-            await ConfigureSessionAsync(session);
+            await ConfigureSessionAsync(session, effectiveInstructions);
             await SendToClient(new { type = "ready" }, cancellationToken);
 
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -87,10 +98,11 @@ public sealed class VoiceWebSocketHandler
         {
             _sessionEndTime = DateTimeOffset.UtcNow;
             EmitTraces();
+            await SaveConversationAsync();
         }
     }
 
-    private async Task ConfigureSessionAsync(VoiceLiveSession session)
+    private async Task ConfigureSessionAsync(VoiceLiveSession session, string instructions)
     {
         var functionTools = new List<VoiceLiveFunctionDefinition>
         {
@@ -179,7 +191,7 @@ public sealed class VoiceWebSocketHandler
         var options = new VoiceLiveSessionOptions
         {
             Model = _model,
-            Instructions = _instructions,
+            Instructions = instructions,
             Voice = new AzureStandardVoice(_voice),
             InputAudioFormat = InputAudioFormat.Pcm16,
             OutputAudioFormat = OutputAudioFormat.Pcm16,
@@ -501,6 +513,102 @@ public sealed class VoiceWebSocketHandler
     }
 
     /// <summary>
+    /// Loads previous conversation history from Cosmos DB and formats it for system instructions.
+    /// </summary>
+    private async Task<string> LoadConversationHistoryAsync()
+    {
+        if (_conversationId is null || _cosmosContainer is null) return "";
+
+        try
+        {
+            var query = new QueryDefinition(
+                "SELECT * FROM c WHERE c.conversationId = @convId AND c.type = @type ORDER BY c.timestamp ASC")
+                .WithParameter("@convId", _conversationId)
+                .WithParameter("@type", "ChatMessage");
+
+            var messages = new List<(string role, string text)>();
+            using var iterator = _cosmosContainer.GetItemQueryIterator<JsonElement>(query,
+                requestOptions: new QueryRequestOptions { PartitionKey = new PartitionKey(_conversationId) });
+
+            while (iterator.HasMoreResults)
+            {
+                var response = await iterator.ReadNextAsync();
+                foreach (var doc in response)
+                {
+                    var role = doc.GetProperty("role").GetString() ?? "";
+                    var text = doc.GetProperty("message").GetString() ?? "";
+                    if (!string.IsNullOrEmpty(text))
+                        messages.Add((role, text));
+                }
+            }
+
+            if (messages.Count == 0) return "";
+
+            _logger.LogInformation("Loaded {Count} previous conversation messages for {ConversationId}",
+                messages.Count, _conversationId);
+
+            var sb = new StringBuilder();
+            sb.AppendLine("\n\nPREVIOUS CONVERSATION HISTORY:");
+            sb.AppendLine("The following is a transcript of your previous conversation with this user. Use this context to provide continuity.");
+            sb.AppendLine("---");
+            foreach (var (role, text) in messages)
+            {
+                sb.AppendLine($"{(role == "user" ? "User" : "Assistant")}: {text}");
+            }
+            sb.AppendLine("---");
+            sb.AppendLine("Continue the conversation naturally, referencing this context when relevant.");
+            return sb.ToString();
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error loading conversation history from Cosmos for {ConversationId}", _conversationId);
+            return "";
+        }
+    }
+
+    /// <summary>
+    /// Saves the conversation transcript to Cosmos DB after the voice session ends.
+    /// </summary>
+    private async Task SaveConversationAsync()
+    {
+        if (_conversationId is null || _cosmosContainer is null) return;
+
+        var textMessages = _messages.Where(m => m.Type == "text").ToList();
+        if (textMessages.Count == 0) return;
+
+        var partitionKey = new PartitionKey(_conversationId);
+
+        foreach (var msg in textMessages)
+        {
+            // Serialize message content as safe JSON to avoid unicode escape issues with the Cosmos emulator
+            var content = msg.Content ?? "";
+
+            var doc = new VoiceConversationDocument
+            {
+                Id = Guid.NewGuid().ToString(),
+                ConversationId = _conversationId,
+                Timestamp = msg.Timestamp.ToUnixTimeSeconds(),
+                Role = msg.Role,
+                Message = content,
+                Type = "ChatMessage",
+                Ttl = 86400 * 7
+            };
+
+            try
+            {
+                await _cosmosContainer.CreateItemAsync(doc, partitionKey);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Error saving conversation message to Cosmos");
+            }
+        }
+
+        _logger.LogInformation("Saved {Count} conversation messages to Cosmos for {ConversationId}",
+            textMessages.Count, _conversationId);
+    }
+
+    /// <summary>
     /// Emits gen_ai OTel traces post-hoc from the collected conversation data.
     /// </summary>
     private void EmitTraces()
@@ -717,4 +825,28 @@ public sealed class VoiceWebSocketHandler
         string? ErrorType = null);
 
     private record ToolDefinitionInfo(string Name, string Description, string ParametersJson);
+
+    private sealed class VoiceConversationDocument
+    {
+        [System.Text.Json.Serialization.JsonPropertyName("id")]
+        public string Id { get; set; } = "";
+
+        [System.Text.Json.Serialization.JsonPropertyName("conversationId")]
+        public string ConversationId { get; set; } = "";
+
+        [System.Text.Json.Serialization.JsonPropertyName("timestamp")]
+        public long Timestamp { get; set; }
+
+        [System.Text.Json.Serialization.JsonPropertyName("role")]
+        public string Role { get; set; } = "";
+
+        [System.Text.Json.Serialization.JsonPropertyName("message")]
+        public string Message { get; set; } = "";
+
+        [System.Text.Json.Serialization.JsonPropertyName("type")]
+        public string Type { get; set; } = "";
+
+        [System.Text.Json.Serialization.JsonPropertyName("ttl")]
+        public int Ttl { get; set; }
+    }
 }

@@ -71,8 +71,11 @@ export class VoiceSession {
     private nextPlaybackTime = 0;
     private scheduledSources: AudioBufferSourceNode[] = [];
 
-    constructor(callbacks: VoiceSessionCallbacks) {
+    private conversationId?: string;
+
+    constructor(callbacks: VoiceSessionCallbacks, conversationId?: string) {
         this.callbacks = callbacks;
+        this.conversationId = conversationId;
     }
 
     get status(): VoiceStatus {
@@ -90,7 +93,10 @@ export class VoiceSession {
         try {
             // Connect WebSocket to voice orchestrator
             const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const wsUrl = `${wsProtocol}//${window.location.host}/ws/voice`;
+            let wsUrl = `${wsProtocol}//${window.location.host}/ws/voice`;
+            if (this.conversationId) {
+                wsUrl += `?conversationId=${encodeURIComponent(this.conversationId)}`;
+            }
             this.ws = new WebSocket(wsUrl);
 
             await new Promise<void>((resolve, reject) => {

@@ -98,6 +98,7 @@ var orchestratorAgent = builder.AddProject("orchestratoragent", "../orchestrator
 var voiceOrchestratorAgent = builder.AddProject("voiceorchestratoragent", "../voice-orchestrator-agent/VoiceOrchestratorAgent.csproj")
     .WithHttpHealthCheck("/health")
     .WithReference(foundry).WaitFor(foundry)
+    .WithReference(conversations).WaitFor(conversations)
     .WithReference(restaurantAgent).WaitFor(restaurantAgent)
     .WithReference(activitiesAgent).WaitFor(activitiesAgent)
     .WithReference(accommodationAgent).WaitFor(accommodationAgent)
