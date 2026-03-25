@@ -282,28 +282,34 @@ All conversation messages (user transcripts, assistant transcripts, tool calls, 
 
 ### Loading (on session start)
 
-When a new voice session starts with a `conversationId`, previous messages are loaded from Cosmos DB and appended to the system instructions. The model receives the history as context but is explicitly told not to respond to it:
+When a new voice session starts with a `conversationId`, previous messages are loaded from Cosmos DB and injected as **native conversation items** using `session.AddItemAsync`. This uses the Realtime API's `conversation.item.create` event to populate the model's conversation context properly, rather than appending text to the system prompt.
 
 ```csharp
-var conversationHistory = await LoadConversationHistoryAsync();
-var effectiveInstructions = _instructions + conversationHistory;
-// effectiveInstructions is then passed to ConfigureSessionAsync
+// After ConfigureSessionAsync, before starting the audio loops:
+await InjectConversationHistoryAsync(session, cancellationToken);
 ```
 
-The appended history looks like:
+The method loads messages from Cosmos and adds them as typed SDK items:
 
-```
-PREVIOUS CONVERSATION HISTORY (for context only):
-DO NOT respond to or repeat any of this — it is background context only.
-Wait for the user to speak first, then use this context to provide continuity if relevant.
----
-User: Find vegetarian restaurants near the city center
-Tool Result: {"tool":"restaurant_agent","result":"Here are some restaurants..."}
-Assistant: Here are some great vegetarian restaurants...
----
+```csharp
+foreach (var (role, text) in messages)
+{
+    ConversationRequestItem item = role switch
+    {
+        "user" => new UserMessageItem(text),
+        "assistant" => new AssistantMessageItem(text),
+        _ => new UserMessageItem(text)
+    };
+
+    await session.AddItemAsync(item, cancellationToken);
+}
 ```
 
-This allows the voice assistant to maintain context across sessions without replaying past messages.
+This approach is better than appending history to the system prompt because:
+
+- The model treats these as actual conversation turns, not as instruction text
+- The model's attention mechanism handles them properly as context
+- The system prompt stays clean and focused on behavior instructions
 
 ### Telemetry (OpenTelemetry gen_ai Traces)
 

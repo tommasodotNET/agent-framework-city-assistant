@@ -67,16 +67,16 @@ public sealed class VoiceWebSocketHandler
         _logger.LogInformation("Starting Voice Live session with endpoint {Endpoint}, model {Model}", _endpoint, _model);
         _sessionStartTime = DateTimeOffset.UtcNow;
 
-        // Load previous conversation history
-        var conversationHistory = await LoadConversationHistoryAsync();
-        var effectiveInstructions = _instructions + conversationHistory;
-
         try
         {
             var client = new VoiceLiveClient(new Uri(_endpoint), _credential);
             await using var session = await client.StartSessionAsync(_model, cancellationToken);
 
-            await ConfigureSessionAsync(session, effectiveInstructions);
+            await ConfigureSessionAsync(session, _instructions);
+
+            // Inject previous conversation history as native conversation items
+            await InjectConversationHistoryAsync(session, cancellationToken);
+
             await SendToClient(new { type = "ready" }, cancellationToken);
 
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -515,9 +515,14 @@ public sealed class VoiceWebSocketHandler
     /// <summary>
     /// Loads previous conversation history from Cosmos DB and formats it for system instructions.
     /// </summary>
-    private async Task<string> LoadConversationHistoryAsync()
+    /// <summary>
+    /// Loads previous conversation from Cosmos DB and injects it as native conversation items
+    /// via session.AddItemAsync. This populates the model's conversation context properly
+    /// instead of appending text to the system prompt.
+    /// </summary>
+    private async Task InjectConversationHistoryAsync(VoiceLiveSession session, CancellationToken cancellationToken)
     {
-        if (_conversationId is null || _cosmosContainer is null) return "";
+        if (_conversationId is null || _cosmosContainer is null) return;
 
         try
         {
@@ -542,35 +547,27 @@ public sealed class VoiceWebSocketHandler
                 }
             }
 
-            if (messages.Count == 0) return "";
+            if (messages.Count == 0) return;
 
-            _logger.LogInformation("Loaded {Count} previous conversation messages for {ConversationId}",
+            _logger.LogInformation("Injecting {Count} previous conversation items for {ConversationId}",
                 messages.Count, _conversationId);
 
-            var sb = new StringBuilder();
-            sb.AppendLine("\n\nPREVIOUS CONVERSATION HISTORY (for context only):");
-            sb.AppendLine("Below is a transcript of a previous conversation with this user.");
-            sb.AppendLine("DO NOT respond to or repeat any of this — it is background context only.");
-            sb.AppendLine("Wait for the user to speak first, then use this context to provide continuity if relevant.");
-            sb.AppendLine("---");
+            // Add each message as a native conversation item
             foreach (var (role, text) in messages)
             {
-                var label = role switch
+                ConversationRequestItem item = role switch
                 {
-                    "user" => "User",
-                    "assistant" => "Assistant",
-                    "tool" => "Tool Result",
-                    _ => role
+                    "user" => new UserMessageItem(text),
+                    "assistant" => new AssistantMessageItem(text),
+                    _ => new UserMessageItem(text) // tool calls/responses stored as user context
                 };
-                sb.AppendLine($"{label}: {text}");
+
+                await session.AddItemAsync(item, cancellationToken);
             }
-            sb.AppendLine("---");
-            return sb.ToString();
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Error loading conversation history from Cosmos for {ConversationId}", _conversationId);
-            return "";
+            _logger.LogError(ex, "Error injecting conversation history for {ConversationId}", _conversationId);
         }
     }
 
