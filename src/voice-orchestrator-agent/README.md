@@ -131,32 +131,40 @@ foreach (var (agentName, envVar) in agentConfigs)
 }
 ```
 
-### Step 2: Define Agents as Tool Schemas for the Model
+### Step 2: Convert Agents to Tool Definitions with `AsVoiceLiveTool()`
 
-Each downstream agent is registered as a `VoiceLiveFunctionDefinition` — a JSON Schema that tells the model what tools are available, their parameters, and when to use them. This is equivalent to the `tools` array you'd pass to a chat completion API, but using the Voice Live SDK types:
+Instead of manually writing tool schemas with hardcoded names and descriptions, we provide an extension method `AsVoiceLiveTool()` that converts an A2A `AIAgent` into a `VoiceLiveFunctionDefinition` — analogous to MAF's `agent.AsAIFunction()`. The tool name and description are pulled directly from the agent's A2A card:
 
 ```csharp
-var functionTools = new List<VoiceLiveFunctionDefinition>
+// VoiceLiveAgentExtensions.cs
+public static VoiceLiveFunctionDefinition AsVoiceLiveTool(this AIAgent agent)
 {
-    new("restaurant_agent")
+    return new VoiceLiveFunctionDefinition(agent.Name)
     {
-        Description = "Search for restaurants in Agentburg by category, keywords, or location.",
+        Description = agent.Description ?? $"Invoke the {agent.Name} agent",
         Parameters = BinaryData.FromObjectAsJson(new
         {
             type = "object",
             properties = new
             {
-                query = new
-                {
-                    type = "string",
-                    description = "The user's restaurant-related question or search query"
-                }
+                query = new { type = "string", description = "Input query to invoke the agent" }
             },
             required = new[] { "query" }
         })
-    },
-    // ... activities_agent, accommodation_agent, get_weather defined similarly
-};
+    };
+}
+```
+
+This makes the session configuration concise — all A2A agents are converted in one line:
+
+```csharp
+// Convert all A2A agents to Voice Live tools (like agent.AsAIFunction() in MAF)
+var functionTools = _a2aAgents.Values
+    .Select(agent => agent.AsVoiceLiveTool())
+    .ToList();
+
+// Add non-agent tools manually
+functionTools.Add(new VoiceLiveFunctionDefinition("get_weather") { /* ... */ });
 
 foreach (var tool in functionTools)
     options.Tools.Add(tool);

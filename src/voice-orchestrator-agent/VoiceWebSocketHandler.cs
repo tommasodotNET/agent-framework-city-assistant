@@ -104,80 +104,29 @@ public sealed class VoiceWebSocketHandler
 
     private async Task ConfigureSessionAsync(VoiceLiveSession session, string instructions)
     {
-        var functionTools = new List<VoiceLiveFunctionDefinition>
+        // Convert A2A agents to Voice Live tool definitions (analogous to agent.AsAIFunction() in MAF)
+        var functionTools = _a2aAgents.Values
+            .Select(agent => agent.AsVoiceLiveTool())
+            .ToList();
+
+        // Add non-agent tools manually
+        functionTools.Add(new VoiceLiveFunctionDefinition("get_weather")
         {
-            new("restaurant_agent")
+            Description = "Get the weather for a given location.",
+            Parameters = BinaryData.FromObjectAsJson(new
             {
-                Description = "Search for restaurants in Agentburg by category, keywords, or location. " +
-                              "Use this when the user asks about restaurants, food, dining, or places to eat.",
-                Parameters = BinaryData.FromObjectAsJson(new
+                type = "object",
+                properties = new
                 {
-                    type = "object",
-                    properties = new
+                    location = new
                     {
-                        query = new
-                        {
-                            type = "string",
-                            description = "The user's restaurant-related question or search query"
-                        }
-                    },
-                    required = new[] { "query" }
-                })
-            },
-            new("activities_agent")
-            {
-                Description = "Discover museums, theaters, cultural events, attractions, and activities in Agentburg. " +
-                              "Use this when the user asks about things to do, sightseeing, entertainment, or culture.",
-                Parameters = BinaryData.FromObjectAsJson(new
-                {
-                    type = "object",
-                    properties = new
-                    {
-                        query = new
-                        {
-                            type = "string",
-                            description = "The user's activities-related question or search query"
-                        }
-                    },
-                    required = new[] { "query" }
-                })
-            },
-            new("accommodation_agent")
-            {
-                Description = "Find hotels, B&Bs, hostels, and accommodations in Agentburg. " +
-                              "Use this when the user asks about places to stay, lodging, or accommodation.",
-                Parameters = BinaryData.FromObjectAsJson(new
-                {
-                    type = "object",
-                    properties = new
-                    {
-                        query = new
-                        {
-                            type = "string",
-                            description = "The user's accommodation-related question or search query"
-                        }
-                    },
-                    required = new[] { "query" }
-                })
-            },
-            new("get_weather")
-            {
-                Description = "Get the weather for a given location.",
-                Parameters = BinaryData.FromObjectAsJson(new
-                {
-                    type = "object",
-                    properties = new
-                    {
-                        location = new
-                        {
-                            type = "string",
-                            description = "The location to get the weather for"
-                        }
-                    },
-                    required = new[] { "location" }
-                })
-            }
-        };
+                        type = "string",
+                        description = "The location to get the weather for"
+                    }
+                },
+                required = new[] { "location" }
+            })
+        });
 
         // Collect tool definitions for telemetry
         foreach (var tool in functionTools)
