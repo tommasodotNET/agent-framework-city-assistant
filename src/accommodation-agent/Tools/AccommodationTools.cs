@@ -36,7 +36,7 @@ public class AccommodationTools
         try
         {
             // Search accommodations with filters (all location searches use geocoding + coordinates)
-            var accommodations = _accommodationService.SearchAccommodations(
+            var accommodations = await _accommodationService.SearchAccommodations(
                 minRating: minRating,
                 latitude: latitude,
                 longitude: longitude,
@@ -75,11 +75,11 @@ public class AccommodationTools
     }
 
     [Description("Get all available accommodations without any filters")]
-    public string GetAllAccommodations()
+    public async Task<string> GetAllAccommodations()
     {
         try
         {
-            var accommodations = _accommodationService.GetAllAccommodations();
+            var accommodations = await _accommodationService.GetAllAccommodations();
             return JsonSerializer.Serialize(new
             {
                 message = $"Found {accommodations.Count} total accommodation(s).",

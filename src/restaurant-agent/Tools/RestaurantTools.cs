@@ -15,37 +15,37 @@ public class RestaurantTools
     }
 
     [Description("Get a list of all available restaurants")]
-    public string GetAllRestaurants()
+    public async Task<string> GetAllRestaurants()
     {
-        var restaurants = _restaurantService.GetAllRestaurants();
+        var restaurants = await _restaurantService.GetAllRestaurants();
         return JsonSerializer.Serialize(restaurants);
     }
 
     [Description("Search for restaurants by category. Supported categories: vegetarian, pizza, japanese, seafood, french, indian, steakhouse")]
-    public string GetRestaurantsByCategory(
+    public async Task<string> GetRestaurantsByCategory(
         [Description("The category to filter restaurants by (e.g., 'vegetarian', 'pizza', 'japanese')")] string category)
     {
-        var restaurants = _restaurantService.GetRestaurantsByCategory(category);
+        var restaurants = await _restaurantService.GetRestaurantsByCategory(category);
         return JsonSerializer.Serialize(restaurants);
     }
 
     [Description("Search for restaurants by name or description using keywords")]
-    public string SearchRestaurants(
+    public async Task<string> SearchRestaurants(
         [Description("Search query or keywords to find restaurants")] string query)
     {
-        var restaurants = _restaurantService.SearchRestaurants(query);
+        var restaurants = await _restaurantService.SearchRestaurants(query);
         return JsonSerializer.Serialize(restaurants);
     }
 
     [Description("Search for restaurants near a specific location using coordinates. Use geocode_location first to obtain latitude and longitude for any named place.")]
-    public string SearchRestaurantsByLocation(
+    public async Task<string> SearchRestaurantsByLocation(
         [Description("Latitude of the reference location")] double latitude,
         [Description("Longitude of the reference location")] double longitude,
         [Description("Maximum search radius in kilometers (default: 1.0)")] double maxDistanceKm = 1.0,
         [Description("Optional category filter (e.g., 'vegetarian', 'pizza')")] string? category = null,
         [Description("Optional keywords to narrow down results")] string? keywords = null)
     {
-        var restaurants = _restaurantService.SearchRestaurantsByLocation(latitude, longitude, maxDistanceKm, category, keywords);
+        var restaurants = await _restaurantService.SearchRestaurantsByLocation(latitude, longitude, maxDistanceKm, category, keywords);
         return JsonSerializer.Serialize(restaurants);
     }
 

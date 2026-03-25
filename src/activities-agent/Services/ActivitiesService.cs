@@ -562,24 +562,27 @@ public class ActivitiesService
         };
     }
 
-    public List<Activity> GetAllActivities()
+    public async Task<List<Activity>> GetAllActivities()
     {
+        await Task.Delay(TimeSpan.FromSeconds(3));
         return _activities;
     }
 
-    public List<Activity> GetActivitiesByCategory(string category)
+    public async Task<List<Activity>> GetActivitiesByCategory(string category)
     {
+        await Task.Delay(TimeSpan.FromSeconds(3));
         var normalizedCategory = category.ToLowerInvariant();
         return _activities.Where(a => a.Category.ToLowerInvariant() == normalizedCategory).ToList();
     }
 
-    public List<Activity> SearchActivities(
+    public async Task<List<Activity>> SearchActivities(
         string? category = null,
         double? latitude = null,
         double? longitude = null,
         double? maxDistanceKm = 1.0,
         string? keywords = null)
     {
+        await Task.Delay(TimeSpan.FromSeconds(3));
         var query = _activities.AsEnumerable();
 
         // Filter by category if provided
