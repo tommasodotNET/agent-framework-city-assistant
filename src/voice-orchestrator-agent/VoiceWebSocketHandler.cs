@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -10,9 +11,13 @@ namespace VoiceOrchestratorAgent;
 
 /// <summary>
 /// Handles a single voice session, bridging a browser WebSocket to a Voice Live session.
+/// Collects conversation events during the session and emits gen_ai OTel traces post-hoc.
 /// </summary>
 public sealed class VoiceWebSocketHandler
 {
+    public const string ActivitySourceName = "VoiceOrchestratorAgent.GenAI";
+    private static readonly ActivitySource s_activitySource = new(ActivitySourceName);
+
     private readonly WebSocket _clientSocket;
     private readonly TokenCredential _credential;
     private readonly string _endpoint;
@@ -21,6 +26,14 @@ public sealed class VoiceWebSocketHandler
     private readonly string _instructions;
     private readonly Dictionary<string, AIAgent> _a2aAgents;
     private readonly ILogger<VoiceWebSocketHandler> _logger;
+
+    // Conversation tracking for post-hoc telemetry
+    private readonly List<ConversationMessage> _messages = new();
+    private readonly List<ToolExecution> _toolExecutions = new();
+    private readonly List<ToolDefinitionInfo> _toolDefinitions = new();
+    private DateTimeOffset _sessionStartTime;
+    private DateTimeOffset _sessionEndTime;
+    private string? _errorType;
 
     public VoiceWebSocketHandler(
         WebSocket clientSocket,
@@ -45,23 +58,36 @@ public sealed class VoiceWebSocketHandler
     public async Task RunAsync(CancellationToken cancellationToken)
     {
         _logger.LogInformation("Starting Voice Live session with endpoint {Endpoint}, model {Model}", _endpoint, _model);
+        _sessionStartTime = DateTimeOffset.UtcNow;
 
-        var client = new VoiceLiveClient(new Uri(_endpoint), _credential);
-        await using var session = await client.StartSessionAsync(_model, cancellationToken);
+        try
+        {
+            var client = new VoiceLiveClient(new Uri(_endpoint), _credential);
+            await using var session = await client.StartSessionAsync(_model, cancellationToken);
 
-        await ConfigureSessionAsync(session);
-        await SendToClient(new { type = "ready" }, cancellationToken);
+            await ConfigureSessionAsync(session);
+            await SendToClient(new { type = "ready" }, cancellationToken);
 
-        using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
 
-        var clientToVoiceLive = Task.Run(() => ProcessClientMessages(session, cts.Token), cts.Token);
-        var voiceLiveToClient = Task.Run(() => ProcessVoiceLiveEvents(session, cts.Token), cts.Token);
+            var clientToVoiceLive = Task.Run(() => ProcessClientMessages(session, cts.Token), cts.Token);
+            var voiceLiveToClient = Task.Run(() => ProcessVoiceLiveEvents(session, cts.Token), cts.Token);
 
-        // Wait for either direction to finish (client disconnect or error)
-        await Task.WhenAny(clientToVoiceLive, voiceLiveToClient);
-        await cts.CancelAsync();
+            await Task.WhenAny(clientToVoiceLive, voiceLiveToClient);
+            await cts.CancelAsync();
 
-        _logger.LogInformation("Voice Live session ended");
+            _logger.LogInformation("Voice Live session ended");
+        }
+        catch (Exception ex)
+        {
+            _errorType = ex.GetType().FullName;
+            _logger.LogError(ex, "Voice Live session failed");
+        }
+        finally
+        {
+            _sessionEndTime = DateTimeOffset.UtcNow;
+            EmitTraces();
+        }
     }
 
     private async Task ConfigureSessionAsync(VoiceLiveSession session)
@@ -140,6 +166,15 @@ public sealed class VoiceWebSocketHandler
                 })
             }
         };
+
+        // Collect tool definitions for telemetry
+        foreach (var tool in functionTools)
+        {
+            _toolDefinitions.Add(new ToolDefinitionInfo(
+                tool.Name,
+                tool.Description ?? "",
+                tool.Parameters?.ToString() ?? "{}"));
+        }
 
         var options = new VoiceLiveSessionOptions
         {
@@ -249,14 +284,12 @@ public sealed class VoiceWebSocketHandler
                 {
                     case SessionUpdateSessionUpdated:
                         _logger.LogInformation("Voice Live session updated and ready");
-                        // Send initial greeting
                         await session.StartResponseAsync(cancellationToken);
                         await SendToClient(new { type = "status", status = "ready" }, cancellationToken);
                         break;
 
                     case SessionUpdateInputAudioBufferSpeechStarted:
                         _logger.LogDebug("User started speaking (barge-in)");
-                        // Tell the frontend to stop playing any buffered agent audio
                         await SendToClient(new { type = "clear_audio" }, cancellationToken);
                         await SendToClient(new { type = "status", status = "listening" }, cancellationToken);
                         break;
@@ -294,6 +327,10 @@ public sealed class VoiceWebSocketHandler
                     case SessionUpdateResponseAudioTranscriptDone transcriptDone:
                         if (!string.IsNullOrEmpty(transcriptDone.Transcript))
                         {
+                            // Record assistant message for telemetry
+                            _messages.Add(new ConversationMessage(
+                                DateTimeOffset.UtcNow, "assistant", "text", transcriptDone.Transcript));
+
                             await SendToClient(new
                             {
                                 type = "transcript",
@@ -307,6 +344,10 @@ public sealed class VoiceWebSocketHandler
                     case SessionUpdateConversationItemInputAudioTranscriptionCompleted inputTranscript:
                         if (!string.IsNullOrEmpty(inputTranscript.Transcript))
                         {
+                            // Record user message for telemetry
+                            _messages.Add(new ConversationMessage(
+                                DateTimeOffset.UtcNow, "user", "text", inputTranscript.Transcript));
+
                             await SendToClient(new
                             {
                                 type = "transcript",
@@ -325,6 +366,15 @@ public sealed class VoiceWebSocketHandler
                             ["item_id"] = functionCallFinished.ItemId,
                             ["arguments"] = functionCallFinished.Arguments
                         };
+
+                        // Record tool_call message for telemetry
+                        _messages.Add(new ConversationMessage(
+                            DateTimeOffset.UtcNow, "assistant", "tool_call",
+                            Content: null,
+                            ToolCallId: functionCallFinished.CallId,
+                            ToolName: functionCallFinished.Name,
+                            ToolArguments: functionCallFinished.Arguments));
+
                         _logger.LogInformation("Function call: {FunctionName}", functionCallFinished.Name);
                         await SendToClient(new
                         {
@@ -345,6 +395,7 @@ public sealed class VoiceWebSocketHandler
                         break;
 
                     case SessionUpdateError errorUpdate:
+                        _errorType = "voice_live_error";
                         _logger.LogError("Voice Live error: {Error}", errorUpdate.Error.Message);
                         await SendToClient(new { type = "error", message = errorUpdate.Error.Message }, cancellationToken);
                         break;
@@ -354,6 +405,7 @@ public sealed class VoiceWebSocketHandler
         catch (OperationCanceledException) { }
         catch (Exception ex)
         {
+            _errorType ??= ex.GetType().FullName;
             _logger.LogError(ex, "Error processing Voice Live events");
             await SendToClient(new { type = "error", message = ex.Message }, cancellationToken);
         }
@@ -366,6 +418,8 @@ public sealed class VoiceWebSocketHandler
         var arguments = (string)callInfo["arguments"];
 
         _logger.LogInformation("Executing function {FunctionName} with args: {Args}", functionName, arguments);
+
+        var toolExecution = new ToolExecution(functionName, callId, arguments, StartTime: DateTimeOffset.UtcNow);
 
         string resultJson;
         try
@@ -385,19 +439,41 @@ public sealed class VoiceWebSocketHandler
                 var args = JsonDocument.Parse(arguments).RootElement;
                 var query = args.TryGetProperty("query", out var q) ? q.GetString() ?? "" : "";
 
-                // Invoke the A2A agent using MAF's RunAsync
                 var messages = new List<ChatMessage>
                 {
                     new(ChatRole.User, query)
                 };
                 var agentResponse = await agent.RunAsync(messages);
-                resultJson = JsonSerializer.Serialize(new { response = agentResponse.Text });
+
+                // Extract the full response text; fall back to joining all assistant message contents
+                var responseText = agentResponse.Text;
+                if (string.IsNullOrEmpty(responseText) && agentResponse.Messages is { Count: > 0 })
+                {
+                    responseText = string.Join("\n", agentResponse.Messages
+                        .Where(m => m.Role == ChatRole.Assistant)
+                        .SelectMany(m => m.Contents.OfType<TextContent>())
+                        .Select(tc => tc.Text));
+                }
+
+                resultJson = responseText ?? "No response from agent";
+                _logger.LogDebug("A2A agent {FunctionName} returned {Length} chars", functionName, resultJson.Length);
             }
             else
             {
                 _logger.LogWarning("Unknown function: {FunctionName}", functionName);
                 resultJson = JsonSerializer.Serialize(new { error = $"Unknown function: {functionName}" });
             }
+
+            // Record tool response message for telemetry
+            _messages.Add(new ConversationMessage(
+                DateTimeOffset.UtcNow, "tool", "tool_call_response",
+                Content: null,
+                ToolCallId: callId,
+                ToolName: functionName,
+                ToolResult: resultJson));
+
+            toolExecution = toolExecution with { Result = resultJson, EndTime = DateTimeOffset.UtcNow };
+            _toolExecutions.Add(toolExecution);
 
             await session.AddItemAsync(new FunctionCallOutputItem(callId, resultJson), cancellationToken);
             _logger.LogInformation("Function {FunctionName} result sent", functionName);
@@ -408,9 +484,199 @@ public sealed class VoiceWebSocketHandler
         {
             _logger.LogError(ex, "Error executing function {FunctionName}", functionName);
             var errorResult = JsonSerializer.Serialize(new { error = ex.Message });
+
+            _messages.Add(new ConversationMessage(
+                DateTimeOffset.UtcNow, "tool", "tool_call_response",
+                Content: null,
+                ToolCallId: callId,
+                ToolName: functionName,
+                ToolResult: errorResult));
+
+            toolExecution = toolExecution with { Result = errorResult, EndTime = DateTimeOffset.UtcNow, ErrorType = ex.GetType().FullName };
+            _toolExecutions.Add(toolExecution);
+
             await session.AddItemAsync(new FunctionCallOutputItem(callId, errorResult), cancellationToken);
             await session.StartResponseAsync(cancellationToken);
         }
+    }
+
+    /// <summary>
+    /// Emits gen_ai OTel traces post-hoc from the collected conversation data.
+    /// </summary>
+    private void EmitTraces()
+    {
+        if (_messages.Count == 0)
+        {
+            _logger.LogDebug("No conversation messages to emit traces for");
+            return;
+        }
+
+        var serverHost = new Uri(_endpoint).Host;
+        var serverPort = new Uri(_endpoint).Port;
+
+        // Root span: chat inference
+        var rootActivity = s_activitySource.StartActivity(
+            name: $"chat {_model}",
+            kind: ActivityKind.Client,
+            tags: new ActivityTagsCollection
+            {
+                { "gen_ai.operation.name", "chat" },
+                { "gen_ai.provider.name", "azure.ai.openai" },
+                { "gen_ai.request.model", _model },
+            },
+            startTime: _sessionStartTime);
+
+        if (rootActivity is null)
+        {
+            _logger.LogDebug("ActivitySource not sampled, skipping trace emission");
+            return;
+        }
+
+        rootActivity.SetTag("gen_ai.output.type", "speech");
+        rootActivity.SetTag("gen_ai.response.model", _model);
+        rootActivity.SetTag("server.address", serverHost);
+        rootActivity.SetTag("server.port", serverPort == -1 ? 443 : serverPort);
+
+        // System instructions
+        rootActivity.SetTag("gen_ai.system_instructions",
+            JsonSerializer.Serialize(new[] { new { type = "text", content = _instructions } }));
+
+        // Tool definitions
+        rootActivity.SetTag("gen_ai.tool.definitions",
+            JsonSerializer.Serialize(_toolDefinitions.Select(t => new
+            {
+                type = "function",
+                name = t.Name,
+                description = t.Description,
+                parameters = JsonSerializer.Deserialize<JsonElement>(t.ParametersJson)
+            })));
+
+        // Input messages (user utterances, tool calls by assistant, tool responses)
+        var toolResponseMessages = _messages.Where(m => m.Role == "tool").ToList();
+        foreach (var trm in toolResponseMessages)
+        {
+            _logger.LogInformation(
+                "Tool response message: callId={CallId}, toolName={ToolName}, result_length={Len}, result_preview={Preview}",
+                trm.ToolCallId, trm.ToolName, trm.ToolResult?.Length ?? -1,
+                trm.ToolResult?[..Math.Min(100, trm.ToolResult?.Length ?? 0)]);
+        }
+
+        var inputMessages = _messages
+            .Where(m => m.Role == "user" || (m.Role == "assistant" && m.Type == "tool_call") || m.Role == "tool")
+            .Select(BuildMessageObject)
+            .ToList();
+
+        if (inputMessages.Count > 0)
+            rootActivity.SetTag("gen_ai.input.messages", JsonSerializer.Serialize(inputMessages));
+
+        // Output messages (assistant text responses)
+        var outputMessages = _messages
+            .Where(m => m.Role == "assistant" && m.Type == "text")
+            .Select(m => new
+            {
+                role = "assistant",
+                parts = new[] { new { type = "text", content = m.Content } },
+                finish_reason = "stop"
+            })
+            .ToList();
+
+        if (outputMessages.Count > 0)
+            rootActivity.SetTag("gen_ai.output.messages", JsonSerializer.Serialize(outputMessages));
+
+        rootActivity.SetTag("gen_ai.response.finish_reasons", JsonSerializer.Serialize(new[] { "stop" }));
+
+        if (_errorType is not null)
+        {
+            rootActivity.SetTag("error.type", _errorType);
+            rootActivity.SetStatus(ActivityStatusCode.Error);
+        }
+
+        // Child spans: execute_tool for each tool invocation
+        foreach (var tool in _toolExecutions)
+        {
+            _logger.LogInformation(
+                "Emitting execute_tool span: name={Name}, callId={CallId}, args={Args}, result_length={ResultLen}",
+                tool.Name, tool.CallId,
+                tool.Arguments?[..Math.Min(100, tool.Arguments?.Length ?? 0)],
+                tool.Result?.Length ?? -1);
+
+            using var toolActivity = s_activitySource.StartActivity(
+                $"execute_tool {tool.Name}",
+                ActivityKind.Internal,
+                rootActivity.Context,
+                tags: null,
+                links: null,
+                startTime: tool.StartTime);
+
+            if (toolActivity is null) continue;
+
+            toolActivity.SetTag("gen_ai.operation.name", "execute_tool");
+            toolActivity.SetTag("gen_ai.tool.name", tool.Name);
+            toolActivity.SetTag("gen_ai.tool.call.id", tool.CallId);
+            toolActivity.SetTag("gen_ai.tool.type", "function");
+            toolActivity.SetTag("gen_ai.tool.call.arguments", tool.Arguments);
+            toolActivity.SetTag("gen_ai.tool.call.result", tool.Result ?? "");
+
+            if (tool.ErrorType is not null)
+            {
+                toolActivity.SetTag("error.type", tool.ErrorType);
+                toolActivity.SetStatus(ActivityStatusCode.Error);
+            }
+
+            if (tool.EndTime.HasValue)
+                toolActivity.SetEndTime(tool.EndTime.Value.UtcDateTime);
+        }
+
+        rootActivity.SetEndTime(_sessionEndTime.UtcDateTime);
+        rootActivity.Dispose();
+
+        _logger.LogInformation(
+            "Emitted gen_ai traces: 1 chat span + {ToolCount} tool spans, {MessageCount} messages",
+            _toolExecutions.Count, _messages.Count);
+    }
+
+    private static object BuildMessageObject(ConversationMessage msg) => msg.Type switch
+    {
+        "text" => new
+        {
+            role = msg.Role,
+            parts = new object[] { new { type = "text", content = msg.Content } }
+        },
+        "tool_call" => new
+        {
+            role = msg.Role,
+            parts = new object[]
+            {
+                new
+                {
+                    type = "tool_call",
+                    id = msg.ToolCallId,
+                    name = msg.ToolName,
+                    arguments = TryParseJson(msg.ToolArguments)
+                }
+            }
+        },
+        "tool_call_response" => new
+        {
+            role = msg.Role,
+            parts = new object[]
+            {
+                new
+                {
+                    type = "tool_call_response",
+                    id = msg.ToolCallId,
+                    response = TryParseJson(msg.ToolResult)
+                }
+            }
+        },
+        _ => new { role = msg.Role, parts = Array.Empty<object>() } as object
+    };
+
+    private static object TryParseJson(string? json)
+    {
+        if (string.IsNullOrEmpty(json)) return new { };
+        try { return JsonSerializer.Deserialize<JsonElement>(json); }
+        catch { return json; }
     }
 
     private async Task SendToClient(object message, CancellationToken cancellationToken)
@@ -429,4 +695,26 @@ public sealed class VoiceWebSocketHandler
             _logger.LogError(ex, "Error sending to client WebSocket");
         }
     }
+
+    // Telemetry data models
+    private record ConversationMessage(
+        DateTimeOffset Timestamp,
+        string Role,
+        string Type,
+        string? Content = null,
+        string? ToolCallId = null,
+        string? ToolName = null,
+        string? ToolArguments = null,
+        string? ToolResult = null);
+
+    private record ToolExecution(
+        string Name,
+        string CallId,
+        string Arguments,
+        DateTimeOffset StartTime,
+        string? Result = null,
+        DateTimeOffset? EndTime = null,
+        string? ErrorType = null);
+
+    private record ToolDefinitionInfo(string Name, string Description, string ParametersJson);
 }

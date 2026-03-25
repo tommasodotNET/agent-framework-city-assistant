@@ -2,11 +2,16 @@ using A2A;
 using Azure.Identity;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Hosting.A2A;
+using OpenTelemetry.Trace;
 using VoiceOrchestratorAgent;
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.AddServiceDefaults();
+
+// Register custom ActivitySource for gen_ai tracing
+builder.Services.AddOpenTelemetry()
+    .WithTracing(tracing => tracing.AddSource(VoiceWebSocketHandler.ActivitySourceName));
 
 builder.Services.AddCors(options =>
 {
