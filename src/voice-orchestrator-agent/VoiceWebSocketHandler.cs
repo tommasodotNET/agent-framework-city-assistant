@@ -597,6 +597,9 @@ public sealed class VoiceWebSocketHandler
                 _ => msg.Content ?? ""
             };
 
+            // Replace non-ASCII unicode chars that the Cosmos emulator can't handle
+            content = SanitizeForCosmos(content);
+
             var doc = new VoiceConversationDocument
             {
                 Id = Guid.NewGuid().ToString(),
@@ -799,6 +802,29 @@ public sealed class VoiceWebSocketHandler
         if (string.IsNullOrEmpty(json)) return new { };
         try { return JsonSerializer.Deserialize<JsonElement>(json); }
         catch { return json; }
+    }
+
+    /// <summary>
+    /// Replaces non-ASCII characters with their ASCII equivalents to avoid
+    /// "unsupported Unicode escape sequence" errors in the Cosmos DB emulator.
+    /// </summary>
+    private static string SanitizeForCosmos(string text)
+    {
+        var sb = new StringBuilder(text.Length);
+        foreach (var c in text)
+        {
+            sb.Append(c switch
+            {
+                '\u2019' or '\u2018' => '\'',  // curly quotes → straight
+                '\u201C' or '\u201D' => '"',   // curly double quotes → straight
+                '\u2013' or '\u2014' => '-',   // en/em dash → hyphen
+                '\u2026' => '.',               // ellipsis → dot
+                '\u00A0' => ' ',               // non-breaking space → space
+                _ when c > 127 => ' ',         // any other non-ASCII → space
+                _ => c
+            });
+        }
+        return sb.ToString();
     }
 
     private async Task SendToClient(object message, CancellationToken cancellationToken)
