@@ -1,4 +1,3 @@
-using System.Diagnostics;
 using System.Net.WebSockets;
 using System.Text;
 using System.Text.Json;
@@ -12,13 +11,11 @@ namespace VoiceOrchestratorAgent;
 
 /// <summary>
 /// Handles a single voice session, bridging a browser WebSocket to a Voice Live session.
-/// Collects conversation events during the session and emits gen_ai OTel traces post-hoc.
+/// Delegates conversation persistence to <see cref="VoiceConversationStore"/> and
+/// telemetry emission to <see cref="VoiceSessionTraceEmitter"/>.
 /// </summary>
 public sealed class VoiceWebSocketHandler
 {
-    public const string ActivitySourceName = "VoiceOrchestratorAgent.GenAI";
-    private static readonly ActivitySource s_activitySource = new(ActivitySourceName);
-
     private readonly WebSocket _clientSocket;
     private readonly TokenCredential _credential;
     private readonly string _endpoint;
@@ -28,9 +25,10 @@ public sealed class VoiceWebSocketHandler
     private readonly Dictionary<string, AIAgent> _a2aAgents;
     private readonly ILogger<VoiceWebSocketHandler> _logger;
     private readonly string? _conversationId;
-    private readonly Container? _cosmosContainer;
+    private readonly VoiceConversationStore? _conversationStore;
+    private readonly VoiceSessionTraceEmitter _traceEmitter;
 
-    // Conversation tracking for post-hoc telemetry
+    // Conversation tracking for post-hoc telemetry and persistence
     private readonly List<ConversationMessage> _messages = new();
     private readonly List<ToolExecution> _toolExecutions = new();
     private readonly List<ToolDefinitionInfo> _toolDefinitions = new();
@@ -59,7 +57,8 @@ public sealed class VoiceWebSocketHandler
         _a2aAgents = a2aAgents;
         _logger = logger;
         _conversationId = conversationId;
-        _cosmosContainer = cosmosContainer;
+        _conversationStore = cosmosContainer is not null ? new VoiceConversationStore(cosmosContainer, logger) : null;
+        _traceEmitter = new VoiceSessionTraceEmitter(logger);
     }
 
     public async Task RunAsync(CancellationToken cancellationToken)
@@ -73,10 +72,7 @@ public sealed class VoiceWebSocketHandler
             await using var session = await client.StartSessionAsync(_model, cancellationToken);
 
             await ConfigureSessionAsync(session, _instructions);
-
-            // Inject previous conversation history as native conversation items
             await InjectConversationHistoryAsync(session, cancellationToken);
-
             await SendToClient(new { type = "ready" }, cancellationToken);
 
             using var cts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -97,8 +93,13 @@ public sealed class VoiceWebSocketHandler
         finally
         {
             _sessionEndTime = DateTimeOffset.UtcNow;
-            EmitTraces();
-            await SaveConversationAsync();
+
+            _traceEmitter.Emit(_endpoint, _model, _instructions,
+                _messages, _toolExecutions, _toolDefinitions,
+                _sessionStartTime, _sessionEndTime, _errorType);
+
+            if (_conversationId is not null && _conversationStore is not null)
+                await _conversationStore.SaveAsync(_conversationId, _messages);
         }
     }
 
@@ -168,8 +169,35 @@ public sealed class VoiceWebSocketHandler
     }
 
     /// <summary>
-    /// Reads messages from the browser WebSocket and forwards audio to Voice Live.
+    /// Injects previous conversation history as native conversation items.
     /// </summary>
+    private async Task InjectConversationHistoryAsync(VoiceLiveSession session, CancellationToken cancellationToken)
+    {
+        if (_conversationId is null || _conversationStore is null) return;
+
+        try
+        {
+            var messages = await _conversationStore.LoadAsync(_conversationId);
+            if (messages.Count == 0) return;
+
+            foreach (var (role, text) in messages)
+            {
+                ConversationRequestItem item = role switch
+                {
+                    "user" => new UserMessageItem(text),
+                    "assistant" => new AssistantMessageItem(text),
+                    _ => new UserMessageItem(text)
+                };
+
+                await session.AddItemAsync(item, cancellationToken);
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error injecting conversation history for {ConversationId}", _conversationId);
+        }
+    }
+
     private async Task ProcessClientMessages(VoiceLiveSession session, CancellationToken cancellationToken)
     {
         var buffer = new byte[1024 * 64];
@@ -230,9 +258,6 @@ public sealed class VoiceWebSocketHandler
         }
     }
 
-    /// <summary>
-    /// Processes events from Voice Live and forwards audio/transcripts to the browser.
-    /// </summary>
     private async Task ProcessVoiceLiveEvents(VoiceLiveSession session, CancellationToken cancellationToken)
     {
         Dictionary<string, object>? pendingFunctionCall = null;
@@ -288,7 +313,6 @@ public sealed class VoiceWebSocketHandler
                     case SessionUpdateResponseAudioTranscriptDone transcriptDone:
                         if (!string.IsNullOrEmpty(transcriptDone.Transcript))
                         {
-                            // Record assistant message for telemetry
                             _messages.Add(new ConversationMessage(
                                 DateTimeOffset.UtcNow, "assistant", "text", transcriptDone.Transcript));
 
@@ -305,7 +329,6 @@ public sealed class VoiceWebSocketHandler
                     case SessionUpdateConversationItemInputAudioTranscriptionCompleted inputTranscript:
                         if (!string.IsNullOrEmpty(inputTranscript.Transcript))
                         {
-                            // Record user message for telemetry
                             _messages.Add(new ConversationMessage(
                                 DateTimeOffset.UtcNow, "user", "text", inputTranscript.Transcript));
 
@@ -328,7 +351,6 @@ public sealed class VoiceWebSocketHandler
                             ["arguments"] = functionCallFinished.Arguments
                         };
 
-                        // Record tool_call message for telemetry
                         _messages.Add(new ConversationMessage(
                             DateTimeOffset.UtcNow, "assistant", "tool_call",
                             Content: null,
@@ -400,13 +422,9 @@ public sealed class VoiceWebSocketHandler
                 var args = JsonDocument.Parse(arguments).RootElement;
                 var query = args.TryGetProperty("query", out var q) ? q.GetString() ?? "" : "";
 
-                var messages = new List<ChatMessage>
-                {
-                    new(ChatRole.User, query)
-                };
+                var messages = new List<ChatMessage> { new(ChatRole.User, query) };
                 var agentResponse = await agent.RunAsync(messages);
 
-                // Extract the full response text; fall back to joining all assistant message contents
                 var responseText = agentResponse.Text;
                 if (string.IsNullOrEmpty(responseText) && agentResponse.Messages is { Count: > 0 })
                 {
@@ -417,7 +435,6 @@ public sealed class VoiceWebSocketHandler
                 }
 
                 resultJson = responseText ?? "No response from agent";
-                _logger.LogDebug("A2A agent {FunctionName} returned {Length} chars", functionName, resultJson.Length);
             }
             else
             {
@@ -425,20 +442,15 @@ public sealed class VoiceWebSocketHandler
                 resultJson = JsonSerializer.Serialize(new { error = $"Unknown function: {functionName}" });
             }
 
-            // Record tool response message for telemetry
             _messages.Add(new ConversationMessage(
                 DateTimeOffset.UtcNow, "tool", "tool_call_response",
-                Content: null,
-                ToolCallId: callId,
-                ToolName: functionName,
-                ToolResult: resultJson));
+                Content: null, ToolCallId: callId, ToolName: functionName, ToolResult: resultJson));
 
             toolExecution = toolExecution with { Result = resultJson, EndTime = DateTimeOffset.UtcNow };
             _toolExecutions.Add(toolExecution);
 
             await session.AddItemAsync(new FunctionCallOutputItem(callId, resultJson), cancellationToken);
             _logger.LogInformation("Function {FunctionName} result sent", functionName);
-
             await session.StartResponseAsync(cancellationToken);
         }
         catch (Exception ex)
@@ -448,10 +460,7 @@ public sealed class VoiceWebSocketHandler
 
             _messages.Add(new ConversationMessage(
                 DateTimeOffset.UtcNow, "tool", "tool_call_response",
-                Content: null,
-                ToolCallId: callId,
-                ToolName: functionName,
-                ToolResult: errorResult));
+                Content: null, ToolCallId: callId, ToolName: functionName, ToolResult: errorResult));
 
             toolExecution = toolExecution with { Result = errorResult, EndTime = DateTimeOffset.UtcNow, ErrorType = ex.GetType().FullName };
             _toolExecutions.Add(toolExecution);
@@ -459,318 +468,6 @@ public sealed class VoiceWebSocketHandler
             await session.AddItemAsync(new FunctionCallOutputItem(callId, errorResult), cancellationToken);
             await session.StartResponseAsync(cancellationToken);
         }
-    }
-
-    /// <summary>
-    /// Loads previous conversation history from Cosmos DB and formats it for system instructions.
-    /// </summary>
-    /// <summary>
-    /// Loads previous conversation from Cosmos DB and injects it as native conversation items
-    /// via session.AddItemAsync. This populates the model's conversation context properly
-    /// instead of appending text to the system prompt.
-    /// </summary>
-    private async Task InjectConversationHistoryAsync(VoiceLiveSession session, CancellationToken cancellationToken)
-    {
-        if (_conversationId is null || _cosmosContainer is null) return;
-
-        try
-        {
-            var query = new QueryDefinition(
-                "SELECT * FROM c WHERE c.conversationId = @convId AND c.type = @type ORDER BY c.timestamp ASC")
-                .WithParameter("@convId", _conversationId)
-                .WithParameter("@type", "ChatMessage");
-
-            var messages = new List<(string role, string text)>();
-            using var iterator = _cosmosContainer.GetItemQueryIterator<JsonElement>(query,
-                requestOptions: new QueryRequestOptions { PartitionKey = new PartitionKey(_conversationId) });
-
-            while (iterator.HasMoreResults)
-            {
-                var response = await iterator.ReadNextAsync();
-                foreach (var doc in response)
-                {
-                    var role = doc.GetProperty("role").GetString() ?? "";
-                    var text = doc.GetProperty("message").GetString() ?? "";
-                    if (!string.IsNullOrEmpty(text))
-                        messages.Add((role, text));
-                }
-            }
-
-            if (messages.Count == 0) return;
-
-            _logger.LogInformation("Injecting {Count} previous conversation items for {ConversationId}",
-                messages.Count, _conversationId);
-
-            // Add each message as a native conversation item
-            foreach (var (role, text) in messages)
-            {
-                ConversationRequestItem item = role switch
-                {
-                    "user" => new UserMessageItem(text),
-                    "assistant" => new AssistantMessageItem(text),
-                    _ => new UserMessageItem(text) // tool calls/responses stored as user context
-                };
-
-                await session.AddItemAsync(item, cancellationToken);
-            }
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error injecting conversation history for {ConversationId}", _conversationId);
-        }
-    }
-
-    /// <summary>
-    /// Saves the conversation transcript to Cosmos DB after the voice session ends.
-    /// </summary>
-    private async Task SaveConversationAsync()
-    {
-        if (_conversationId is null || _cosmosContainer is null) return;
-
-        var messagesToSave = _messages.ToList();
-        if (messagesToSave.Count == 0) return;
-
-        var partitionKey = new PartitionKey(_conversationId);
-
-        foreach (var msg in messagesToSave)
-        {
-            // Build the message content based on type
-            var content = msg.Type switch
-            {
-                "text" => msg.Content ?? "",
-                "tool_call" => JsonSerializer.Serialize(new { tool = msg.ToolName, arguments = msg.ToolArguments }),
-                "tool_call_response" => JsonSerializer.Serialize(new { tool = msg.ToolName, result = msg.ToolResult }),
-                _ => msg.Content ?? ""
-            };
-
-            // Replace non-ASCII unicode chars that the Cosmos emulator can't handle
-            content = SanitizeForCosmos(content);
-
-            var doc = new VoiceConversationDocument
-            {
-                Id = Guid.NewGuid().ToString(),
-                ConversationId = _conversationId,
-                Timestamp = msg.Timestamp.ToUnixTimeSeconds(),
-                Role = msg.Role,
-                Message = content,
-                Type = "ChatMessage",
-                Ttl = 86400 * 7
-            };
-
-            try
-            {
-                await _cosmosContainer.CreateItemAsync(doc, partitionKey);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error saving conversation message to Cosmos");
-            }
-        }
-
-        _logger.LogInformation("Saved {Count} conversation messages to Cosmos for {ConversationId}",
-            messagesToSave.Count, _conversationId);
-    }
-
-    /// <summary>
-    /// Emits gen_ai OTel traces post-hoc from the collected conversation data.
-    /// </summary>
-    private void EmitTraces()
-    {
-        if (_messages.Count == 0)
-        {
-            _logger.LogDebug("No conversation messages to emit traces for");
-            return;
-        }
-
-        var serverHost = new Uri(_endpoint).Host;
-        var serverPort = new Uri(_endpoint).Port;
-
-        // Root span: chat inference
-        var rootActivity = s_activitySource.StartActivity(
-            name: $"chat {_model}",
-            kind: ActivityKind.Client,
-            tags: new ActivityTagsCollection
-            {
-                { "gen_ai.operation.name", "chat" },
-                { "gen_ai.provider.name", "azure.ai.openai" },
-                { "gen_ai.request.model", _model },
-            },
-            startTime: _sessionStartTime);
-
-        if (rootActivity is null)
-        {
-            _logger.LogDebug("ActivitySource not sampled, skipping trace emission");
-            return;
-        }
-
-        rootActivity.SetTag("gen_ai.output.type", "speech");
-        rootActivity.SetTag("gen_ai.response.model", _model);
-        rootActivity.SetTag("server.address", serverHost);
-        rootActivity.SetTag("server.port", serverPort == -1 ? 443 : serverPort);
-
-        // System instructions
-        rootActivity.SetTag("gen_ai.system_instructions",
-            JsonSerializer.Serialize(new[] { new { type = "text", content = _instructions } }));
-
-        // Tool definitions
-        rootActivity.SetTag("gen_ai.tool.definitions",
-            JsonSerializer.Serialize(_toolDefinitions.Select(t => new
-            {
-                type = "function",
-                name = t.Name,
-                description = t.Description,
-                parameters = JsonSerializer.Deserialize<JsonElement>(t.ParametersJson)
-            })));
-
-        // Input messages (user utterances, tool calls by assistant, tool responses)
-        var toolResponseMessages = _messages.Where(m => m.Role == "tool").ToList();
-        foreach (var trm in toolResponseMessages)
-        {
-            _logger.LogInformation(
-                "Tool response message: callId={CallId}, toolName={ToolName}, result_length={Len}, result_preview={Preview}",
-                trm.ToolCallId, trm.ToolName, trm.ToolResult?.Length ?? -1,
-                trm.ToolResult?[..Math.Min(100, trm.ToolResult?.Length ?? 0)]);
-        }
-
-        var inputMessages = _messages
-            .Where(m => m.Role == "user" || (m.Role == "assistant" && m.Type == "tool_call") || m.Role == "tool")
-            .Select(BuildMessageObject)
-            .ToList();
-
-        if (inputMessages.Count > 0)
-            rootActivity.SetTag("gen_ai.input.messages", JsonSerializer.Serialize(inputMessages));
-
-        // Output messages (assistant text responses)
-        var outputMessages = _messages
-            .Where(m => m.Role == "assistant" && m.Type == "text")
-            .Select(m => new
-            {
-                role = "assistant",
-                parts = new[] { new { type = "text", content = m.Content } },
-                finish_reason = "stop"
-            })
-            .ToList();
-
-        if (outputMessages.Count > 0)
-            rootActivity.SetTag("gen_ai.output.messages", JsonSerializer.Serialize(outputMessages));
-
-        rootActivity.SetTag("gen_ai.response.finish_reasons", JsonSerializer.Serialize(new[] { "stop" }));
-
-        if (_errorType is not null)
-        {
-            rootActivity.SetTag("error.type", _errorType);
-            rootActivity.SetStatus(ActivityStatusCode.Error);
-        }
-
-        // Child spans: execute_tool for each tool invocation
-        foreach (var tool in _toolExecutions)
-        {
-            _logger.LogInformation(
-                "Emitting execute_tool span: name={Name}, callId={CallId}, args={Args}, result_length={ResultLen}",
-                tool.Name, tool.CallId,
-                tool.Arguments?[..Math.Min(100, tool.Arguments?.Length ?? 0)],
-                tool.Result?.Length ?? -1);
-
-            using var toolActivity = s_activitySource.StartActivity(
-                $"execute_tool {tool.Name}",
-                ActivityKind.Internal,
-                rootActivity.Context,
-                tags: null,
-                links: null,
-                startTime: tool.StartTime);
-
-            if (toolActivity is null) continue;
-
-            toolActivity.SetTag("gen_ai.operation.name", "execute_tool");
-            toolActivity.SetTag("gen_ai.tool.name", tool.Name);
-            toolActivity.SetTag("gen_ai.tool.call.id", tool.CallId);
-            toolActivity.SetTag("gen_ai.tool.type", "function");
-            toolActivity.SetTag("gen_ai.tool.call.arguments", tool.Arguments);
-            toolActivity.SetTag("gen_ai.tool.call.result", tool.Result ?? "");
-
-            if (tool.ErrorType is not null)
-            {
-                toolActivity.SetTag("error.type", tool.ErrorType);
-                toolActivity.SetStatus(ActivityStatusCode.Error);
-            }
-
-            if (tool.EndTime.HasValue)
-                toolActivity.SetEndTime(tool.EndTime.Value.UtcDateTime);
-        }
-
-        rootActivity.SetEndTime(_sessionEndTime.UtcDateTime);
-        rootActivity.Dispose();
-
-        _logger.LogInformation(
-            "Emitted gen_ai traces: 1 chat span + {ToolCount} tool spans, {MessageCount} messages",
-            _toolExecutions.Count, _messages.Count);
-    }
-
-    private static object BuildMessageObject(ConversationMessage msg) => msg.Type switch
-    {
-        "text" => new
-        {
-            role = msg.Role,
-            parts = new object[] { new { type = "text", content = msg.Content } }
-        },
-        "tool_call" => new
-        {
-            role = msg.Role,
-            parts = new object[]
-            {
-                new
-                {
-                    type = "tool_call",
-                    id = msg.ToolCallId,
-                    name = msg.ToolName,
-                    arguments = TryParseJson(msg.ToolArguments)
-                }
-            }
-        },
-        "tool_call_response" => new
-        {
-            role = msg.Role,
-            parts = new object[]
-            {
-                new
-                {
-                    type = "tool_call_response",
-                    id = msg.ToolCallId,
-                    response = TryParseJson(msg.ToolResult)
-                }
-            }
-        },
-        _ => new { role = msg.Role, parts = Array.Empty<object>() } as object
-    };
-
-    private static object TryParseJson(string? json)
-    {
-        if (string.IsNullOrEmpty(json)) return new { };
-        try { return JsonSerializer.Deserialize<JsonElement>(json); }
-        catch { return json; }
-    }
-
-    /// <summary>
-    /// Replaces non-ASCII characters with their ASCII equivalents to avoid
-    /// "unsupported Unicode escape sequence" errors in the Cosmos DB emulator.
-    /// </summary>
-    private static string SanitizeForCosmos(string text)
-    {
-        var sb = new StringBuilder(text.Length);
-        foreach (var c in text)
-        {
-            sb.Append(c switch
-            {
-                '\u2019' or '\u2018' => '\'',  // curly quotes → straight
-                '\u201C' or '\u201D' => '"',   // curly double quotes → straight
-                '\u2013' or '\u2014' => '-',   // en/em dash → hyphen
-                '\u2026' => '.',               // ellipsis → dot
-                '\u00A0' => ' ',               // non-breaking space → space
-                _ when c > 127 => ' ',         // any other non-ASCII → space
-                _ => c
-            });
-        }
-        return sb.ToString();
     }
 
     private async Task SendToClient(object message, CancellationToken cancellationToken)
@@ -788,51 +485,5 @@ public sealed class VoiceWebSocketHandler
         {
             _logger.LogError(ex, "Error sending to client WebSocket");
         }
-    }
-
-    // Telemetry data models
-    private record ConversationMessage(
-        DateTimeOffset Timestamp,
-        string Role,
-        string Type,
-        string? Content = null,
-        string? ToolCallId = null,
-        string? ToolName = null,
-        string? ToolArguments = null,
-        string? ToolResult = null);
-
-    private record ToolExecution(
-        string Name,
-        string CallId,
-        string Arguments,
-        DateTimeOffset StartTime,
-        string? Result = null,
-        DateTimeOffset? EndTime = null,
-        string? ErrorType = null);
-
-    private record ToolDefinitionInfo(string Name, string Description, string ParametersJson);
-
-    private sealed class VoiceConversationDocument
-    {
-        [System.Text.Json.Serialization.JsonPropertyName("id")]
-        public string Id { get; set; } = "";
-
-        [System.Text.Json.Serialization.JsonPropertyName("conversationId")]
-        public string ConversationId { get; set; } = "";
-
-        [System.Text.Json.Serialization.JsonPropertyName("timestamp")]
-        public long Timestamp { get; set; }
-
-        [System.Text.Json.Serialization.JsonPropertyName("role")]
-        public string Role { get; set; } = "";
-
-        [System.Text.Json.Serialization.JsonPropertyName("message")]
-        public string Message { get; set; } = "";
-
-        [System.Text.Json.Serialization.JsonPropertyName("type")]
-        public string Type { get; set; } = "";
-
-        [System.Text.Json.Serialization.JsonPropertyName("ttl")]
-        public int Ttl { get; set; }
     }
 }

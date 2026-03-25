@@ -21,7 +21,7 @@ builder.Services.AddSingleton(sp => sp.GetRequiredKeyedService<Container>("conve
 
 // Register custom ActivitySource for gen_ai tracing
 builder.Services.AddOpenTelemetry()
-    .WithTracing(tracing => tracing.AddSource(VoiceWebSocketHandler.ActivitySourceName));
+    .WithTracing(tracing => tracing.AddSource(VoiceSessionTraceEmitter.ActivitySourceName));
 
 builder.Services.AddCors(options =>
 {
