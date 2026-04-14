@@ -98,7 +98,7 @@ Data Flow:
 
 > This sample requires latest .Net 10 Preview SDK (RC2) and Python 3.11+ installed on your machine.
 
-To allow Aspire to create or reference existing resources on Azure (e.g. Foundry), you need to configure Azure settings in the [appsettings.json](./src/aspire/appsettings.json) file:
+To allow Aspire to create or reference existing resources on Azure (e.g. Foundry), you need to configure Azure settings in the [appsettings.json](./src/aspire/apphost.settings.json) file:
 
 ```json
 "Azure": {

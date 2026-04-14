@@ -79,5 +79,6 @@ Thumbs.db
 
 # Aspire
 .aspire/
-*/*.Development.Json
-**/*.Development.Json
+*/*.Development.json
+**/*.Development.json
+**/*.lscache
