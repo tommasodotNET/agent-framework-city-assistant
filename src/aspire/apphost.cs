@@ -122,8 +122,7 @@ if (builder.ExecutionContext.IsPublishMode)
         .WithExternalHttpEndpoints()
         .WithConfiguration(yarp =>
         {
-            yarp.AddRoute("/agenta2a/{**catch-all}", orchestratorAgent)
-                .WithTransformPathPrefix("/agenta2a");
+            yarp.AddRoute("/agenta2a/{**catch-all}", orchestratorAgent);
         })
         .PublishWithStaticFiles(frontend);
 }
