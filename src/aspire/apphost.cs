@@ -1,4 +1,5 @@
-﻿#:sdk Aspire.AppHost.Sdk@13.2.0
+﻿#:package Aspire.Hosting.Azure.AppContainers@13.2.2
+#:sdk Aspire.AppHost.Sdk@13.2.0
 #:package Aspire.Hosting.Foundry@13.2.0-preview.1.26170.3
 #:package Aspire.Hosting.Azure.CosmosDB@13.2.0
 #:package Aspire.Hosting.JavaScript@13.2.0
@@ -15,6 +16,8 @@
 using Aspire.Hosting.Yarp.Transforms;
 
 var builder = DistributedApplication.CreateBuilder(args);
+
+builder.AddAzureContainerAppEnvironment("env");
 
 var tenantId = builder.AddParameterFromConfiguration("tenant", "Azure:TenantId");
 var existingFoundryName = builder.AddParameter("existingFoundryName")
@@ -119,8 +122,8 @@ if (builder.ExecutionContext.IsPublishMode)
         .WithExternalHttpEndpoints()
         .WithConfiguration(yarp =>
         {
-            yarp.AddRoute("/agent/{**catch-all}", orchestratorAgent)
-                .WithTransformPathPrefix("/agent");
+            yarp.AddRoute("/agenta2a/{**catch-all}", orchestratorAgent)
+                .WithTransformPathPrefix("/agenta2a");
         })
         .PublishWithStaticFiles(frontend);
 }

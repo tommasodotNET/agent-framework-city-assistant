@@ -27,9 +27,11 @@ builder.Services.AddSingleton<IAccommodationService, AccommodationService>();
 builder.Services.AddSingleton<IRerankingService, RerankingService>();
 
 // Configure MCP Client for geocoding server
-var geocodingMcpUrl = builder.Configuration["services__geocodingmcpserver__https__0"] 
-    ?? builder.Configuration["services__geocodingmcpserver__http__0"]
-    ?? "https://localhost:7299";
+var geocodingMcpUrl = Environment.GetEnvironmentVariable("services__geocodingmcpserver__https__0")
+    ?? Environment.GetEnvironmentVariable("services__geocodingmcpserver__http__0")
+    ?? throw new InvalidOperationException(
+        "Could not resolve geocoding MCP server URL. Env vars 'services__geocodingmcpserver__https__0' and " +
+        "'services__geocodingmcpserver__http__0' are both missing.");
 
 // Append the MCP endpoint path
 var mcpEndpoint = new Uri(new Uri(geocodingMcpUrl), "/mcp");
