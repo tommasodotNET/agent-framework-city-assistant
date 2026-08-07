@@ -1,4 +1,5 @@
 using A2A;
+using A2A.AspNetCore;
 using Azure.Identity;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Hosting;
@@ -85,15 +86,24 @@ builder.AddAIAgent("accommodation-agent", (sp, key) =>
     }.WithCosmosChatHistoryProvider(sp);
 
     return chatClient.AsAIAgent(agentOptions, services: sp);
-}).WithCosmosSessionStore();
+}).WithCosmosSessionStore()
+  .AddA2AServer();
 
 var app = builder.Build();
 
 // Map A2A endpoint
-app.MapA2A("accommodation-agent", "/agenta2a", new AgentCard
+var accommodationAgentUrl = app.Configuration["ASPNETCORE_URLS"]?.Split(';')[0] + "/agenta2a" ?? "http://localhost:5198/agenta2a";
+app.MapWellKnownAgentCard(new AgentCard
 {
     Name = "accommodation-agent",
-    Url = app.Configuration["ASPNETCORE_URLS"]?.Split(';')[0] + "/agenta2a" ?? "http://localhost:5198/agenta2a",
+    SupportedInterfaces = [
+        new AgentInterface
+        {
+            Url = accommodationAgentUrl,
+            ProtocolBinding = "HTTP+JSON",
+            ProtocolVersion = "1.0"
+        }
+    ],
     Description = "An accommodation assistant that helps find and recommend hotels, B&Bs, and other lodging in Agentburg based on user preferences",
     Version = "1.0",
     DefaultInputModes = ["text"],
@@ -104,7 +114,7 @@ app.MapA2A("accommodation-agent", "/agenta2a", new AgentCard
         PushNotifications = false
     },
     Skills = [
-        new AgentSkill
+        new A2A.AgentSkill
         {
             Name = "Accommodation Search",
             Description = "Find accommodations by rating, location, amenities, price, and type in Agentburg",
@@ -118,6 +128,7 @@ app.MapA2A("accommodation-agent", "/agenta2a", new AgentCard
         }
     ]
 });
+app.MapA2AHttpJson("accommodation-agent", "/agenta2a");
 
 // Map OpenAI-compatible endpoints
 app.MapOpenAIResponses();

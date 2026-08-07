@@ -271,7 +271,7 @@ import type { MessageSendParams, Message } from '@a2a-js/sdk';
 import { v4 as uuidv4 } from 'uuid';
 
 // Initialize client from agent card URL
-const client = await A2AClient.fromCardUrl('/agenta2a/v1/card');
+const client = await A2AClient.fromCardUrl('/.well-known/agent-card.json');
 
 // Send a message with streaming
 const params: MessageSendParams = {
@@ -415,10 +415,11 @@ var httpClient = new HttpClient()
 var cardResolver = new A2ACardResolver(
     httpClient.BaseAddress!, 
     httpClient, 
-    agentCardPath: "/agenta2a/v1/card"
+    agentCardPath: "/.well-known/agent-card.json"
 );
 
-var remoteAgent = cardResolver.GetAIAgentAsync().Result;
+var agentCard = await cardResolver.GetAgentCardAsync();
+var remoteAgent = agentCard.AsAIAgent(httpClient);
 builder.AddAIAgent("remote-agent", (sp, key) => remoteAgent);
 
 // Create a workflow with multiple agents
@@ -728,10 +729,11 @@ var httpClient = new HttpClient()
 var cardResolver = new A2ACardResolver(
     httpClient.BaseAddress!,
     httpClient,
-    agentCardPath: "/agenta2a/v1/card"
+    agentCardPath: "/.well-known/agent-card.json"
 );
 
-var specializedAgent = cardResolver.GetAIAgentAsync().Result;
+var agentCard = await cardResolver.GetAgentCardAsync();
+var specializedAgent = agentCard.AsAIAgent(httpClient);
 
 // Register the orchestrator agent that uses other agents as tools
 builder.AddAIAgent("orchestrator-agent", (sp, key) =>
@@ -855,7 +857,7 @@ import type { MessageSendParams, Message } from '@a2a-js/sdk';
 import { v4 as uuidv4 } from 'uuid';
 
 // Initialize client from agent card URL
-const client = await A2AClient.fromCardUrl('/agenta2a/v1/card');
+const client = await A2AClient.fromCardUrl('/.well-known/agent-card.json');
 
 // Send a message with streaming
 const params: MessageSendParams = {

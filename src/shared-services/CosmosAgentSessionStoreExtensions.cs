@@ -82,6 +82,7 @@ public static class CosmosAgentSessionStoreExtensions
     /// Configures the hosted agent builder to use the registered <see cref="CosmosAgentSessionStore"/>.
     /// </summary>
     /// <param name="builder">The hosted agent builder to configure.</param>
+    /// <param name="withIsolation">Whether to require a session isolation key. Enable this when the host registers an authenticated isolation-key provider.</param>
     /// <returns>The same builder instance for chaining.</returns>
     /// <remarks>
     /// <code>
@@ -90,10 +91,14 @@ public static class CosmosAgentSessionStoreExtensions
     ///     .WithCosmosSessionStore();
     /// </code>
     /// </remarks>
-    public static IHostedAgentBuilder WithCosmosSessionStore(this IHostedAgentBuilder builder)
+    public static IHostedAgentBuilder WithCosmosSessionStore(
+        this IHostedAgentBuilder builder,
+        bool withIsolation = false)
     {
         ArgumentNullException.ThrowIfNull(builder);
 
-        return builder.WithSessionStore((sp, _) => sp.GetRequiredService<CosmosAgentSessionStore>());
+        return builder.WithSessionStore(
+            (sp, _) => sp.GetRequiredService<CosmosAgentSessionStore>(),
+            withIsolation: withIsolation);
     }
 }

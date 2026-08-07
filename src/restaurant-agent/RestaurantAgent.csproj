@@ -9,16 +9,16 @@
 
   <ItemGroup>
     <!-- Core Agent Framework packages -->
-    <PackageReference Include="Microsoft.Agents.AI" Version="1.0.0-rc1" />
-    <PackageReference Include="Microsoft.Agents.AI.Abstractions" Version="1.0.0-rc1" />
-    <PackageReference Include="Microsoft.Agents.AI.Hosting" Version="1.0.0-preview.260219.1" />
-    <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.0.0-rc1" />
+    <PackageReference Include="Microsoft.Agents.AI" Version="1.13.0" />
+    <PackageReference Include="Microsoft.Agents.AI.Abstractions" Version="1.13.0" />
+    <PackageReference Include="Microsoft.Agents.AI.Hosting" Version="1.13.0-preview.260703.1" />
+    <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.13.0" />
     
     <!-- A2A Support -->
-    <PackageReference Include="Microsoft.Agents.AI.Hosting.A2A.AspNetCore" Version="1.0.0-preview.260219.1" />
+    <PackageReference Include="Microsoft.Agents.AI.Hosting.A2A.AspNetCore" Version="1.13.0-preview.260703.1" />
     
     <!-- OpenAI-compatible endpoints -->
-    <PackageReference Include="Microsoft.Agents.AI.Hosting.OpenAI" Version="1.0.0-alpha.260219.1" />
+    <PackageReference Include="Microsoft.Agents.AI.Hosting.OpenAI" Version="1.13.0-alpha.260703.1" />
     
     <!-- MCP Client Support -->
     <PackageReference Include="ModelContextProtocol.Core" Version="1.0.0-rc.1" />

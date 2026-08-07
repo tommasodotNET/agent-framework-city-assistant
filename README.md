@@ -9,7 +9,7 @@ The application consists of five main components:
 1. **Restaurant Agent** - A specialized agent that can search and recommend restaurants by category or keywords
 2. **Accommodation Agent** - A specialized agent that can search and recommend accommodations (hotels, B&Bs, hostels) based on multiple criteria with LLM-based reranking
 3. **Geocoding MCP Server** - A Model Context Protocol server that provides geocoding services (address/landmark to coordinates conversion) shared across agents
-4. **Orchestrator Agent** - An orchestrator that uses the restaurant and accommodation agents as tools via A2A (Agent-to-Agent) communication
+4. **Orchestrator Agent** - An orchestrator that uses an in-process class-based restaurant skill and remote agents via A2A
 5. **Frontend** - A React-based chat interface that communicates with the orchestrator via A2A protocol
 
 ### Architecture Diagram
@@ -32,7 +32,8 @@ The application consists of five main components:
 │                                                                   │
 │  • Receives user requests via A2A                                │
 │  • Maintains conversation context (contextId)                    │
-│  • Invokes Restaurant & Accommodation Agents as tools            │
+│  • Uses a class-based Restaurant Skill in process                │
+│  • Invokes remote agents for other domains via A2A               │
 │  • Stores conversation history in Cosmos DB                      │
 └───────┬──────────────────┬─────────────────┬────────────────────┘
         │                  │                 │
@@ -138,6 +139,10 @@ To ease the debug experience, you can use the [Aspire extension for Visual Studi
 - A2A endpoint at `/agenta2a`
 - OpenAI-compatible endpoints for testing
 
+The standalone agent remains available for independent and voice clients. The main
+orchestrator carries equivalent restaurant data and search behavior in an
+`AgentClassSkill<T>` exposed through `AgentSkillsProvider`.
+
 ### Accommodation Agent
 - **Multi-criteria search** with the following filters:
   - User rating (1-5 scale)
@@ -215,14 +220,14 @@ All data is hardcoded in service classes and doesn't require external data sourc
 ## API Endpoints
 
 ### Restaurant Agent
-- `GET /agenta2a/v1/card` - A2A agent card (metadata and capabilities)
+- `GET /.well-known/agent-card.json` - A2A agent card (metadata and capabilities)
 - `POST /agenta2a/v1/run` - A2A endpoint for agent-to-agent communication
 - `POST /agenta2a/v1/stream` - A2A streaming endpoint
 - `POST /v1/chat/completions` - OpenAI-compatible chat endpoint (for testing)
 - `GET /health` - Health check endpoint
 
 ### Accommodation Agent
-- `GET /agenta2a/v1/card` - A2A agent card (metadata and capabilities)
+- `GET /.well-known/agent-card.json` - A2A agent card (metadata and capabilities)
 - `POST /agenta2a/v1/run` - A2A endpoint for agent-to-agent communication
 - `POST /agenta2a/v1/stream` - A2A streaming endpoint
 - `POST /v1/chat/completions` - OpenAI-compatible chat endpoint (for testing)
@@ -235,7 +240,7 @@ All data is hardcoded in service classes and doesn't require external data sourc
 - `GET /health` - Health check endpoint
 
 ### Orchestrator Agent
-- `GET /agenta2a/v1/card` - A2A agent card (metadata and capabilities)
+- `GET /.well-known/agent-card.json` - A2A agent card (metadata and capabilities)
 - `POST /agenta2a/v1/run` - A2A endpoint for frontend and agent communication
 - `POST /agenta2a/v1/stream` - A2A streaming endpoint for real-time responses
 - `GET /health` - Health check endpoint
@@ -289,9 +294,8 @@ You can test the agents' A2A endpoints directly:
 
 ```bash
 # Get the agent card to see capabilities
-curl https://localhost:5197/agenta2a/v1/card  # Orchestrator
-curl https://localhost:5196/agenta2a/v1/card  # Restaurant Agent
-curl https://localhost:5198/agenta2a/v1/card  # Accommodation Agent
+curl https://localhost:5197/.well-known/agent-card.json  # Orchestrator
+curl https://localhost:5198/.well-known/agent-card.json  # Accommodation Agent
 
 # Send a message to the orchestrator
 # Note: messageId should be a unique UUID for each message
@@ -337,10 +341,11 @@ The frontend uses the `@a2a-js/sdk` package to handle A2A protocol communication
 ## Troubleshooting
 
 ### Agent Connection Issues
-- Ensure all agents (restaurant, accommodation) are running and accessible
+- Ensure the activities and accommodation agents are running and accessible
 - Check that environment variables for agent URLs are set correctly in orchestrator
-  - `services__restaurantagent__https__0` or `services__restaurantagent__http__0`
+  - `services__activitiesagent__https__0` or `services__activitiesagent__http__0`
   - `services__accommodationagent__https__0` or `services__accommodationagent__http__0`
+- The main orchestrator no longer needs a restaurant-agent URL; the voice orchestrator still does
 - Verify SSL certificate if using HTTPS in development
 
 ### Cosmos DB Connection Issues

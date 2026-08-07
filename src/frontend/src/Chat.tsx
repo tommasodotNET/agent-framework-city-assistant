@@ -25,7 +25,7 @@ function isChatError(entry: unknown): entry is ChatError {
 
 export default function Chat({ style }: { style: React.CSSProperties }) {
     // Initialize A2A client with the orchestrator agent card URL
-    const [client] = useState(() => new A2AClientWrapper("/agenta2a/v1/card"));
+    const [client] = useState(() => new A2AClientWrapper("/.well-known/agent-card.json"));
 
     const [messages, setMessages] = useState<ChatEntry[]>([]);
     const [input, setInput] = useState<string>("");
