@@ -2,7 +2,7 @@
 // Licensed under the MIT License.
 
 import { Button } from "@fluentui/react-components";
-import { useCallback, useEffect, useId, useRef, useState } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import TextareaAutosize from "react-textarea-autosize";
 import styles from "./Chat.module.css";
@@ -13,6 +13,24 @@ import { VoiceTranscript } from "./VoiceSession";
 
 type ChatEntry = A2AChatMessage | ChatError;
 type Theme = 'light' | 'dark' | 'system';
+type OrchestratorMode = 'class-skills' | 'a2a';
+
+const orchestrators: Record<OrchestratorMode, {
+    label: string;
+    agentCardPath: string;
+    servicePath: string;
+}> = {
+    'class-skills': {
+        label: 'Class-based skills',
+        agentCardPath: '/orchestrators/class-skills/.well-known/agent-card.json',
+        servicePath: '/orchestrators/class-skills/agenta2a',
+    },
+    a2a: {
+        label: 'A2A agents as tools',
+        agentCardPath: '/orchestrators/a2a/.well-known/agent-card.json',
+        servicePath: '/orchestrators/a2a/agenta2a',
+    },
+};
 
 interface ChatError {
     code: string;
@@ -24,8 +42,12 @@ function isChatError(entry: unknown): entry is ChatError {
 }
 
 export default function Chat({ style }: { style: React.CSSProperties }) {
-    // Initialize A2A client with the orchestrator agent card URL
-    const [client] = useState(() => new A2AClientWrapper("/.well-known/agent-card.json"));
+    const [orchestratorMode, setOrchestratorMode] = useState<OrchestratorMode>('class-skills');
+    const orchestrator = orchestrators[orchestratorMode];
+    const client = useMemo(
+        () => new A2AClientWrapper(orchestrator.agentCardPath, orchestrator.servicePath),
+        [orchestrator.agentCardPath, orchestrator.servicePath],
+    );
 
     const [messages, setMessages] = useState<ChatEntry[]>([]);
     const [input, setInput] = useState<string>("");
@@ -77,7 +99,7 @@ export default function Chat({ style }: { style: React.CSSProperties }) {
         }
     }, []);
 
-    const invokeAgentWithEmptyMessage = async () => {
+    const invokeAgentWithEmptyMessage = useCallback(async () => {
         if (isLoading || !contextId) return;
         
         setIsLoading(true);
@@ -111,7 +133,7 @@ export default function Chat({ style }: { style: React.CSSProperties }) {
         } finally {
             setIsLoading(false);
         }
-    };
+    }, [client, contextId, isLoading]);
 
     useEffect(() => {
         // Generate initial contextId if not present
@@ -128,7 +150,7 @@ export default function Chat({ style }: { style: React.CSSProperties }) {
             setHasInvokedInitialAgent(true);
             invokeAgentWithEmptyMessage();
         }
-    }, [contextId, hasInvokedInitialAgent, isLoading]);
+    }, [contextId, hasInvokedInitialAgent, invokeAgentWithEmptyMessage, isLoading]);
 
     // Load saved theme
     useEffect(() => {
@@ -163,6 +185,14 @@ export default function Chat({ style }: { style: React.CSSProperties }) {
     const handleResetConversation = () => {
         const newContextId = crypto.randomUUID();
         setContextId(newContextId);
+        setMessages([]);
+        setHasInvokedInitialAgent(false);
+        initialFetchStarted.current = false;
+    };
+
+    const handleOrchestratorChange = (mode: OrchestratorMode) => {
+        setOrchestratorMode(mode);
+        setContextId(crypto.randomUUID());
         setMessages([]);
         setHasInvokedInitialAgent(false);
         initialFetchStarted.current = false;
@@ -247,6 +277,21 @@ export default function Chat({ style }: { style: React.CSSProperties }) {
             <div className={styles.header}>
                 <h1 className={styles.headerTitle}>City Assistant</h1>
                 <div className={styles.headerContent}>
+                    <div className={styles.agentSelector}>
+                        <label className={styles.agentSelectorLabel} htmlFor="orchestrator-mode">
+                            Orchestration
+                        </label>
+                        <select
+                            id="orchestrator-mode"
+                            className={styles.agentDropdown}
+                            value={orchestratorMode}
+                            onChange={(event) => handleOrchestratorChange(event.target.value as OrchestratorMode)}
+                            disabled={isLoading}
+                        >
+                            <option value="class-skills">Class-based skills</option>
+                            <option value="a2a">A2A agents as tools</option>
+                        </select>
+                    </div>
                     <div className={styles.themeSelector}>
                         <button 
                             className={`${styles.themeButton} ${theme === 'light' ? styles.active : ''}`}
@@ -291,7 +336,7 @@ export default function Chat({ style }: { style: React.CSSProperties }) {
                     <div className={styles.welcomeMessage}>
                         <div className={styles.welcomeIcon}>🤖</div>
                         <h2>Welcome to City Assistant!</h2>
-                        <p>I can help you find great restaurants in the city. Just ask me!</p>
+                        <p>Using {orchestrator.label}. Ask about restaurants, activities, or places to stay.</p>
                     </div>
                 )}
                 {messages.map((message, index) => (

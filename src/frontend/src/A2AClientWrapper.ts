@@ -19,16 +19,18 @@ export interface A2AStreamEvent {
 export class A2AClientWrapper {
     private client: Client | null = null;
     private agentCardUrl: string;
+    private servicePath: string;
 
-    constructor(agentCardUrl: string) {
+    constructor(agentCardUrl: string, servicePath = '/agenta2a') {
         this.agentCardUrl = agentCardUrl;
+        this.servicePath = servicePath;
     }
 
     private async ensureClient(): Promise<Client> {
         if (!this.client) {
             const resolver = new DefaultAgentCardResolver({ path: this.agentCardUrl });
             const agentCard = await resolver.resolve(window.location.origin);
-            const serviceUrl = new URL('/agenta2a', window.location.origin).toString();
+            const serviceUrl = new URL(this.servicePath, window.location.origin).toString();
 
             for (const supportedInterface of agentCard.supportedInterfaces) {
                 supportedInterface.url = serviceUrl;

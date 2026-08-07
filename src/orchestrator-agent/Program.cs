@@ -5,13 +5,21 @@ using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Hosting;
 using Microsoft.Agents.AI.Hosting.A2A;
 using Microsoft.Extensions.AI;
+using OpenTelemetry.Metrics;
+using OpenTelemetry.Trace;
+using OrchestratorAgent.Services;
 using OrchestratorAgent.Skills;
 using SharedServices;
-using System.ComponentModel;
+
+const string TelemetrySourceName = "CityAssistant.ClassSkillsOrchestrator";
 
 var builder = WebApplication.CreateBuilder(args);
 
 builder.AddServiceDefaults();
+
+builder.Services.AddOpenTelemetry()
+    .WithMetrics(metrics => metrics.AddMeter(TelemetrySourceName))
+    .WithTracing(tracing => tracing.AddSource(TelemetrySourceName));
 
 // Configure CORS
 builder.Services.AddCors(options =>
@@ -31,7 +39,12 @@ builder.AddAzureChatCompletionsClient(connectionName: "foundry",
         settings.TokenCredential = new DefaultAzureCredential();
         settings.EnableSensitiveTelemetryData = true;
     })
-    .AddChatClient("gpt-4.1").ConfigureOptions(options => options.AllowMultipleToolCalls = true);
+    .AddChatClient("gpt-4.1")
+    .UseStreamingUsage()
+    .UseOpenTelemetry(
+        sourceName: TelemetrySourceName,
+        configure: telemetry => telemetry.EnableSensitiveData = true)
+    .ConfigureOptions(options => options.AllowMultipleToolCalls = true);
 
 // Register Cosmos containers for session storage with a custom serializer to handle complex types
 builder.AddKeyedAzureCosmosContainer("sessions",
@@ -64,23 +77,27 @@ builder.Services.AddCosmosChatHistoryProvider("conversations", (sp, opt) =>
 
 #pragma warning restore MEAI001 // Type is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
 
-// Register the in-process restaurant skill and its progressive-disclosure provider.
+// Register the in-process class-based skills and their progressive-disclosure provider.
+builder.Services.AddSingleton<ActivitiesService>();
+builder.Services.AddSingleton<IAccommodationService, AccommodationService>();
+builder.Services.AddSingleton<IRerankingService, RerankingService>();
 builder.Services.AddSingleton<RestaurantSkill>();
+builder.Services.AddSingleton<ActivitiesSkill>();
+builder.Services.AddSingleton<AccommodationSkill>();
+builder.Services.AddSingleton<WeatherSkill>();
 builder.Services.AddSingleton(sp =>
-    new AgentSkillsProvider(sp.GetRequiredService<RestaurantSkill>()));
-
-// Connect to remote agents through their current A2A agent cards.
-var activitiesAgent = await ResolveA2AAgentAsync("activitiesagent");
-var accommodationAgent = await ResolveA2AAgentAsync("accommodationagent");
-
-[Description("Get the weather for a given location.")]
-static string GetWeather([Description("The location to get the weather for.")] string location)
- => $"The weather in {location} is cloudy with a high of 15°C.";
+    new AgentSkillsProvider(
+    [
+        sp.GetRequiredService<RestaurantSkill>(),
+        sp.GetRequiredService<ActivitiesSkill>(),
+        sp.GetRequiredService<AccommodationSkill>(),
+        sp.GetRequiredService<WeatherSkill>()
+    ]));
 
 var systemPrompt = File.ReadAllText(Path.Combine(builder.Environment.ContentRootPath, "Prompts", "system-prompt.txt"));
 
 // Register the orchestrator agent
-builder.AddAIAgent("orchestrator-agent", (sp, key) =>
+builder.AddAIAgent("class-skills-orchestrator-agent", (sp, key) =>
 {
     var chatClient = sp.GetRequiredService<IChatClient>();
     var restaurantSkillsProvider = sp.GetRequiredService<AgentSkillsProvider>();
@@ -92,11 +109,7 @@ builder.AddAIAgent("orchestrator-agent", (sp, key) =>
         ChatOptions = new ChatOptions()
         {
             Instructions = systemPrompt,
-            Tools = [
-                activitiesAgent.AsAIFunction(),
-                accommodationAgent.AsAIFunction(),
-                AIFunctionFactory.Create(GetWeather)
-            ]
+            Tools = []
         },
         AIContextProviders = [restaurantSkillsProvider]
     }.WithCosmosChatHistoryProvider(sp);
@@ -105,6 +118,9 @@ builder.AddAIAgent("orchestrator-agent", (sp, key) =>
     var agent = chatClient
         .AsAIAgent(agentOptions, services: sp)
         .AsBuilder()
+        .UseOpenTelemetry(
+            sourceName: TelemetrySourceName,
+            configure: telemetry => telemetry.EnableSensitiveData = true)
         .UseToolApproval(new ToolApprovalAgentOptions
         {
             AutoApprovalRules = [AgentSkillsProvider.AllToolsAutoApprovalRule]
@@ -127,10 +143,11 @@ var app = builder.Build();
 app.UseCors();
 
 // Map A2A endpoint for orchestrator agent
-var orchestratorAgentUrl = app.Configuration["ASPNETCORE_URLS"]?.Split(';')[0] + "/agenta2a" ?? "http://localhost:5197/agenta2a";
+var orchestratorAgentBaseUrl = app.Configuration["ASPNETCORE_URLS"]?.Split(';')[0] ?? "http://localhost:5197";
+var orchestratorAgentUrl = $"{orchestratorAgentBaseUrl}/agenta2a";
 app.MapWellKnownAgentCard(new AgentCard
 {
-    Name = "orchestrator-agent",
+    Name = "class-skills-orchestrator-agent",
     SupportedInterfaces = [
         new AgentInterface
         {
@@ -139,7 +156,7 @@ app.MapWellKnownAgentCard(new AgentCard
             ProtocolVersion = "1.0"
         }
     ],
-    Description = "A city assistant that orchestrates multiple specialized agents to help with restaurants, activities, and accommodations",
+    Description = "A city assistant that uses only in-process class-based skills for restaurants, activities, accommodations, and weather in Agentburg",
     Version = "1.0",
     DefaultInputModes = ["text"],
     DefaultOutputModes = ["text"],
@@ -152,7 +169,7 @@ app.MapWellKnownAgentCard(new AgentCard
         new A2A.AgentSkill
         {
             Name = "City Assistant",
-            Description = "Help users with city-related tasks including restaurant recommendations, activity planning, and accommodation recommendations",
+            Description = "Help users with city-related tasks using in-process class-based skills for restaurant recommendations, activity planning, accommodation recommendations, and weather",
             Examples = [
                 "Find me a good restaurant",
                 "What's the best pizza place in Agentburg?",
@@ -163,32 +180,13 @@ app.MapWellKnownAgentCard(new AgentCard
                 "What attractions do you recommend?",
                 "Find me a hotel near the Castle Hill",
                 "Show me B&Bs with parking for less than 80€ per night",
-                "Where can I stay in Agentburg?"
+                "Where can I stay in Agentburg?",
+                "What's the weather like in Agentburg today?"
             ]
         }
     ]
 });
-app.MapA2AHttpJson("orchestrator-agent", "/agenta2a");
+app.MapA2AHttpJson("class-skills-orchestrator-agent", "/agenta2a");
 
 app.MapDefaultEndpoints();
 app.Run();
-
-static async Task<AIAgent> ResolveA2AAgentAsync(string serviceName)
-{
-    var url = Environment.GetEnvironmentVariable($"services__{serviceName}__https__0")
-        ?? Environment.GetEnvironmentVariable($"services__{serviceName}__http__0")
-        ?? throw new InvalidOperationException($"No endpoint is configured for A2A service '{serviceName}'.");
-
-    var httpClient = new HttpClient
-    {
-        BaseAddress = new Uri(url),
-        Timeout = TimeSpan.FromSeconds(60)
-    };
-    var resolver = new A2ACardResolver(
-        httpClient.BaseAddress,
-        httpClient,
-        agentCardPath: "/.well-known/agent-card.json");
-    var agentCard = await resolver.GetAgentCardAsync();
-
-    return agentCard.AsAIAgent(httpClient);
-}

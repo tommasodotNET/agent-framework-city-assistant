@@ -2,136 +2,90 @@
 
 ## System Overview
 
-Three-tier multi-agent system where specialized agents communicate via A2A protocol
+The application runs two independent, non-voice orchestrators with the same city-assistant capabilities. They differ only in how those capabilities are composed:
 
-### Detailed Architecture Diagram
+- **Class Skills Orchestrator** (`class-skills-orchestrator-agent`) uses only in-process `AgentClassSkill<T>` implementations.
+- **A2A Agent Tools Orchestrator** (`a2a-orchestrator-agent`) uses only remote specialist agents exposed as tools through A2A.
 
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                          Frontend (React)                       │
-│                                                                 │
-│  • A2A JavaScript SDK (@a2a-js/sdk)                             │
-│  • Streaming chat interface                                     │
-│  • Theme support & session management                           │
-└──────────────────────────────┬──────────────────────────────────┘
-                               │
-                               │ A2A Protocol
-                               │ /agenta2a/v1/*
-                               │ (Agent Card, Run, Stream)
-                               │
-                               ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                     Orchestrator Agent (.NET)                   │
-│                                                                 │
-│  • Receives user requests via A2A                               │
-│  • Maintains conversation context (contextId)                   │
-│  • Uses an in-process Restaurant Skill                          │
-│  • Invokes Activities & Accommodation Agents as tools           │
-│  • Stores conversation history in Cosmos DB                     │
-└──────────────────┬───────────────────────────┬──────────────────┘
-                   │                           │
-                   │ Skill + A2A               │ Azure Cosmos DB
-                   │                           │ (Thread Storage)
-                   │                           │
-                   ▼                           ▼
-┌──────────────────────────────┐   ┌──────────────────────────────┐
-│ Restaurant Class Skill       │   │ Accommodation Agent (.NET)   │
-│                              │   │                              │
-│  • Restaurant search tools   │   │  • Multi-criteria search     │
-│  • Category filtering        │   │  • LLM-based reranking       │
-│  • Mock restaurant data      │   │  • Mock accommodation data   │
-│  • AgentSkillScript methods  │   │  • A2A endpoint              │
-└──────────────┬───────────────┘   └─────────┬────────────────────┘
-               │                             │
-               │ Orchestrator history        │ MCP Protocol
-               │ (Azure Cosmos DB)           │ (HTTP)
-               │                             │
-               ▼                             ▼
-   ┌────────────────────────┐   ┌────────────────────────────────┐
-   │   Cosmos DB            │   │ Geocoding MCP Server (.NET)   │
-   │                        │   │                                │
-   │  • Conversation threads│   │  • geocode_location tool      │
-   │  • Message history     │   │  • Mock Agentburg data        │
-   │  • Context persistence │   │  • MCP protocol endpoints     │
-   └────────────────────────┘   │  • HTTP transport              │
-                                └────────────────────────────────┘
+Both orchestrators expose A2A HTTP+JSON endpoints, stream responses, and persist sessions and chat history in Cosmos DB.
+
+## Topology
+
+```text
+                              ┌────────────────────────────┐
+                              │      React Frontend        │
+                              │  Select orchestration mode │
+                              └─────────────┬──────────────┘
+                                            │ A2A
+                         ┌──────────────────┴──────────────────┐
+                         │                                     │
+              ┌──────────▼───────────┐             ┌──────────▼───────────┐
+              │ Class Skills         │             │ A2A Agent Tools      │
+              │ Orchestrator         │             │ Orchestrator         │
+              │                      │             │                      │
+              │ AgentClassSkill<T>:  │             │ Remote A2A tools:    │
+              │ • Restaurant         │             │ • Restaurant Agent  │
+              │ • Activities         │             │ • Activities Agent  │
+              │ • Accommodation      │             │ • Accommodation     │
+              │ • Weather            │             │   Agent              │
+              └──────────┬───────────┘             └──────────┬───────────┘
+                         │                                    │ A2A
+                         │                         ┌───────────┼───────────┐
+                         │                         │           │           │
+                         │                    Restaurant  Activities  Accommodation
+                         │                         │           │           │
+                         │                         └───────────┼───────────┘
+                         │                                     │ MCP
+                         │                           Geocoding MCP Server
+                         │
+                         └──────────────────┬──────────────────┘
+                                            │
+                                      Cosmos DB
+                              sessions + conversation history
 ```
 
-## Technology Stack
+## Orchestrators
 
-**Frontend:** React + TypeScript + A2A JavaScript SDK  
-→ Dependencies: [`src/frontend/package.json`](../src/frontend/package.json)
+### Class Skills Orchestrator
 
-**Backend:** .NET 10 + Microsoft Agent Framework  
-→ Dependencies: [`src/restaurant-agent/RestaurantAgent.csproj`](../src/restaurant-agent/RestaurantAgent.csproj), [`src/orchestrator-agent/OrchestratorAgent.csproj`](../src/orchestrator-agent/OrchestratorAgent.csproj), [`src/shared-services/SharedServices.csproj`](../src/shared-services/SharedServices.csproj)
+Project: [`src/orchestrator-agent`](../src/orchestrator-agent)
 
-**Infrastructure:** Azure AI Foundry (LLM) + Azure Cosmos DB (persistence) + .NET Aspire (orchestration)
+The orchestrator uses `AgentSkillsProvider` for progressive disclosure and contains no remote A2A tools. Restaurant, activities, accommodation, geocoding, and weather behavior executes in process. Trusted skill-provider tools and scripts are auto-approved.
 
-**Protocol:** A2A (Agent-to-Agent) for all communication layers
+Agent name: `class-skills-orchestrator-agent`
 
-## Components
+### A2A Agent Tools Orchestrator
 
-### Frontend
-User-facing chat interface that connects to the orchestrator via A2A protocol, maintaining conversation state through `contextId`.
+Project: [`src/a2a-orchestrator-agent`](../src/a2a-orchestrator-agent)
 
-### Orchestrator Agent
-Main entry point that coordinates specialized capabilities. Restaurant requests use a class-based Agent Framework skill in-process; activities and accommodation requests use remote agents as tools via A2A.
+The orchestrator resolves the restaurant, activities, and accommodation agent cards at startup and exposes each remote agent with `AsAIFunction()`. It contains no class-based skills.
 
-### Restaurant Agent
-Domain-specific standalone agent for restaurant search and recommendations. It remains exposed via A2A for independent and voice clients; the main orchestrator embeds equivalent behavior as a class-based skill.
+Agent name: `a2a-orchestrator-agent`
 
-### Accommodation Agent
-Domain-specific agent for accommodation search and recommendations with multi-criteria filtering and LLM-based reranking. Uses the geocoding MCP server for location-based queries.
+## Frontend Routes
 
-### Geocoding MCP Server
-Standalone Model Context Protocol (MCP) server that provides geocoding services. Converts addresses and landmarks to geographic coordinates. Can be used by any MCP-compatible client or agent in the system.
+The frontend defaults to the class-skills mode and provides a mode selector. Aspire proxies stable same-origin routes:
 
-### Shared Services
-Centralized conversation persistence using Cosmos DB, shared across all agents to maintain conversation history.
+| Mode | Agent card | A2A service |
+|---|---|---|
+| Class-based skills | `/orchestrators/class-skills/.well-known/agent-card.json` | `/orchestrators/class-skills/agenta2a` |
+| A2A agents as tools | `/orchestrators/a2a/.well-known/agent-card.json` | `/orchestrators/a2a/agenta2a` |
 
-### Aspire Host
-Orchestrates the entire application, managing service connections and dependencies between frontend, agents, MCP server, and Azure services.
+The legacy `/.well-known/agent-card.json` and `/agenta2a` routes remain aliases for the class-skills orchestrator.
 
-## Data Flow
+## Storage and Protocols
 
-User interactions flow through four phases:
-
-1. **User Request**: Frontend sends message to orchestrator via A2A protocol with `contextId` for conversation continuity
-2. **Agent Processing**: Orchestrator retrieves conversation history from Cosmos DB, processes the request, loads the restaurant skill or invokes specialized agents as needed
-3. **Tool Invocation**: If needed, accommodation agent calls geocoding MCP server via MCP protocol to convert locations to coordinates
-4. **Response & Persistence**: Orchestrator streams response back to frontend and persists updated conversation thread to Cosmos DB
-
-## Communication Protocols
-
-### A2A (Agent-to-Agent)
-Used for agent-to-agent and frontend-to-agent communication:
-
-- **Agent Discovery**: `/.well-known/agent-card.json` exposes agent metadata (capabilities, skills, input/output modes)
-- **Agent Invocation**: `/agenta2a/v1/run` endpoint executes agent with messages
-- **Features**: Streaming support, conversation continuity via `contextId`, standardized message format
-
-### MCP (Model Context Protocol)
-Used for tool-based services that can be shared across agents:
-
-- **Tool Discovery**: `/mcp/v1/tools/list` endpoint lists available MCP tools
-- **Tool Invocation**: `/mcp/v1/tools/call` endpoint executes a specific tool
-- **Features**: Standardized tool interface, HTTP transport, can be consumed by any MCP client
-- **Example**: Geocoding MCP Server provides `geocode_location` tool
-
-## Storage
-
-**Cosmos DB** stores conversation threads using a composite key pattern (`{agentId}:{conversationId}`):
-
-- Maintains conversation history across requests
-- Enables conversation continuity
-- Shared session store implementation used by all agents
+- **A2A HTTP+JSON** is used from the frontend to both orchestrators and from the A2A orchestrator to specialist agents.
+- **MCP** is used by standalone specialist agents for geocoding.
+- **Cosmos DB** stores agent sessions and conversation history with agent-specific keys, so the same `contextId` cannot mix histories between orchestrators.
+- **Aspire** starts both orchestrators, all specialist agents, the geocoding MCP server, Cosmos DB, Foundry connections, and the frontend.
 
 ## Configuration
 
-Aspire manages all service connections and configuration through environment variable injection:
+Aspire injects Foundry, Cosmos, and service-discovery settings. The A2A orchestrator requires:
 
-- Azure AI Foundry endpoints
-- Cosmos DB connections
-- Inter-agent URLs for activities and accommodation (and restaurant for the voice orchestrator)
+- `services__restaurantagent__https__0` or `services__restaurantagent__http__0`
+- `services__activitiesagent__https__0` or `services__activitiesagent__http__0`
+- `services__accommodationagent__https__0` or `services__accommodationagent__http__0`
 
-Azure-specific settings (tenant, subscription, location) are configured via `src/aspire/apphost.run.json`, `apphost.cs`, environment variables, or the Aspire CLI.
+The class-skills orchestrator has no specialist-agent service dependencies.
