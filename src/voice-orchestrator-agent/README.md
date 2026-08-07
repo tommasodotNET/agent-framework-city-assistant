@@ -113,7 +113,7 @@ var agents = new Dictionary<string, AIAgent>();
 
 var agentConfigs = new Dictionary<string, string>
 {
-    ["restaurant_agent"] = "services__restaurantagent__https__0",
+    ["restaurant_agent"] = "services__orchestratoragent__https__0",
     ["activities_agent"] = "services__activitiesagent__https__0",
     ["accommodation_agent"] = "services__accommodationagent__https__0",
 };
@@ -125,9 +125,10 @@ foreach (var (agentName, envVar) in agentConfigs)
     var cardResolver = new A2ACardResolver(
         httpClient.BaseAddress!,
         httpClient,
-        agentCardPath: "/agenta2a/v1/card");
+        agentCardPath: "/.well-known/agent-card.json");
 
-    agents[agentName] = cardResolver.GetAIAgentAsync().Result;
+    var agentCard = await cardResolver.GetAgentCardAsync();
+    agents[agentName] = agentCard.AsAIAgent(httpClient);
 }
 ```
 

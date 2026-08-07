@@ -90,7 +90,7 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
     public string ContainerId { get; init; }
 
     /// <inheritdoc />
-    public override string StateKey => this._sessionState.StateKey;
+    public override IReadOnlyList<string> StateKeys => [this._sessionState.StateKey];
 
     
 #pragma warning disable MEAI001 // Type is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
@@ -135,7 +135,7 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
         Func<IEnumerable<ChatMessage>, IEnumerable<ChatMessage>>? provideOutputMessageFilter = null,
         Func<IEnumerable<ChatMessage>, IEnumerable<ChatMessage>>? storeInputMessageFilter = null,
         ILogger<CosmosChatHistoryProvider>? logger = null)
-        : base(provideOutputMessageFilter, storeInputMessageFilter)
+        : base(provideOutputMessageFilter, storeInputRequestMessageFilter: storeInputMessageFilter, storeInputResponseMessageFilter: null)
     {
 
         ArgumentNullException.ThrowIfNull(cosmosClient);

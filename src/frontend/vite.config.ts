@@ -8,6 +8,7 @@ export default () => {
   const voiceTarget = process.env.services__voiceorchestratoragent__https__0 || process.env.services__voiceorchestratoragent__http__0;
 
   console.log('[vite] Proxy targets:');
+  console.log('  /.well-known ->', orchestratorTarget);
   console.log('  /agenta2a ->', orchestratorTarget);
   console.log('  /ws/voice ->', voiceTarget);
 
@@ -17,6 +18,11 @@ export default () => {
     server: {
       port: process.env.PORT,
       proxy: {
+        '/.well-known': {
+          target: orchestratorTarget,
+          changeOrigin: true,
+          secure: false,
+        },
         '/agenta2a': {
           target: orchestratorTarget,
           changeOrigin: true,

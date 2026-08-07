@@ -1,9 +1,11 @@
 using A2A;
+using A2A.AspNetCore;
 using Azure.Identity;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Hosting;
 using Microsoft.Agents.AI.Hosting.A2A;
 using Microsoft.Extensions.AI;
+using OrchestratorAgent.Skills;
 using SharedServices;
 using System.ComponentModel;
 
@@ -62,49 +64,14 @@ builder.Services.AddCosmosChatHistoryProvider("conversations", (sp, opt) =>
 
 #pragma warning restore MEAI001 // Type is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
 
-// Connect to restaurant agent via A2A
-var restaurantAgentUrl = Environment.GetEnvironmentVariable("services__restaurantagent__https__0") ?? Environment.GetEnvironmentVariable("services__restaurantagent__http__0");
-var restaurantHttpClient = new HttpClient()
-{
-    BaseAddress = new Uri(restaurantAgentUrl!),
-    Timeout = TimeSpan.FromSeconds(60)
-};
-var restaurantCardResolver = new A2ACardResolver(
-    restaurantHttpClient.BaseAddress!,
-    restaurantHttpClient,
-    agentCardPath: "/agenta2a/v1/card"
-);
+// Register the in-process restaurant skill and its progressive-disclosure provider.
+builder.Services.AddSingleton<RestaurantSkill>();
+builder.Services.AddSingleton(sp =>
+    new AgentSkillsProvider(sp.GetRequiredService<RestaurantSkill>()));
 
-var restaurantAgent = restaurantCardResolver.GetAIAgentAsync().Result;
-
-// Connect to activities agent via A2A
-var activitiesAgentUrl = Environment.GetEnvironmentVariable("services__activitiesagent__https__0") ?? Environment.GetEnvironmentVariable("services__activitiesagent__http__0");
-var activitiesHttpClient = new HttpClient()
-{
-    BaseAddress = new Uri(activitiesAgentUrl!),
-    Timeout = TimeSpan.FromSeconds(60)
-};
-var activitiesCardResolver = new A2ACardResolver(
-    activitiesHttpClient.BaseAddress!,
-    activitiesHttpClient,
-    agentCardPath: "/agenta2a/v1/card"
-);
-
-var activitiesAgent = activitiesCardResolver.GetAIAgentAsync().Result;
-// Connect to accommodation agent via A2A
-var accommodationAgentUrl = Environment.GetEnvironmentVariable("services__accommodationagent__https__0") ?? Environment.GetEnvironmentVariable("services__accommodationagent__http__0");
-var accommodationHttpClient = new HttpClient()
-{
-    BaseAddress = new Uri(accommodationAgentUrl!),
-    Timeout = TimeSpan.FromSeconds(60)
-};
-var accommodationCardResolver = new A2ACardResolver(
-    accommodationHttpClient.BaseAddress!,
-    accommodationHttpClient,
-    agentCardPath: "/agenta2a/v1/card"
-);
-
-var accommodationAgent = accommodationCardResolver.GetAIAgentAsync().Result;
+// Connect to remote agents through their current A2A agent cards.
+var activitiesAgent = await ResolveA2AAgentAsync("activitiesagent");
+var accommodationAgent = await ResolveA2AAgentAsync("accommodationagent");
 
 [Description("Get the weather for a given location.")]
 static string GetWeather([Description("The location to get the weather for.")] string location)
@@ -116,6 +83,7 @@ var systemPrompt = File.ReadAllText(Path.Combine(builder.Environment.ContentRoot
 builder.AddAIAgent("orchestrator-agent", (sp, key) =>
 {
     var chatClient = sp.GetRequiredService<IChatClient>();
+    var restaurantSkillsProvider = sp.GetRequiredService<AgentSkillsProvider>();
 
     var agentOptions = new ChatClientAgentOptions()
     {
@@ -125,22 +93,31 @@ builder.AddAIAgent("orchestrator-agent", (sp, key) =>
         {
             Instructions = systemPrompt,
             Tools = [
-            restaurantAgent.AsAIFunction(),
-            activitiesAgent.AsAIFunction(),
-            accommodationAgent.AsAIFunction(),
-            AIFunctionFactory.Create(GetWeather)
-        ]
+                activitiesAgent.AsAIFunction(),
+                accommodationAgent.AsAIFunction(),
+                AIFunctionFactory.Create(GetWeather)
+            ]
         },
-
+        AIContextProviders = [restaurantSkillsProvider]
     }.WithCosmosChatHistoryProvider(sp);
 
-    var agent = chatClient.AsAIAgent(agentOptions, services: sp);
+    #pragma warning disable MAAI001
+    var agent = chatClient
+        .AsAIAgent(agentOptions, services: sp)
+        .AsBuilder()
+        .UseToolApproval(new ToolApprovalAgentOptions
+        {
+            AutoApprovalRules = [AgentSkillsProvider.AllToolsAutoApprovalRule]
+        })
+        .Build();
+    #pragma warning restore MAAI001
 
     var ficc = agent.GetService<FunctionInvokingChatClient>();
     ficc?.AllowConcurrentInvocation = true;
 
     return agent;
-}).WithCosmosSessionStore();
+}).WithCosmosSessionStore()
+  .AddA2AServer();
 
 
 
@@ -150,10 +127,18 @@ var app = builder.Build();
 app.UseCors();
 
 // Map A2A endpoint for orchestrator agent
-app.MapA2A("orchestrator-agent", "/agenta2a", new AgentCard
+var orchestratorAgentUrl = app.Configuration["ASPNETCORE_URLS"]?.Split(';')[0] + "/agenta2a" ?? "http://localhost:5197/agenta2a";
+app.MapWellKnownAgentCard(new AgentCard
 {
     Name = "orchestrator-agent",
-    Url = app.Configuration["ASPNETCORE_URLS"]?.Split(';')[0] + "/agenta2a" ?? "http://localhost:5197/agenta2a",
+    SupportedInterfaces = [
+        new AgentInterface
+        {
+            Url = orchestratorAgentUrl,
+            ProtocolBinding = "HTTP+JSON",
+            ProtocolVersion = "1.0"
+        }
+    ],
     Description = "A city assistant that orchestrates multiple specialized agents to help with restaurants, activities, and accommodations",
     Version = "1.0",
     DefaultInputModes = ["text"],
@@ -164,7 +149,7 @@ app.MapA2A("orchestrator-agent", "/agenta2a", new AgentCard
         PushNotifications = false
     },
     Skills = [
-        new AgentSkill
+        new A2A.AgentSkill
         {
             Name = "City Assistant",
             Description = "Help users with city-related tasks including restaurant recommendations, activity planning, and accommodation recommendations",
@@ -183,6 +168,27 @@ app.MapA2A("orchestrator-agent", "/agenta2a", new AgentCard
         }
     ]
 });
+app.MapA2AHttpJson("orchestrator-agent", "/agenta2a");
 
 app.MapDefaultEndpoints();
 app.Run();
+
+static async Task<AIAgent> ResolveA2AAgentAsync(string serviceName)
+{
+    var url = Environment.GetEnvironmentVariable($"services__{serviceName}__https__0")
+        ?? Environment.GetEnvironmentVariable($"services__{serviceName}__http__0")
+        ?? throw new InvalidOperationException($"No endpoint is configured for A2A service '{serviceName}'.");
+
+    var httpClient = new HttpClient
+    {
+        BaseAddress = new Uri(url),
+        Timeout = TimeSpan.FromSeconds(60)
+    };
+    var resolver = new A2ACardResolver(
+        httpClient.BaseAddress,
+        httpClient,
+        agentCardPath: "/.well-known/agent-card.json");
+    var agentCard = await resolver.GetAgentCardAsync();
+
+    return agentCard.AsAIAgent(httpClient);
+}

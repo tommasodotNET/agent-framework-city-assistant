@@ -25,34 +25,34 @@ Three-tier multi-agent system where specialized agents communicate via A2A proto
 │                                                                 │
 │  • Receives user requests via A2A                               │
 │  • Maintains conversation context (contextId)                   │
-│  • Invokes Restaurant & Accommodation Agents as tools           │
+│  • Uses an in-process Restaurant Skill                          │
+│  • Invokes Activities & Accommodation Agents as tools           │
 │  • Stores conversation history in Cosmos DB                     │
 └──────────────────┬───────────────────────────┬──────────────────┘
                    │                           │
-                   │ A2A Protocol              │ Azure Cosmos DB
-                   │ /agenta2a/v1/*            │ (Thread Storage)
-                   │ (Agent-to-Agent)          │
+                   │ Skill + A2A               │ Azure Cosmos DB
+                   │                           │ (Thread Storage)
                    │                           │
                    ▼                           ▼
 ┌──────────────────────────────┐   ┌──────────────────────────────┐
-│  Restaurant Agent (.NET)     │   │ Accommodation Agent (.NET)   │
+│ Restaurant Class Skill       │   │ Accommodation Agent (.NET)   │
 │                              │   │                              │
 │  • Restaurant search tools   │   │  • Multi-criteria search     │
 │  • Category filtering        │   │  • LLM-based reranking       │
 │  • Mock restaurant data      │   │  • Mock accommodation data   │
-│  • A2A endpoint              │   │  • A2A endpoint              │
+│  • AgentSkillScript methods  │   │  • A2A endpoint              │
 └──────────────┬───────────────┘   └─────────┬────────────────────┘
                │                             │
-               │ Azure Cosmos DB             │ MCP Protocol
-               │ (Thread Storage)            │ (HTTP)
+               │ Orchestrator history        │ MCP Protocol
+               │ (Azure Cosmos DB)           │ (HTTP)
                │                             │
                ▼                             ▼
    ┌────────────────────────┐   ┌────────────────────────────────┐
-   │   Cosmos DB            │   │ Geocoding MCP Server (.NET)    │
+   │   Cosmos DB            │   │ Geocoding MCP Server (.NET)   │
    │                        │   │                                │
-   │  • Conversation threads│   │  • geocode_location tool       │
-   │  • Message history     │   │  • Mock Rome landmarks data    │
-   │  • Context persistence │   │  • MCP protocol endpoints      │
+   │  • Conversation threads│   │  • geocode_location tool      │
+   │  • Message history     │   │  • Mock Agentburg data        │
+   │  • Context persistence │   │  • MCP protocol endpoints     │
    └────────────────────────┘   │  • HTTP transport              │
                                 └────────────────────────────────┘
 ```
@@ -75,10 +75,10 @@ Three-tier multi-agent system where specialized agents communicate via A2A proto
 User-facing chat interface that connects to the orchestrator via A2A protocol, maintaining conversation state through `contextId`.
 
 ### Orchestrator Agent
-Main entry point that coordinates specialized agents. Uses other agents as tools via A2A protocol to fulfill user requests.
+Main entry point that coordinates specialized capabilities. Restaurant requests use a class-based Agent Framework skill in-process; activities and accommodation requests use remote agents as tools via A2A.
 
 ### Restaurant Agent
-Domain-specific agent for restaurant search and recommendations. Exposes capabilities via A2A protocol.
+Domain-specific standalone agent for restaurant search and recommendations. It remains exposed via A2A for independent and voice clients; the main orchestrator embeds equivalent behavior as a class-based skill.
 
 ### Accommodation Agent
 Domain-specific agent for accommodation search and recommendations with multi-criteria filtering and LLM-based reranking. Uses the geocoding MCP server for location-based queries.
@@ -97,7 +97,7 @@ Orchestrates the entire application, managing service connections and dependenci
 User interactions flow through four phases:
 
 1. **User Request**: Frontend sends message to orchestrator via A2A protocol with `contextId` for conversation continuity
-2. **Agent Processing**: Orchestrator retrieves conversation thread from Cosmos DB, processes the request, and invokes specialized agents as needed via A2A
+2. **Agent Processing**: Orchestrator retrieves conversation history from Cosmos DB, processes the request, loads the restaurant skill or invokes specialized agents as needed
 3. **Tool Invocation**: If needed, accommodation agent calls geocoding MCP server via MCP protocol to convert locations to coordinates
 4. **Response & Persistence**: Orchestrator streams response back to frontend and persists updated conversation thread to Cosmos DB
 
@@ -106,7 +106,7 @@ User interactions flow through four phases:
 ### A2A (Agent-to-Agent)
 Used for agent-to-agent and frontend-to-agent communication:
 
-- **Agent Discovery**: `/agenta2a/v1/card` endpoint exposes agent metadata (capabilities, skills, input/output modes)
+- **Agent Discovery**: `/.well-known/agent-card.json` exposes agent metadata (capabilities, skills, input/output modes)
 - **Agent Invocation**: `/agenta2a/v1/run` endpoint executes agent with messages
 - **Features**: Streaming support, conversation continuity via `contextId`, standardized message format
 
@@ -132,6 +132,6 @@ Aspire manages all service connections and configuration through environment var
 
 - Azure AI Foundry endpoints
 - Cosmos DB connections
-- Inter-agent URLs
+- Inter-agent URLs for activities and accommodation (and restaurant for the voice orchestrator)
 
 Azure-specific settings (tenant, subscription, location) are configured via `src/aspire/apphost.run.json`, `apphost.cs`, environment variables, or the Aspire CLI.

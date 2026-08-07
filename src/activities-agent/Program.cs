@@ -1,4 +1,5 @@
 using A2A;
+using A2A.AspNetCore;
 using Azure.Identity;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Hosting;
@@ -84,15 +85,24 @@ builder.AddAIAgent("activities-agent", (sp, key) =>
     }.WithCosmosChatHistoryProvider(sp);
 
     return chatClient.AsAIAgent(agentOptions, services: sp);
-}).WithCosmosSessionStore();
+}).WithCosmosSessionStore()
+  .AddA2AServer();
 
 var app = builder.Build();
 
 // Map A2A endpoint
-app.MapA2A("activities-agent", "/agenta2a", new AgentCard
+var activitiesAgentUrl = app.Configuration["ASPNETCORE_URLS"]?.Split(';')[0] + "/agenta2a" ?? "http://localhost:5198/agenta2a";
+app.MapWellKnownAgentCard(new AgentCard
 {
     Name = "activities-agent",
-    Url = app.Configuration["ASPNETCORE_URLS"]?.Split(';')[0] + "/agenta2a" ?? "http://localhost:5198/agenta2a",
+    SupportedInterfaces = [
+        new AgentInterface
+        {
+            Url = activitiesAgentUrl,
+            ProtocolBinding = "HTTP+JSON",
+            ProtocolVersion = "1.0"
+        }
+    ],
     Description = "An activities assistant that helps users discover and plan activities in Agentburg including museums, theaters, cultural events, and attractions",
     Version = "1.0",
     DefaultInputModes = ["text"],
@@ -103,7 +113,7 @@ app.MapA2A("activities-agent", "/agenta2a", new AgentCard
         PushNotifications = false
     },
     Skills = [
-        new AgentSkill
+        new A2A.AgentSkill
         {
             Name = "Activity Search",
             Description = "Find museums, theaters, cultural events, and attractions in Agentburg",
@@ -118,6 +128,7 @@ app.MapA2A("activities-agent", "/agenta2a", new AgentCard
         }
     ]
 });
+app.MapA2AHttpJson("activities-agent", "/agenta2a");
 
 // Map OpenAI-compatible endpoints
 app.MapOpenAIResponses();

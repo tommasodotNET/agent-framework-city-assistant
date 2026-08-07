@@ -1,4 +1,5 @@
 using A2A;
+using A2A.AspNetCore;
 using Azure.Identity;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Hosting;
@@ -83,15 +84,24 @@ builder.AddAIAgent("restaurant-agent", (sp, key) =>
     }.WithCosmosChatHistoryProvider(sp);
 
     return chatClient.AsAIAgent(agentOptions, services: sp);
-}).WithCosmosSessionStore();
+}).WithCosmosSessionStore()
+  .AddA2AServer();
 
 var app = builder.Build();
 
 // Map A2A endpoint
-app.MapA2A("restaurant-agent", "/agenta2a", new AgentCard
+var restaurantAgentUrl = app.Configuration["ASPNETCORE_URLS"]?.Split(';')[0] + "/agenta2a" ?? "http://localhost:5196/agenta2a";
+app.MapWellKnownAgentCard(new AgentCard
 {
     Name = "restaurant-agent",
-    Url = app.Configuration["ASPNETCORE_URLS"]?.Split(';')[0] + "/agenta2a" ?? "http://localhost:5196/agenta2a",
+    SupportedInterfaces = [
+        new AgentInterface
+        {
+            Url = restaurantAgentUrl,
+            ProtocolBinding = "HTTP+JSON",
+            ProtocolVersion = "1.0"
+        }
+    ],
     Description = "A restaurant assistant that helps find and recommend restaurants in Agentburg based on user preferences and location",
     Version = "1.0",
     DefaultInputModes = ["text"],
@@ -102,7 +112,7 @@ app.MapA2A("restaurant-agent", "/agenta2a", new AgentCard
         PushNotifications = false
     },
     Skills = [
-        new AgentSkill
+        new A2A.AgentSkill
         {
             Name = "Restaurant Search",
             Description = "Find restaurants by category, keywords, or location in Agentburg",
@@ -116,6 +126,7 @@ app.MapA2A("restaurant-agent", "/agenta2a", new AgentCard
         }
     ]
 });
+app.MapA2AHttpJson("restaurant-agent", "/agenta2a");
 
 // Map OpenAI-compatible endpoints
 app.MapOpenAIResponses();
