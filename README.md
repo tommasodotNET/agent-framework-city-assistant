@@ -1,92 +1,19 @@
 # City Assistant - Agent Framework Demo
 
-A multi-agent application built with Microsoft Agent Framework, featuring restaurant and accommodation recommendation systems with orchestrated agents.
+A multi-agent application built with Microsoft Agent Framework. It demonstrates two equivalent non-voice orchestration styles side by side: in-process class-based skills and remote agents used as tools over A2A.
 
 ## Architecture
 
-The application consists of five main components:
+The application includes:
 
-1. **Restaurant Agent** - A specialized agent that can search and recommend restaurants by category or keywords
-2. **Accommodation Agent** - A specialized agent that can search and recommend accommodations (hotels, B&Bs, hostels) based on multiple criteria with LLM-based reranking
-3. **Geocoding MCP Server** - A Model Context Protocol server that provides geocoding services (address/landmark to coordinates conversion) shared across agents
-4. **Orchestrator Agent** - An orchestrator that uses an in-process class-based restaurant skill and remote agents via A2A
-5. **Frontend** - A React-based chat interface that communicates with the orchestrator via A2A protocol
+1. **Class Skills Orchestrator** - Uses only in-process `AgentClassSkill<T>` implementations for restaurants, activities, accommodations, and weather.
+2. **A2A Agent Tools Orchestrator** - Uses only the standalone restaurant, activities, and accommodation agents as tools over A2A.
+3. **Specialist Agents** - Standalone restaurant, activities, and accommodation agents with A2A endpoints.
+4. **Geocoding MCP Server** - Provides landmark-to-coordinate conversion to the standalone specialist agents.
+5. **Frontend** - A React chat interface with a selector for the two orchestration modes.
+6. **Cosmos DB** - Persists agent sessions and conversation history.
 
-### Architecture Diagram
-
-```
-┌─────────────────────────────────────────────────────────────────┐
-│                          Frontend (React)                        │
-│                                                                   │
-│  • A2A JavaScript SDK (@a2a-js/sdk)                             │
-│  • Streaming chat interface                                      │
-│  • Theme support & session management                            │
-└────────────────────────────┬────────────────────────────────────┘
-                             │
-                             │ A2A Protocol
-                             │ /agenta2a/v1/*
-                             │ (Agent Card, Run, Stream)
-                             ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                     Orchestrator Agent (.NET)                    │
-│                                                                   │
-│  • Receives user requests via A2A                                │
-│  • Maintains conversation context (contextId)                    │
-│  • Uses a class-based Restaurant Skill in process                │
-│  • Invokes remote agents for other domains via A2A               │
-│  • Stores conversation history in Cosmos DB                      │
-└───────┬──────────────────┬─────────────────┬────────────────────┘
-        │                  │                 │
-        │ A2A Protocol     │ A2A Protocol    │ Azure Cosmos DB
-        │ /agenta2a/v1/*   │ /agenta2a/v1/*  │ (Thread Storage)
-        │ (Agent-to-Agent) │ (Agent-to-Agent)│
-        ▼                  ▼                 ▼
-┌───────────────────┐  ┌───────────────────────┐
-│ Restaurant Agent  │  │ Accommodation Agent   │
-│      (.NET)       │  │       (.NET)          │
-│                   │  │                       │
-│ • Search tools    │  │ • Multi-criteria      │
-│ • Category filter │  │   search (rating,     │
-│ • Mock data       │  │   location, amenities,│
-│ • A2A endpoint    │  │   price, type)        │
-│                   │  │ • LLM-based reranking │
-│                   │  │ • Mock data           │
-│                   │  │ • A2A endpoint        │
-└─────────┬─────────┘  └─────────┬─────────────┘
-          │                      │
-          │                      │ MCP Protocol
-          │                      │ (HTTP)
-          │                      ▼
-          │            ┌────────────────────────┐
-          │            │ Geocoding MCP Server   │
-          │            │      (.NET)            │
-          │            │                        │
-          │            │ • geocode_location     │
-          │            │   tool                 │
-          │            │ • Mock Rome landmarks  │
-          │            │ • HTTP/MCP endpoints   │
-          │            └────────────────────────┘
-          │
-          └──────────┬───────────┘
-                     │
-                     ▼
-       ┌────────────────────────────┐
-       │     Cosmos DB              │
-       │                            │
-       │  • Conversation threads    │
-       │  • Message history         │
-       │  • Context persistence     │
-       └────────────────────────────┘
-
-Data Flow:
-1. User sends message via Frontend → Orchestrator (A2A)
-2. Orchestrator determines which agent(s) are needed
-3. If needed: Orchestrator → Restaurant/Accommodation Agent (A2A as tool)
-4. Accommodation Agent → Geocoding MCP Server (MCP protocol for location lookup)
-5. Agent searches mock data (accommodation agent applies LLM reranking)
-6. Orchestrator streams response back to Frontend (A2A)
-7. All agents persist conversation state to Cosmos DB
-```
+See [`.github/architecture.md`](.github/architecture.md) for the topology, data flow, service dependencies, and stable frontend routes.
 
 ## Prerequisites
 
@@ -113,19 +40,16 @@ To allow Aspire to create or reference existing resources on Azure (e.g. Foundry
 
 Use [aspire cli](https://learn.microsoft.com/en-us/dotnet/aspire/cli/install) to run the sample.
 
-Powershell:
-```bash
-iex "& { $(irm https://aspire.dev/install.ps1) } -InstallExtension"
+Start the distributed application:
 
-aspire run
+```bash
+aspire start
 ```
 
-Bash:
-```bash
-curl -sSL https://aspire.dev/install.sh -o aspire-install.sh
-./aspire-install.sh -InstallExtension
+When running from a worktree, isolate ports and local state:
 
-aspire run
+```bash
+aspire start --isolated
 ```
 
 To ease the debug experience, you can use the [Aspire extension for Visual Studio Code](https://marketplace.visualstudio.com/items?itemName=microsoft-aspire.aspire-vscode#:~:text=The%20Aspire%20VS%20Code%20extension,directly%20from%20Visual%20Studio%20Code.).
@@ -139,9 +63,7 @@ To ease the debug experience, you can use the [Aspire extension for Visual Studi
 - A2A endpoint at `/agenta2a`
 - OpenAI-compatible endpoints for testing
 
-The standalone agent remains available for independent and voice clients. The main
-orchestrator carries equivalent restaurant data and search behavior in an
-`AgentClassSkill<T>` exposed through `AgentSkillsProvider`.
+The standalone agent remains available for independent clients and for the A2A agent-tools orchestrator. The class-skills orchestrator carries equivalent restaurant behavior in an `AgentClassSkill<T>` exposed through `AgentSkillsProvider`.
 
 ### Accommodation Agent
 - **Multi-criteria search** with the following filters:
@@ -177,19 +99,28 @@ orchestrator carries equivalent restaurant data and search behavior in an
 - Health check endpoint at `/health`
 - MCP endpoints at `/mcp/v1/*`
 
-### Orchestrator Agent
-- Orchestrates calls to the restaurant and accommodation agents
+### Class Skills Orchestrator
+- Uses only in-process class-based skills for restaurants, activities, accommodations, and weather
+- Uses `AgentSkillsProvider` for progressive skill disclosure
+- Has no remote specialist-agent dependencies
 - Maintains conversation history via Cosmos DB
 - Exposes A2A endpoint at `/agenta2a` for frontend communication
-- Integrates with specialized agents via A2A protocol
 - Uses contextId for conversation management
+
+### A2A Agent Tools Orchestrator
+- Resolves restaurant, activities, and accommodation agent cards at startup
+- Exposes only those remote agents as tools with `AsAIFunction()`
+- Contains no class-based skills
+- Maintains conversation history via Cosmos DB
+- Exposes A2A endpoint at `/agenta2a`
 
 ### Frontend
 - Clean, modern chat interface
+- Selectable **Class-based skills** and **A2A agents as tools** modes
 - Streaming responses via A2A JavaScript SDK
 - Theme support (light/dark/system)
 - Session management with conversation history using contextId
-- Communicates with orchestrator via A2A protocol
+- Communicates with either orchestrator via stable same-origin A2A routes
 
 ## Mock Data
 
@@ -239,13 +170,27 @@ All data is hardcoded in service classes and doesn't require external data sourc
 - `POST /mcp/v1/tools/call` - Call an MCP tool (e.g., geocode_location)
 - `GET /health` - Health check endpoint
 
-### Orchestrator Agent
+### Class Skills Orchestrator
 - `GET /.well-known/agent-card.json` - A2A agent card (metadata and capabilities)
 - `POST /agenta2a/v1/run` - A2A endpoint for frontend and agent communication
 - `POST /agenta2a/v1/stream` - A2A streaming endpoint for real-time responses
 - `GET /health` - Health check endpoint
 
-All communication between frontend and orchestrator uses the A2A protocol for standardized message formats, streaming support, and contextId-based conversation management.
+Frontend proxy:
+- Agent card: `/orchestrators/class-skills/.well-known/agent-card.json`
+- A2A service: `/orchestrators/class-skills/agenta2a`
+
+### A2A Agent Tools Orchestrator
+- `GET /.well-known/agent-card.json` - A2A agent card
+- `POST /agenta2a/v1/run` - A2A endpoint
+- `POST /agenta2a/v1/stream` - A2A streaming endpoint
+- `GET /health` - Health check endpoint
+
+Frontend proxy:
+- Agent card: `/orchestrators/a2a/.well-known/agent-card.json`
+- A2A service: `/orchestrators/a2a/agenta2a`
+
+All communication between the frontend and both orchestrators uses A2A for standardized messages, streaming, and `contextId`-based conversation management.
 
 The accommodation agent uses the Model Context Protocol (MCP) to communicate with the geocoding server for location-based queries.
 
@@ -268,8 +213,12 @@ src/
 ├── geocoding-mcp-server/     # Geocoding MCP server
 │   ├── Tools/                # MCP tools (geocode_location)
 │   └── Program.cs            # MCP server setup
-├── orchestrator-agent/       # Orchestrator agent
-│   └── Program.cs            # Main orchestrator logic
+├── orchestrator-agent/       # Class-skills-only orchestrator
+│   ├── Skills/               # Restaurant, activities, accommodation, weather skills
+│   ├── Services/             # In-process skill services
+│   └── Program.cs
+├── a2a-orchestrator-agent/   # A2A-agent-as-tool-only orchestrator
+│   └── Program.cs
 ├── frontend/                 # React frontend
 │   └── src/
 │       ├── Chat.tsx         # Main chat component
@@ -286,6 +235,7 @@ dotnet build
 # Build specific project
 cd src/restaurant-agent && dotnet build
 cd src/orchestrator-agent && dotnet build
+cd src/a2a-orchestrator-agent && dotnet build
 ```
 
 ### Testing the Agents via A2A
@@ -340,12 +290,13 @@ The frontend uses the `@a2a-js/sdk` package to handle A2A protocol communication
 
 ## Troubleshooting
 
-### Agent Connection Issues
+### A2A Orchestrator Connection Issues
 - Ensure the activities and accommodation agents are running and accessible
-- Check that environment variables for agent URLs are set correctly in orchestrator
+- Check that environment variables for specialist-agent URLs are set correctly in the A2A agent-tools orchestrator
+  - `services__restaurantagent__https__0` or `services__restaurantagent__http__0`
   - `services__activitiesagent__https__0` or `services__activitiesagent__http__0`
   - `services__accommodationagent__https__0` or `services__accommodationagent__http__0`
-- The main orchestrator no longer needs a restaurant-agent URL; the voice orchestrator still does
+- The class-skills orchestrator does not require any specialist-agent URL
 - Verify SSL certificate if using HTTPS in development
 
 ### Cosmos DB Connection Issues
@@ -355,7 +306,7 @@ The frontend uses the `@a2a-js/sdk` package to handle A2A protocol communication
 
 ### Frontend Connection Issues
 - Verify the proxy configuration in `vite.config.ts`
-- Check that orchestrator agent is running on the expected port
+- Check that both orchestrator resources are healthy in Aspire
 - Look for CORS issues in browser console
 
 ### LLM Reranking Issues (Accommodation Agent)

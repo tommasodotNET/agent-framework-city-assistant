@@ -95,6 +95,12 @@
   box-shadow: 0 0 0 4px rgba(255, 255, 255, 0.1);
 }
 
+.agentDropdown:disabled {
+  opacity: 0.65;
+  cursor: wait;
+  transform: none;
+}
+
 .agentDropdown option {
   background: #2d3748;
   color: white;
@@ -561,6 +567,15 @@
   .sessionInfo {
     flex-direction: column;
     align-items: stretch;
+  }
+
+  .agentSelector {
+    min-width: 0;
+  }
+
+  .agentDropdown {
+    min-width: 0;
+    width: 100%;
   }
   
   .sessionInput {

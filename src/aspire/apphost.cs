@@ -7,8 +7,10 @@
 
 #:project ../activities-agent/ActivitiesAgent.csproj
 #:project ../accommodation-agent/AccommodationAgent.csproj
+#:project ../restaurant-agent/RestaurantAgent.csproj
 
 #:project ../orchestrator-agent/OrchestratorAgent.csproj
+#:project ../a2a-orchestrator-agent/A2AOrchestratorAgent.csproj
 #:project ../voice-orchestrator-agent/VoiceOrchestratorAgent.csproj
 #:project ../geocoding-mcp-server/GeocodingMcpServer.csproj
 
@@ -47,6 +49,18 @@ var conversations = db.AddContainer("conversations", "/conversationId");
 var geocodingMcpServer = builder.AddProject("geocodingmcpserver", "../geocoding-mcp-server/GeocodingMcpServer.csproj")
     .WithHttpHealthCheck("/health");
 
+var restaurantAgent = builder.AddProject("restaurantagent", "../restaurant-agent/RestaurantAgent.csproj")
+    .WithHttpHealthCheck("/health")
+    .WithReference(foundry).WaitFor(foundry)
+    .WithReference(sessions).WaitFor(sessions)
+    .WithReference(conversations).WaitFor(conversations)
+    .WithReference(geocodingMcpServer).WaitFor(geocodingMcpServer)
+    .WithEnvironment("AZURE_TENANT_ID", tenantId)
+    .WithUrls((e) =>
+    {
+        e.Urls.Add(new() { Url = "/.well-known/agent-card.json", DisplayText = "🍽️ Restaurant Agent A2A Card", Endpoint = e.GetEndpoint("https") });
+    });
+
 var activitiesAgent = builder.AddProject("activitiesagent", "../activities-agent/ActivitiesAgent.csproj")
     .WithHttpHealthCheck("/health")
     .WithReference(foundry).WaitFor(foundry)
@@ -76,12 +90,24 @@ var orchestratorAgent = builder.AddProject("orchestratoragent", "../orchestrator
     .WithReference(foundry).WaitFor(foundry)
     .WithReference(sessions).WaitFor(sessions)
     .WithReference(conversations).WaitFor(conversations)
+    .WithEnvironment("AZURE_TENANT_ID", tenantId)
+    .WithUrls((e) =>
+    {
+        e.Urls.Add(new() { Url = "/.well-known/agent-card.json", DisplayText = "🧩 Class Skills Orchestrator A2A Card", Endpoint = e.GetEndpoint("https") });
+    });
+
+var a2aOrchestratorAgent = builder.AddProject("a2aorchestratoragent", "../a2a-orchestrator-agent/A2AOrchestratorAgent.csproj")
+    .WithHttpHealthCheck("/health")
+    .WithReference(foundry).WaitFor(foundry)
+    .WithReference(sessions).WaitFor(sessions)
+    .WithReference(conversations).WaitFor(conversations)
+    .WithReference(restaurantAgent).WaitFor(restaurantAgent)
     .WithReference(activitiesAgent).WaitFor(activitiesAgent)
     .WithReference(accommodationAgent).WaitFor(accommodationAgent)
     .WithEnvironment("AZURE_TENANT_ID", tenantId)
     .WithUrls((e) =>
     {
-        e.Urls.Add(new() { Url = "/.well-known/agent-card.json", DisplayText = "🤖Orchestrator Agent A2A Card", Endpoint = e.GetEndpoint("https") });
+        e.Urls.Add(new() { Url = "/.well-known/agent-card.json", DisplayText = "🔗 A2A Agent Tools Orchestrator Card", Endpoint = e.GetEndpoint("https") });
     });
 
 var voiceOrchestratorAgent = builder.AddProject("voiceorchestratoragent", "../voice-orchestrator-agent/VoiceOrchestratorAgent.csproj")
@@ -95,6 +121,7 @@ var voiceOrchestratorAgent = builder.AddProject("voiceorchestratoragent", "../vo
 
 var frontend = builder.AddViteApp("frontend", "../frontend")
     .WithReference(orchestratorAgent).WaitFor(orchestratorAgent)
+    .WithReference(a2aOrchestratorAgent).WaitFor(a2aOrchestratorAgent)
     .WithReference(voiceOrchestratorAgent).WaitFor(voiceOrchestratorAgent)
     .WithUrls((e) =>
     {
@@ -110,6 +137,10 @@ if (builder.ExecutionContext.IsPublishMode)
         {
             yarp.AddRoute("/.well-known/{**catch-all}", orchestratorAgent);
             yarp.AddRoute("/agenta2a/{**catch-all}", orchestratorAgent);
+            yarp.AddRoute("/orchestrators/class-skills/{**catch-all}", orchestratorAgent)
+                .WithTransformPathRemovePrefix("/orchestrators/class-skills");
+            yarp.AddRoute("/orchestrators/a2a/{**catch-all}", a2aOrchestratorAgent)
+                .WithTransformPathRemovePrefix("/orchestrators/a2a");
         })
         .PublishWithStaticFiles(frontend);
 }
