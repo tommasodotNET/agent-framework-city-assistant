@@ -74,6 +74,7 @@ builder.AddAIAgent("restaurant-agent", (sp, key) =>
 
     var agentOptions = new ChatClientAgentOptions()
     {
+        Id = key,
         Name = key,
         Description = "A friendly restaurant assistant that helps find restaurants in Agentburg",
         ChatOptions = new ChatOptions()

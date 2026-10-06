@@ -15,6 +15,7 @@
 #:project ../geocoding-mcp-server/GeocodingMcpServer.csproj
 
 using Aspire.Hosting.Yarp.Transforms;
+using Azure.Provisioning.CosmosDB;
 
 var builder = DistributedApplication.CreateBuilder(args);
 
@@ -44,6 +45,18 @@ var cosmos = builder.AddAzureCosmosDB("cosmos-db")
 var db = cosmos.AddCosmosDatabase("db");
 var sessions = db.AddContainer("sessions", "/conversationId");
 var conversations = db.AddContainer("conversations", "/conversationId");
+
+// Enable TTL without a container-wide expiry (-1): each document's own "ttl" decides when it expires.
+// ContainerProperties drives emulator container creation; ConfigureInfrastructure drives the Azure Bicep.
+sessions.Resource.ContainerProperties.DefaultTimeToLive = -1;
+conversations.Resource.ContainerProperties.DefaultTimeToLive = -1;
+cosmos.ConfigureInfrastructure(infra =>
+{
+    foreach (var container in infra.GetProvisionableResources().OfType<CosmosDBSqlContainer>())
+    {
+        container.Resource.DefaultTtl = -1;
+    }
+});
 
 var geocodingMcpServer = builder.AddProject("geocodingmcpserver", "../geocoding-mcp-server/GeocodingMcpServer.csproj")
     .WithHttpHealthCheck("/health");

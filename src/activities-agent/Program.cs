@@ -75,6 +75,7 @@ builder.AddAIAgent("activities-agent", (sp, key) =>
 
     var agentOptions = new ChatClientAgentOptions()
     {
+        Id = key,
         Name = key,
         Description = "A friendly activities assistant that helps discover museums, theaters, cultural events, and attractions",
         ChatOptions = new ChatOptions()

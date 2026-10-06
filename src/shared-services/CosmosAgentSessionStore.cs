@@ -35,8 +35,14 @@ public sealed class CosmosAgentSessionStoreOptions
 /// <para><b>Container Requirements:</b></para>
 /// <list type="bullet">
 ///   <item><description>Partition key: /conversationId</description></item>
-///   <item><description>TTL enabled on container if using document expiration</description></item>
+///   <item><description>TTL enabled on the container (<c>DefaultTimeToLive = -1</c>), otherwise Cosmos DB ignores the per-document <c>ttl</c></description></item>
 /// </list>
+///
+/// <para>
+/// Documents are keyed by <see cref="AIAgent.Id"/>. Hosted agents must set a stable
+/// <see cref="ChatClientAgentOptions.Id"/>; the default is a random value per agent instance,
+/// which makes stored sessions unreachable after a restart or from another replica.
+/// </para>
 /// </remarks>
 public sealed class CosmosAgentSessionStore : AgentSessionStore
 {

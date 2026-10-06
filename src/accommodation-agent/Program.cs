@@ -76,6 +76,7 @@ builder.AddAIAgent("accommodation-agent", (sp, key) =>
 
     var agentOptions = new ChatClientAgentOptions()
     {
+        Id = key,
         Name = key,
         Description = "A friendly accommodation assistant that helps find hotels, B&Bs, and other lodging in Agentburg",
         ChatOptions = new ChatOptions()

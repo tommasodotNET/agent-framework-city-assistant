@@ -104,6 +104,7 @@ builder.AddAIAgent("class-skills-orchestrator-agent", (sp, key) =>
 
     var agentOptions = new ChatClientAgentOptions()
     {
+        Id = key,
         Name = key,
         Description = "A city assistant that orchestrates multiple specialized agents",
         ChatOptions = new ChatOptions()

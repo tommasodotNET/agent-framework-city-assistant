@@ -76,6 +76,7 @@ builder.AddAIAgent("a2a-orchestrator-agent", (sp, key) =>
 
     var agentOptions = new ChatClientAgentOptions()
     {
+        Id = key,
         Name = key,
         Description = "A city assistant that orchestrates remote specialist agents through A2A agent-as-tool integrations",
         ChatOptions = new ChatOptions()
