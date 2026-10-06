@@ -1,7 +1,10 @@
+using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Hosting;
 using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+
+#pragma warning disable MAAI001 // Session store and isolation types are experimental.
 
 namespace SharedServices;
 
@@ -35,9 +38,13 @@ public static class CosmosAgentSessionStoreExtensions
         var options = new CosmosAgentSessionStoreOptions();
         configure?.Invoke(options);
 
+        services.AddSingleton(options);
+        services.AddSingleton(sp => new CosmosSessionRepository(
+            sp.GetRequiredKeyedService<Container>(containerServiceKey),
+            sp.GetRequiredService<ILogger<CosmosSessionRepository>>()));
         services.AddSingleton(sp =>
             new CosmosAgentSessionStore(
-                sp.GetRequiredKeyedService<Container>(containerServiceKey),
+                sp.GetRequiredService<CosmosSessionRepository>(),
                 sp.GetRequiredService<ILogger<CosmosAgentSessionStore>>(),
                 options.TtlSeconds));
 
@@ -69,9 +76,12 @@ public static class CosmosAgentSessionStoreExtensions
         configure?.Invoke(options);
 
         var container = client.GetContainer(databaseId, containerId);
+        services.AddSingleton(options);
+        services.AddSingleton(sp => new CosmosSessionRepository(
+            container, sp.GetRequiredService<ILogger<CosmosSessionRepository>>()));
         services.AddSingleton(sp =>
             new CosmosAgentSessionStore(
-                container,
+                sp.GetRequiredService<CosmosSessionRepository>(),
                 sp.GetRequiredService<ILogger<CosmosAgentSessionStore>>(),
                 options.TtlSeconds));
 
@@ -79,26 +89,59 @@ public static class CosmosAgentSessionStoreExtensions
     }
 
     /// <summary>
-    /// Configures the hosted agent builder to use the registered <see cref="CosmosAgentSessionStore"/>.
+    /// Configures the hosted agent builder to use the registered <see cref="CosmosAgentSessionStore"/>,
+    /// scoped by an isolation key when an <see cref="AgentIsolationKeyProvider"/> is registered.
     /// </summary>
     /// <param name="builder">The hosted agent builder to configure.</param>
-    /// <param name="withIsolation">Whether to require a session isolation key. Enable this when the host registers an authenticated isolation-key provider.</param>
     /// <returns>The same builder instance for chaining.</returns>
     /// <remarks>
+    /// <para>
+    /// The store is always wrapped in <see cref="IsolationKeyScopedAgentSessionStore"/>, so every protocol
+    /// endpoint (A2A and OpenAI-compatible) gets the same behavior:
+    /// </para>
+    /// <list type="bullet">
+    ///   <item><description>
+    ///     No <see cref="AgentIsolationKeyProvider"/> registered (anonymous host): sessions are keyed only by
+    ///     the client-supplied continuation id. A warning is logged because any caller who knows that id can
+    ///     resume the session.
+    ///   </description></item>
+    ///   <item><description>
+    ///     Provider registered (for example with <c>UseClaimsBasedAgentIsolation()</c>): sessions are scoped
+    ///     to the caller's isolation key. Strict is always enabled when a provider is registered:
+    ///     requests without a key fail rather than silently falling back to anonymous ownership.
+    ///   </description></item>
+    /// </list>
     /// <code>
     /// builder.Services.AddCosmosAgentSessionStore("sessions");
     /// builder.AddAIAgent("my-agent", (sp, key) => { /* ... */ })
     ///     .WithCosmosSessionStore();
     /// </code>
     /// </remarks>
-    public static IHostedAgentBuilder WithCosmosSessionStore(
-        this IHostedAgentBuilder builder,
-        bool withIsolation = false)
+    public static IHostedAgentBuilder WithCosmosSessionStore(this IHostedAgentBuilder builder)
     {
         ArgumentNullException.ThrowIfNull(builder);
 
         return builder.WithSessionStore(
-            (sp, _) => sp.GetRequiredService<CosmosAgentSessionStore>(),
-            withIsolation: withIsolation);
+            (sp, agentName) =>
+            {
+                var store = sp.GetRequiredService<CosmosAgentSessionStore>();
+                var isolationKeyProvider = sp.GetService<AgentIsolationKeyProvider>();
+
+                IsolationKeyScopedAgentSessionStoreOptions options;
+                if (isolationKeyProvider is null)
+                {
+                    sp.GetRequiredService<ILogger<CosmosAgentSessionStore>>().LogWarning(
+                        SessionRepositoryErrors.Get("AnonymousWarning"),
+                        agentName);
+                    options = new IsolationKeyScopedAgentSessionStoreOptions { Strict = false };
+                }
+                else
+                {
+                    options = new IsolationKeyScopedAgentSessionStoreOptions { Strict = true };
+                }
+
+                return new IsolationKeyScopedAgentSessionStore(store, isolationKeyProvider, options);
+            },
+            withIsolation: false);
     }
 }

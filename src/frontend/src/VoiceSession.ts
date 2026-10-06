@@ -218,6 +218,7 @@ export class VoiceSession {
                     break;
 
                 case 'error':
+                case 'persistence_error':
                     this.callbacks.onError(msg.message);
                     break;
             }

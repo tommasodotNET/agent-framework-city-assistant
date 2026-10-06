@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype"><value>text/microsoft-resx</value></resheader>
+  <resheader name="version"><value>2.0</value></resheader>
+  <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms</value></resheader>
+  <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms</value></resheader>
+  <data name="InvalidKey" xml:space="preserve"><value>Storage keys must be nonempty, valid Unicode without control characters.</value></data>
+  <data name="KeyTooLong" xml:space="preserve"><value>The storage key exceeds its UTF-8 byte limit. Use a shorter key; keys are never truncated or hashed.</value></data>
+  <data name="InvalidScope" xml:space="preserve"><value>The storage scope is not canonical anonymous or partition JSON.</value></data>
+  <data name="IncompatibleContext" xml:space="preserve"><value>The persistence context is incompatible with the agent or trusted partition scope.</value></data>
+  <data name="MissingContext" xml:space="preserve"><value>Initialize the session persistence context explicitly before accessing history. Missing or invalid context cannot fall back to anonymous storage.</value></data>
+  <data name="AlreadyInitialized" xml:space="preserve"><value>The session persistence context is already initialized.</value></data>
+  <data name="InvalidRevision" xml:space="preserve"><value>A history revision must be nonnegative and cannot move backwards.</value></data>
+  <data name="InvalidSchema" xml:space="preserve"><value>The session document schema is unsupported or its address does not match the requested address.</value></data>
+  <data name="InvalidSnapshot" xml:space="preserve"><value>The serialized session must be a JSON object, not an escaped JSON string.</value></data>
+  <data name="InvalidTtl" xml:space="preserve"><value>Document TTL must be -1 or a positive number of seconds.</value></data>
+  <data name="SnapshotTooLarge" xml:space="preserve"><value>The complete serialized session document exceeds the 2,000,000-byte UTF-8 budget. Reduce the session snapshot before retrying; no write was attempted.</value></data>
+  <data name="WrongContainerSchema" xml:space="preserve"><value>The Cosmos container must use the expected two hierarchical partition paths (MultiHash, version 2) and default TTL -1. Stop all writers, back up if needed, and manually recreate the old container before using this schema. No automatic deletion or migration is performed.</value></data>
+</root>

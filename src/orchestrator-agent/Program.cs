@@ -39,7 +39,8 @@ builder.AddAzureChatCompletionsClient(connectionName: "foundry",
         settings.TokenCredential = new DefaultAzureCredential();
         settings.EnableSensitiveTelemetryData = true;
     })
-    .AddChatClient("gpt-4.1")
+    .AddChatClient(builder.Configuration["AI:ChatModel"] ?? "gpt-4.1")
+    .UseProtocolMetadataFilter()
     .UseStreamingUsage()
     .UseOpenTelemetry(
         sourceName: TelemetrySourceName,
