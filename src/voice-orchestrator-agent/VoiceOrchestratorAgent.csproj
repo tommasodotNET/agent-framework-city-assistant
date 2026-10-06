@@ -8,16 +8,16 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="Azure.AI.VoiceLive" Version="1.0.0" />
-    <PackageReference Include="Azure.Identity" Version="1.18.0" />
-    <PackageReference Include="Aspire.Microsoft.Azure.Cosmos" Version=" 13.2.0-preview.1.26162.21" />
-    <PackageReference Include="Microsoft.Azure.Cosmos" Version="3.58.0-preview.0" />
+    <PackageReference Include="Azure.AI.VoiceLive" Version="1.2.0" />
+    <PackageReference Include="Azure.Identity" Version="1.21.0" />
+    <PackageReference Include="Aspire.Microsoft.Azure.Cosmos" Version="13.6.0" />
+    <PackageReference Include="Microsoft.Azure.Cosmos" Version="3.63.2" />
 
     <!-- Microsoft Agent Framework (MAF) for A2A agent invocation -->
-    <PackageReference Include="Microsoft.Agents.AI" Version="1.13.0" />
-    <PackageReference Include="Microsoft.Agents.AI.A2A" Version="1.13.0-preview.260703.1" />
-    <PackageReference Include="Microsoft.Agents.AI.Hosting" Version="1.13.0-preview.260703.1" />
-    <PackageReference Include="Microsoft.Agents.AI.Hosting.A2A.AspNetCore" Version="1.13.0-preview.260703.1" />
+    <PackageReference Include="Microsoft.Agents.AI" Version="1.23.0" />
+    <PackageReference Include="Microsoft.Agents.AI.A2A" Version="1.23.0-preview.260928.1" />
+    <PackageReference Include="Microsoft.Agents.AI.Hosting" Version="1.23.0-preview.260928.1" />
+    <PackageReference Include="Microsoft.Agents.AI.Hosting.A2A.AspNetCore" Version="1.23.0-preview.260928.1" />
   </ItemGroup>
 
   <ItemGroup>

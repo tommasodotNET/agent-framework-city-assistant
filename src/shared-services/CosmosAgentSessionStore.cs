@@ -1,10 +1,13 @@
 using System.Net;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Hosting;
 using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.Logging;
+
+#pragma warning disable MAAI001 // AgentSessionStore and AgentSessionStoreKey are experimental.
 
 namespace SharedServices;
 
@@ -67,17 +70,17 @@ public sealed class CosmosAgentSessionStore : AgentSessionStore
     }
 
     /// <inheritdoc />
-    public override async ValueTask<AgentSession> GetSessionAsync(
+    public override async ValueTask<AgentSession?> GetSessionAsync(
         AIAgent agent,
-        string conversationId,
+        AgentSessionStoreKey sessionKey,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(agent);
-        ArgumentException.ThrowIfNullOrWhiteSpace(conversationId);
+        ArgumentNullException.ThrowIfNull(sessionKey);
 
-        var key = GetKey(conversationId, agent.Id);
+        var key = GetKey(agent, sessionKey);
 
-        _logger.LogDebug("Retrieving session for conversation {ConversationId}, agent {AgentId}", conversationId, agent.Id);
+        _logger.LogDebug("Retrieving session for conversation {ConversationId}, agent {AgentId}", sessionKey.SessionId, agent.Id);
 
         try
         {
@@ -95,25 +98,25 @@ public sealed class CosmosAgentSessionStore : AgentSessionStore
         }
         catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
         {
-            _logger.LogDebug("No existing session found, creating new session for {ConversationId}", conversationId);
-            return await agent.CreateSessionAsync(cancellationToken).ConfigureAwait(false);
+            _logger.LogDebug("No existing session found for {ConversationId}", sessionKey.SessionId);
+            return null;
         }
     }
 
     /// <inheritdoc />
     public override async ValueTask SaveSessionAsync(
         AIAgent agent,
-        string conversationId,
+        AgentSessionStoreKey sessionKey,
         AgentSession session,
         CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(agent);
-        ArgumentException.ThrowIfNullOrWhiteSpace(conversationId);
+        ArgumentNullException.ThrowIfNull(sessionKey);
         ArgumentNullException.ThrowIfNull(session);
 
-        var key = GetKey(conversationId, agent.Id);
+        var key = GetKey(agent, sessionKey);
 
-        _logger.LogDebug("Saving session for conversation {ConversationId}, agent {AgentId}", conversationId, agent.Id);
+        _logger.LogDebug("Saving session for conversation {ConversationId}, agent {AgentId}", sessionKey.SessionId, agent.Id);
 
         var serializedSession = await agent.SerializeSessionAsync(session, jsonSerializerOptions: _serializationOptions, cancellationToken: cancellationToken).ConfigureAwait(false);
 
@@ -134,7 +137,30 @@ public sealed class CosmosAgentSessionStore : AgentSessionStore
         _logger.LogDebug("Saved session {Key}, RU: {RequestCharge}", key, response.RequestCharge);
     }
 
-    private static string GetKey(string conversationId, string agentId) => $"{agentId}:{conversationId}";
+    /// <summary>
+    /// Builds the Cosmos document id from the agent id, the session id, and every key partition.
+    /// Components are URI-escaped so separators stay unambiguous and characters invalid in Cosmos ids are encoded.
+    /// </summary>
+    private static string GetKey(AIAgent agent, AgentSessionStoreKey sessionKey)
+    {
+        var builder = new StringBuilder()
+            .Append(Uri.EscapeDataString(agent.Id))
+            .Append(':')
+            .Append(Uri.EscapeDataString(sessionKey.SessionId));
+
+        if (sessionKey.Partitions is { Count: > 0 } partitions)
+        {
+            foreach (var partition in partitions.OrderBy(p => p.Key, StringComparer.Ordinal))
+            {
+                builder.Append('|')
+                    .Append(Uri.EscapeDataString(partition.Key))
+                    .Append('=')
+                    .Append(Uri.EscapeDataString(partition.Value));
+            }
+        }
+
+        return builder.ToString();
+    }
 
     private sealed class CosmosSessionItem
     {

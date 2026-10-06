@@ -1,9 +1,9 @@
-﻿#:package Aspire.Hosting.Azure.AppContainers@13.2.2
-#:sdk Aspire.AppHost.Sdk@13.2.0
-#:package Aspire.Hosting.Foundry@13.2.0-preview.1.26170.3
-#:package Aspire.Hosting.Azure.CosmosDB@13.2.0
-#:package Aspire.Hosting.JavaScript@13.2.0
-#:package Aspire.Hosting.Yarp@13.2.0
+﻿#:package Aspire.Hosting.Azure.AppContainers@13.6.0
+#:sdk Aspire.AppHost.Sdk@13.6.0
+#:package Aspire.Hosting.Foundry@13.6.0-preview.1.26479.8
+#:package Aspire.Hosting.Azure.CosmosDB@13.6.0
+#:package Aspire.Hosting.JavaScript@13.6.0
+#:package Aspire.Hosting.Yarp@13.6.0
 
 #:project ../activities-agent/ActivitiesAgent.csproj
 #:project ../accommodation-agent/AccommodationAgent.csproj
@@ -33,9 +33,8 @@ tenantId.WithParentRelationship(foundry);
 existingFoundryName.WithParentRelationship(foundry);
 existingFoundryResourceGroup.WithParentRelationship(foundry);
 
-#pragma warning disable ASPIRECOSMOSDB001
 var cosmos = builder.AddAzureCosmosDB("cosmos-db")
-    .RunAsPreviewEmulator(
+    .RunAsEmulator(
         emulator =>
         {
             emulator.WithDataExplorer();
