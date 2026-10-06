@@ -18,6 +18,7 @@ const STATUS_LABELS: Record<VoiceStatus, string> = {
     listening: '🎤 Listening...',
     processing: '🤔 Processing...',
     function_calling: '🔧 Searching...',
+    stopping: 'Saving voice session...',
 };
 
 export default function VoiceButton({ onTranscript, disabled, conversationId }: VoiceButtonProps) {
@@ -54,7 +55,7 @@ export default function VoiceButton({ onTranscript, disabled, conversationId }: 
             <button
                 className={`${styles.voiceButton} ${isActive ? styles.voiceActive : ''}`}
                 onClick={toggleVoice}
-                disabled={disabled}
+                disabled={disabled || status === 'stopping'}
                 title={isActive ? 'Stop voice session' : 'Start voice session'}
             >
                 {isActive ? '🔊' : '🎙️'}

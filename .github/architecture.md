@@ -103,6 +103,15 @@ Shared services use two fixed hierarchical partition keys in both anonymous and 
 
 `sessionId` retains the opaque external lookup id. It is not assumed to be a UUID, phone number, A2A context or Responses id. No HMAC or encryption is applied to these identifiers: **encoding is not anonymization**, and stored keys can contain personal data. An anonymous id identifies a continuation, not its owner's identity.
 
+Both complete addresses enforce a conservative **2,048-byte combined UTF-8
+budget** across their two partition values, not 2,048 bytes per component.
+Canonical scope encoding counts as part of that value; additional JSON escaping
+in HTTP headers does not. This application guard is based on the
+[documented Cosmos partition-key limit](https://learn.microsoft.com/en-us/azure/cosmos-db/concepts-limits#per-item-limits);
+the documentation does not specify the internal `MultiHash` size calculation.
+The tested vNext emulator accepts some oversized values, so emulator acceptance
+alone is not a production boundary guarantee.
+
 `CosmosAgentSessionStore` adapts MAF serialization to the common `CosmosSessionRepository`. Its schema-v2 envelope contains `id`, `agentId`, `scopeKey`, `sessionId`, `serializedSession`, `lastUpdated`, and `ttl`. `serializedSession` is a JSON object containing the complete agent state. There is no top-level active `conversationId`.
 
 Every hosted agent sets a stable `ChatClientAgentOptions.Id`; otherwise stored sessions would be unreachable after a restart or on another replica. Each read deserializes an independent working copy. Missing documents return `null`; malformed state and storage failures are not treated as missing sessions.

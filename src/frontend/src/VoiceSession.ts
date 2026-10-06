@@ -7,7 +7,7 @@ export interface VoiceTranscript {
     isFinal: boolean;
 }
 
-export type VoiceStatus = 'disconnected' | 'connecting' | 'ready' | 'listening' | 'processing' | 'function_calling';
+export type VoiceStatus = 'disconnected' | 'connecting' | 'ready' | 'listening' | 'processing' | 'function_calling' | 'stopping';
 
 export interface VoiceSessionCallbacks {
     onTranscript: (transcript: VoiceTranscript) => void;
@@ -18,6 +18,8 @@ export interface VoiceSessionCallbacks {
 const PCM_SAMPLE_RATE = 24000;
 const PCM_CHUNK_MS = 50;
 const PCM_CHUNK_SAMPLES = (PCM_SAMPLE_RATE * PCM_CHUNK_MS) / 1000; // 1200 samples per chunk
+// Server shutdown can spend 10s draining producers and another 10s persisting.
+const PERSISTENCE_ACK_TIMEOUT_MS = 25000;
 
 // AudioWorklet processor code (inline to avoid separate file)
 const WORKLET_CODE = `
@@ -65,6 +67,9 @@ export class VoiceSession {
     private sourceNode: MediaStreamAudioSourceNode | null = null;
     private callbacks: VoiceSessionCallbacks;
     private _status: VoiceStatus = 'disconnected';
+    private stopPromise: Promise<void> | null = null;
+    private completePersistence: ((error?: string) => void) | null = null;
+    private readyReceived = false;
 
     // Playback
     private playbackContext: AudioContext | null = null;
@@ -87,7 +92,8 @@ export class VoiceSession {
     }
 
     async start(): Promise<void> {
-        if (this.isActive) return;
+        if (this.isActive || this.stopPromise) return;
+        this.readyReceived = false;
         this.setStatus('connecting');
 
         try {
@@ -97,40 +103,103 @@ export class VoiceSession {
             if (this.conversationId) {
                 wsUrl += `?conversationId=${encodeURIComponent(this.conversationId)}`;
             }
-            this.ws = new WebSocket(wsUrl);
+            const socket = new WebSocket(wsUrl);
+            this.ws = socket;
 
             await new Promise<void>((resolve, reject) => {
-                this.ws!.onopen = () => resolve();
-                this.ws!.onerror = () => reject(new Error('WebSocket connection failed'));
-                setTimeout(() => reject(new Error('WebSocket connection timeout')), 10000);
+                let opened = false;
+                const timeout = setTimeout(() => reject(new Error('WebSocket connection timeout')), 10000);
+                socket.onopen = () => {
+                    opened = true;
+                    clearTimeout(timeout);
+                    resolve();
+                };
+                socket.onmessage = (event) => {
+                    if (this.ws === socket) this.handleServerMessage(event.data);
+                };
+                socket.onclose = () => {
+                    clearTimeout(timeout);
+                    if (!opened) reject(new Error('WebSocket closed before connecting'));
+                    if (this.ws === socket) this.handleDisconnect();
+                };
+                socket.onerror = () => {
+                    clearTimeout(timeout);
+                    if (!opened) reject(new Error('WebSocket connection failed'));
+                    else if (this.ws === socket) {
+                        if (this.completePersistence) this.completePersistence('Connection failed before voice persistence was confirmed.');
+                        else this.callbacks.onError('WebSocket error');
+                    }
+                };
             });
 
-            this.ws.onmessage = (event) => this.handleServerMessage(event.data);
-            this.ws.onclose = () => this.handleDisconnect();
-            this.ws.onerror = () => this.callbacks.onError('WebSocket error');
+            if (!this.canCapture()) return;
 
             // Initialize audio capture
             await this.startAudioCapture();
+            if (!this.canCapture()) return;
 
             // Initialize audio playback
             this.playbackContext = new AudioContext({ sampleRate: PCM_SAMPLE_RATE });
             this.nextPlaybackTime = 0;
 
         } catch (error) {
-            this.callbacks.onError(error instanceof Error ? error.message : String(error));
+            if (!this.stopPromise && this.isActive)
+                this.callbacks.onError(error instanceof Error ? error.message : String(error));
             await this.stop();
         }
     }
 
-    async stop(): Promise<void> {
-        // Send stop message
-        if (this.ws?.readyState === WebSocket.OPEN) {
-            this.ws.send(JSON.stringify({ type: 'stop' }));
-            this.ws.close();
-        }
-        this.ws = null;
+    stop(): Promise<void> {
+        if (this.stopPromise) return this.stopPromise;
+        if (!this.isActive && !this.ws) return Promise.resolve();
+        this.setStatus('stopping');
+        this.stopPromise = this.stopCore();
+        return this.stopPromise;
+    }
 
-        // Stop audio capture
+    private async stopCore(): Promise<void> {
+        const socket = this.ws;
+        const audioReleased = this.releaseAudio();
+        try {
+            if (socket?.readyState === WebSocket.OPEN) {
+                // A connection without a continuation id never saves a snapshot. A connection
+                // stopped before server readiness has not begun a resumable voice conversation.
+                const acknowledgement = this.readyReceived && !!this.conversationId
+                    ? this.waitForPersistence()
+                    : Promise.resolve();
+                socket.send(JSON.stringify({ type: 'stop' }));
+                await acknowledgement;
+            }
+        } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            if (this.completePersistence) this.completePersistence(message);
+            else this.callbacks.onError(message);
+        } finally {
+            this.completePersistence = null;
+            this.readyReceived = false;
+            if (this.ws === socket) this.ws = null;
+            if (socket && socket.readyState !== WebSocket.CLOSED) socket.close();
+            await audioReleased;
+            this.setStatus('disconnected');
+            this.stopPromise = null;
+        }
+    }
+
+    private waitForPersistence(): Promise<void> {
+        return new Promise(resolve => {
+            const timeout = setTimeout(() => finish('Timed out waiting for voice persistence confirmation.'), PERSISTENCE_ACK_TIMEOUT_MS);
+            const finish = (error?: string) => {
+                clearTimeout(timeout);
+                this.completePersistence = null;
+                if (error) this.callbacks.onError(error);
+                resolve();
+            };
+            this.completePersistence = finish;
+        });
+    }
+
+    private async releaseAudio(): Promise<void> {
+        // Stop the microphone immediately, independently of the server acknowledgement.
         this.workletNode?.disconnect();
         this.workletNode = null;
         this.sourceNode?.disconnect();
@@ -141,42 +210,55 @@ export class VoiceSession {
             this.mediaStream = null;
         }
 
-        await this.audioContext?.close();
+        const audioContext = this.audioContext;
         this.audioContext = null;
-
-        await this.playbackContext?.close();
+        const playbackContext = this.playbackContext;
         this.playbackContext = null;
-        this.scheduledSources = [];
-        this.nextPlaybackTime = 0;
-
-        this.setStatus('disconnected');
+        this.clearPlaybackQueue();
+        for (const context of [audioContext, playbackContext]) {
+            try {
+                await context?.close();
+            } catch (error) {
+                this.callbacks.onError(`Could not close voice audio: ${error instanceof Error ? error.message : String(error)}`);
+            }
+        }
     }
 
     private async startAudioCapture(): Promise<void> {
         // Get microphone access
-        this.mediaStream = await navigator.mediaDevices.getUserMedia({
+        const stream = await navigator.mediaDevices.getUserMedia({
             audio: {
                 echoCancellation: true,
                 noiseSuppression: true,
                 sampleRate: PCM_SAMPLE_RATE,
             }
         });
+        if (!this.canCapture()) {
+            stream.getTracks().forEach(track => track.stop());
+            return;
+        }
+        this.mediaStream = stream;
 
         // Create AudioContext at 24kHz
-        this.audioContext = new AudioContext({ sampleRate: PCM_SAMPLE_RATE });
+        const audioContext = new AudioContext({ sampleRate: PCM_SAMPLE_RATE });
+        this.audioContext = audioContext;
 
         // Load AudioWorklet from inline code
         const blob = new Blob([WORKLET_CODE], { type: 'application/javascript' });
         const workletUrl = URL.createObjectURL(blob);
-        await this.audioContext.audioWorklet.addModule(workletUrl);
-        URL.revokeObjectURL(workletUrl);
+        try {
+            await audioContext.audioWorklet.addModule(workletUrl);
+        } finally {
+            URL.revokeObjectURL(workletUrl);
+        }
+        if (!this.canCapture()) return;
 
         // Connect microphone → worklet → WebSocket
         this.sourceNode = this.audioContext.createMediaStreamSource(this.mediaStream);
         this.workletNode = new AudioWorkletNode(this.audioContext, 'pcm-capture-processor');
 
         this.workletNode.port.onmessage = (event: MessageEvent) => {
-            if (this.ws?.readyState === WebSocket.OPEN) {
+            if (this.canCapture() && this.ws) {
                 const int16Buffer = event.data as ArrayBuffer;
                 const base64 = arrayBufferToBase64(int16Buffer);
                 this.ws.send(JSON.stringify({ type: 'audio', data: base64 }));
@@ -188,17 +270,22 @@ export class VoiceSession {
         this.workletNode.connect(this.audioContext.destination);
     }
 
+    private canCapture(): boolean {
+        return this.isActive && this.status !== 'stopping' && this.ws?.readyState === WebSocket.OPEN;
+    }
+
     private handleServerMessage(data: string): void {
         try {
             const msg = JSON.parse(data);
 
             switch (msg.type) {
                 case 'ready':
-                    this.setStatus('ready');
+                    this.readyReceived = true;
+                    if (this.status !== 'stopping') this.setStatus('ready');
                     break;
 
                 case 'audio':
-                    this.playAudio(msg.data);
+                    if (this.status !== 'stopping') this.playAudio(msg.data);
                     break;
 
                 case 'clear_audio':
@@ -214,11 +301,19 @@ export class VoiceSession {
                     break;
 
                 case 'status':
-                    this.setStatus(msg.status as VoiceStatus);
+                    if (this.status !== 'stopping') this.setStatus(msg.status as VoiceStatus);
+                    break;
+
+                case 'persisted':
+                    this.completePersistence?.();
+                    break;
+
+                case 'persistence_error':
+                    if (this.completePersistence) this.completePersistence(msg.message);
+                    else this.callbacks.onError(msg.message);
                     break;
 
                 case 'error':
-                case 'persistence_error':
                     this.callbacks.onError(msg.message);
                     break;
             }
@@ -267,8 +362,11 @@ export class VoiceSession {
     }
 
     private handleDisconnect(): void {
-        if (this._status !== 'disconnected') {
-            this.stop();
+        if (this.completePersistence) {
+            this.completePersistence('Connection closed before voice persistence was confirmed.');
+        }
+        if (this.isActive && !this.stopPromise) {
+            void this.stop();
         }
     }
 

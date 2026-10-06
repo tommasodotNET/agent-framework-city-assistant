@@ -17,7 +17,7 @@ public static class StorageSchema
     /// <summary>The maximum UTF-8 length of a Cosmos document id.</summary>
     public const int MaxDocumentIdBytes = 1023;
 
-    /// <summary>The maximum UTF-8 length of a string partition key component.</summary>
+    /// <summary>Conservative application budget across all hierarchical key values, based on Cosmos's 2-KB key limit.</summary>
     public const int MaxPartitionKeyBytes = 2048;
 
     private static readonly UTF8Encoding s_strictUtf8 = new(false, true);
@@ -72,6 +72,17 @@ public static class StorageSchema
         if (byteCount > maximumBytes)
         {
             throw new ArgumentException(StorageErrors.Get("KeyTooLong"), parameterName);
+        }
+    }
+
+    internal static void ValidatePartitionKey(string first, string second)
+    {
+        ValidateKey(first, nameof(first));
+        ValidateKey(second, nameof(second));
+        // Count the actual component values, not JSON transport/header escaping.
+        if (s_strictUtf8.GetByteCount(first) + s_strictUtf8.GetByteCount(second) > MaxPartitionKeyBytes)
+        {
+            throw new ArgumentException(StorageErrors.Get("PartitionKeyTooLong"));
         }
     }
 }

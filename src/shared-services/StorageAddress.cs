@@ -14,6 +14,7 @@ public sealed record SessionStorageAddress
         StorageSchema.ValidateKey(agentId, nameof(agentId));
         StorageSchema.ValidateKey(sessionId, nameof(sessionId));
         StorageScope.Validate(scopeKey);
+        StorageSchema.ValidatePartitionKey(scopeKey, sessionId);
         if (StorageScope.IsAnonymous(scopeKey)
             && !string.Equals(scopeKey, StorageScope.Create(sessionId), StringComparison.Ordinal))
         {
@@ -64,6 +65,7 @@ public sealed record HistoryStorageAddress
     {
         StorageScope.Validate(scopeKey);
         StorageSchema.ValidateKey(conversationId, nameof(conversationId));
+        StorageSchema.ValidatePartitionKey(scopeKey, conversationId);
         ScopeKey = scopeKey;
         ConversationId = conversationId;
     }

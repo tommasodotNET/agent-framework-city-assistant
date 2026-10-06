@@ -84,11 +84,18 @@ await session.ConfigureSessionAsync(options);
 #### Stop Flow
 
 1. User clicks the 🔊 button (or closes the page)
-2. Frontend sends `{ type: "stop" }`, closes the WebSocket
+2. Frontend stops microphone/playback immediately and sends `{ type: "stop" }`, keeping the WebSocket open while displaying **Saving voice session...**
 3. Voice Orchestrator Agent detects the close, cancels and awaits both processing loops before reading the collected messages
 4. In the `finally` block, **after the WebSocket session has ended**:
    - Conversation transcript is saved to Cosmos DB
    - OpenTelemetry gen_ai traces are emitted post-hoc
+
+The frontend closes the socket after receiving `persisted` or `persistence_error`.
+It waits at most 25 seconds (covering the server's 10-second drain and 10-second
+save budgets). Timeout or an earlier disconnect reports that persistence was not
+confirmed. Repeated Stop clicks cannot start another shutdown. Connections with
+no continuation id, or stopped before server readiness, do not wait for a save
+acknowledgement that the server does not send.
 
 This implementation persists the collected transcript and emits its aggregate telemetry at shutdown. A process crash before that point can lose the current connection's messages; the WebSocket protocol does not itself provide durable checkpoints.
 
@@ -285,8 +292,9 @@ The adapter converts user transcripts, assistant transcripts, tool calls and too
 While the browser connection is still open, the server sends `persisted` after a
 successful save, or `persistence_error` with a message on failure. The frontend
 routes persistence errors to the same error display as other voice errors. If the
-browser has already closed the socket, the server can report the outcome only in
-its logs; closing a connection is not proof that its transcript was saved.
+browser has already closed the socket (for example by navigating away), the server
+can report the outcome only in its logs; closing a connection is not proof that
+its transcript was saved.
 
 ### Loading (on session start)
 

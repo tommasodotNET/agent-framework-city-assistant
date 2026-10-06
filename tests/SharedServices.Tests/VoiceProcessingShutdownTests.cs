@@ -21,12 +21,21 @@ public class VoiceProcessingShutdownTests
     {
         using var cancellation = new CancellationTokenSource();
         var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var second = DrainAfterCancellationAsync(cancellation.Token, gate.Task);
+        var draining = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var second = DrainAfterCancellationAsync(cancellation.Token, gate.Task, draining);
         var shutdown = VoiceProcessingShutdown.CancelAndWaitAsync(cancellation,
             [Task.CompletedTask, second], TimeSpan.FromSeconds(5));
-        gate.SetResult();
-
-        await shutdown;
+        try
+        {
+            await draining.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.False(second.IsCompleted);
+            Assert.False(shutdown.IsCompleted);
+        }
+        finally
+        {
+            gate.TrySetResult();
+            await shutdown;
+        }
 
         Assert.True(second.IsCompletedSuccessfully);
     }
@@ -76,7 +85,8 @@ public class VoiceProcessingShutdownTests
     private static async Task WaitForCancellationAsync(CancellationToken cancellationToken) =>
         await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
 
-    private static async Task DrainAfterCancellationAsync(CancellationToken cancellationToken, Task gate)
+    private static async Task DrainAfterCancellationAsync(CancellationToken cancellationToken, Task gate,
+        TaskCompletionSource draining)
     {
         try
         {
@@ -84,6 +94,7 @@ public class VoiceProcessingShutdownTests
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            draining.SetResult();
             await gate;
         }
     }

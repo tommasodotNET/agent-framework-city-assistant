@@ -6,6 +6,7 @@
   <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms</value></resheader>
   <data name="InvalidKey" xml:space="preserve"><value>Storage keys must be nonempty, valid Unicode without control characters.</value></data>
   <data name="KeyTooLong" xml:space="preserve"><value>The storage key exceeds its UTF-8 byte limit. Use a shorter key; keys are never truncated or hashed.</value></data>
+  <data name="PartitionKeyTooLong" xml:space="preserve"><value>The combined hierarchical partition-key values exceed the application's 2,048-byte UTF-8 budget. Use shorter identifiers; no key was truncated and no storage operation was attempted.</value></data>
   <data name="InvalidScope" xml:space="preserve"><value>The storage scope is not canonical anonymous or partition JSON.</value></data>
   <data name="IncompatibleContext" xml:space="preserve"><value>The persistence context is incompatible with the agent or trusted partition scope.</value></data>
   <data name="MissingContext" xml:space="preserve"><value>Initialize the session persistence context explicitly before accessing history. Missing or invalid context cannot fall back to anonymous storage.</value></data>

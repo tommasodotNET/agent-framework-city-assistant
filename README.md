@@ -260,7 +260,13 @@ cd src/a2a-orchestrator-agent && dotnet build
 
 ```powershell
 dotnet test tests\SharedServices.Tests\SharedServices.Tests.csproj
+Set-Location src\frontend
+npm test
 ```
+
+The frontend tests use Node's built-in test runner and the existing TypeScript
+compiler to verify voice acknowledgement, timeout and cleanup behavior without a
+microphone or live model.
 
 The suite exercises storage contracts, Cosmos SDK doubles, and the installed MAF
 A2A/Responses HTTP adapters with a deterministic chat client. These tests do not

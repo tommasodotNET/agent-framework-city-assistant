@@ -5,6 +5,56 @@ namespace SharedServices.Tests;
 public class StorageAddressTests
 {
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CombinedPartitionKeyAcceptsExactUtf8BudgetAndRejectsOneByteMore(bool history)
+    {
+        var scope = StorageScope.Create("unused",
+            new Dictionary<string, string> { ["isolation"] = "owner" });
+        var remaining = StorageSchema.MaxPartitionKeyBytes - System.Text.Encoding.UTF8.GetByteCount(scope);
+        var second = new string('\u00e9', remaining / 2) + new string('x', remaining % 2);
+
+        if (history)
+        {
+            _ = new HistoryStorageAddress(scope, second);
+            Assert.Throws<ArgumentException>(() => new HistoryStorageAddress(scope, second + "x"));
+        }
+        else
+        {
+            _ = new SessionStorageAddress("agent", scope, second);
+            Assert.Throws<ArgumentException>(() => new SessionStorageAddress("agent", scope, second + "x"));
+        }
+    }
+
+    [Fact]
+    public void FullLengthScopeLeavesNoBudgetForAnotherPartitionComponent()
+    {
+        var scope = StorageScope.Create(new string('x', 2032));
+        Assert.Equal(2048, System.Text.Encoding.UTF8.GetByteCount(scope));
+
+        Assert.Throws<ArgumentException>(() => new HistoryStorageAddress(scope, "history"));
+        Assert.Throws<ArgumentException>(() => new SessionStorageAddress("agent", scope, new string('x', 2032)));
+    }
+
+    [Fact]
+    public void AnonymousScopeAndRepeatedLookupIdShareTheSameBudget()
+    {
+        _ = SessionStorageAddress.Create("agent", new string('x', 1016));
+        Assert.Throws<ArgumentException>(() => SessionStorageAddress.Create("agent", new string('x', 1017)));
+    }
+
+    [Fact]
+    public void EscapingInsideCanonicalScopeCountsTowardTheCombinedValueBudget()
+    {
+        var scope = StorageScope.Create("unused",
+            new Dictionary<string, string> { ["isolation"] = new string('"', 900) });
+        var remaining = StorageSchema.MaxPartitionKeyBytes - System.Text.Encoding.UTF8.GetByteCount(scope);
+        _ = new HistoryStorageAddress(scope, new string('x', remaining));
+
+        Assert.Throws<ArgumentException>(() => new HistoryStorageAddress(scope, new string('x', remaining + 1)));
+    }
+
+    [Theory]
     [InlineData("agent/one\\?#:%")]
     [InlineData("Città 東京")]
     public void AgentDocumentIdIsReversibleAndCosmosSafe(string agentId)
