@@ -1,148 +1,96 @@
-using System.Text;
 using System.Text.Json;
-using System.Text.Json.Serialization;
-using Microsoft.Azure.Cosmos;
+using Microsoft.Extensions.AI;
+using SharedServices;
 
 namespace VoiceOrchestratorAgent;
 
-/// <summary>
-/// Handles loading and saving voice conversation history to Cosmos DB.
-/// </summary>
+/// <summary>Adapts voice working copies to the same snapshot/history repositories as text.</summary>
 public sealed class VoiceConversationStore
 {
-    private readonly Container _container;
-    private readonly ILogger _logger;
+    /// <summary>Stable discriminator; client continuation ids are not modified.</summary>
+    public const string AgentId = "voice-orchestrator-agent";
+    /// <summary>Voice snapshots and messages retain the existing seven-day policy.</summary>
+    public const int RetentionSeconds = 7 * 86400;
 
-    public VoiceConversationStore(Container container, ILogger logger)
+    private readonly CosmosSessionRepository _sessions;
+    private readonly CosmosChatMessageRepository _history;
+
+    /// <summary>Uses shared repositories without keeping any caller state on this service.</summary>
+    public VoiceConversationStore(CosmosSessionRepository sessions, CosmosChatMessageRepository history)
     {
-        _container = container;
-        _logger = logger;
+        ArgumentNullException.ThrowIfNull(sessions);
+        ArgumentNullException.ThrowIfNull(history);
+        _sessions = sessions;
+        _history = history;
+    }
+
+    /// <summary>Loads and validates the complete resume history before a connection can be ready.</summary>
+    public async Task<VoiceConversationSession> LoadAsync(
+        SessionStorageAddress? address, CancellationToken cancellationToken = default)
+    {
+        if (address is null) return new(null, null, []);
+        if (address.AgentId != AgentId) throw new ArgumentException(VoiceErrors.Get("WrongAgent"), nameof(address));
+
+        var stored = await _sessions.ReadAsync(address, cancellationToken).ConfigureAwait(false);
+        var context = stored is null
+            ? SessionPersistenceContext.Create(address)
+            : stored.Document.SerializedSession.Deserialize<SessionPersistenceContext>()
+                ?? throw new InvalidOperationException(VoiceErrors.Get("InvalidSnapshot"));
+        context.ValidateFor(address);
+        var history = await _history.ReadAsync(context.ActiveHistory, cancellationToken: cancellationToken)
+            .ConfigureAwait(false);
+        var workingCopy = new VoiceConversationSession(address, context, history.Messages);
+        if (stored is not null) workingCopy.WriteTracker.Record(stored.Version);
+        return workingCopy;
     }
 
     /// <summary>
-    /// Loads previous conversation messages from Cosmos DB for the given conversation ID.
-    /// Returns a list of (role, text) tuples ordered by timestamp.
+    /// Appends only the current connection's messages, then conditionally writes its snapshot.
+    /// A failed/partial save is not retried: history and snapshots are not one transaction.
     /// </summary>
-    public async Task<List<(string role, string text)>> LoadAsync(string conversationId)
+    public async Task SaveAsync(VoiceConversationSession session,
+        IReadOnlyList<ConversationMessage> messages, CancellationToken cancellationToken = default)
     {
-        var query = new QueryDefinition(
-            "SELECT * FROM c WHERE c.conversationId = @convId AND c.type = @type ORDER BY c.timestamp ASC")
-            .WithParameter("@convId", conversationId)
-            .WithParameter("@type", "ChatMessage");
-
-        var messages = new List<(string role, string text)>();
-        using var iterator = _container.GetItemQueryIterator<JsonElement>(query,
-            requestOptions: new QueryRequestOptions { PartitionKey = new PartitionKey(conversationId) });
-
-        while (iterator.HasMoreResults)
-        {
-            var response = await iterator.ReadNextAsync();
-            foreach (var doc in response)
+        ArgumentNullException.ThrowIfNull(session);
+        ArgumentNullException.ThrowIfNull(messages);
+        if (session.Address is null) return;
+        if (session.SaveAttempted) throw new InvalidOperationException(VoiceErrors.Get("SaveAlreadyAttempted"));
+        session.SaveAttempted = true;
+        var context = session.Context ?? throw new InvalidOperationException(VoiceErrors.Get("InvalidSnapshot"));
+        context.ValidateFor(session.Address);
+        await _history.AppendAsync(context.ActiveHistory,
+            messages.Select(VoiceMessageAdapter.ToChatMessage).ToArray(), RetentionSeconds,
+            reference =>
             {
-                var role = doc.GetProperty("role").GetString() ?? "";
-                var text = doc.GetProperty("message").GetString() ?? "";
-                if (!string.IsNullOrEmpty(text))
-                    messages.Add((role, text));
-            }
-        }
+                context = context.WithHistory(reference);
+                session.Context = context;
+            },
+            cancellationToken).ConfigureAwait(false);
+        var document = SessionDocument.Create(session.Address, JsonSerializer.SerializeToElement(session.Context),
+            DateTimeOffset.UtcNow, RetentionSeconds);
+        var version = await _sessions.WriteAsync(document, session.WriteTracker.ForAddress(session.Address),
+            cancellationToken).ConfigureAwait(false);
+        session.WriteTracker.Record(version);
+    }
+}
 
-        if (messages.Count > 0)
-            _logger.LogInformation("Loaded {Count} previous conversation messages for {ConversationId}",
-                messages.Count, conversationId);
-
-        return messages;
+/// <summary>One connection's captured address, replay messages and nonserialized write conditions.</summary>
+public sealed class VoiceConversationSession
+{
+    internal VoiceConversationSession(SessionStorageAddress? address, SessionPersistenceContext? context,
+        IReadOnlyList<ChatMessage> messages)
+    {
+        Address = address;
+        Context = context;
+        Messages = messages;
     }
 
-    /// <summary>
-    /// Saves conversation messages to Cosmos DB after a voice session ends.
-    /// </summary>
-    public async Task SaveAsync(string conversationId, IReadOnlyList<ConversationMessage> messages)
-    {
-        if (messages.Count == 0) return;
-
-        var partitionKey = new PartitionKey(conversationId);
-
-        foreach (var msg in messages)
-        {
-            var content = msg.Type switch
-            {
-                "text" => msg.Content ?? "",
-                "tool_call" => JsonSerializer.Serialize(new { tool = msg.ToolName, arguments = msg.ToolArguments }),
-                "tool_call_response" => JsonSerializer.Serialize(new { tool = msg.ToolName, result = msg.ToolResult }),
-                _ => msg.Content ?? ""
-            };
-
-            content = SanitizeForCosmos(content);
-
-            var doc = new VoiceConversationDocument
-            {
-                Id = Guid.NewGuid().ToString(),
-                ConversationId = conversationId,
-                Timestamp = msg.Timestamp.ToUnixTimeSeconds(),
-                Role = msg.Role,
-                Message = content,
-                Type = "ChatMessage",
-                Ttl = 86400 * 7
-            };
-
-            try
-            {
-                await _container.CreateItemAsync(doc, partitionKey);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Error saving conversation message to Cosmos");
-            }
-        }
-
-        _logger.LogInformation("Saved {Count} conversation messages to Cosmos for {ConversationId}",
-            messages.Count, conversationId);
-    }
-
-    /// <summary>
-    /// Replaces non-ASCII characters with ASCII equivalents to avoid
-    /// "unsupported Unicode escape sequence" errors in the Cosmos DB emulator.
-    /// </summary>
-    private static string SanitizeForCosmos(string text)
-    {
-        var sb = new StringBuilder(text.Length);
-        foreach (var c in text)
-        {
-            sb.Append(c switch
-            {
-                '\u2019' or '\u2018' => '\'',
-                '\u201C' or '\u201D' => '"',
-                '\u2013' or '\u2014' => '-',
-                '\u2026' => '.',
-                '\u00A0' => ' ',
-                _ when c > 127 => ' ',
-                _ => c
-            });
-        }
-        return sb.ToString();
-    }
-
-    private sealed class VoiceConversationDocument
-    {
-        [JsonPropertyName("id")]
-        public string Id { get; set; } = "";
-
-        [JsonPropertyName("conversationId")]
-        public string ConversationId { get; set; } = "";
-
-        [JsonPropertyName("timestamp")]
-        public long Timestamp { get; set; }
-
-        [JsonPropertyName("role")]
-        public string Role { get; set; } = "";
-
-        [JsonPropertyName("message")]
-        public string Message { get; set; } = "";
-
-        [JsonPropertyName("type")]
-        public string Type { get; set; } = "";
-
-        [JsonPropertyName("ttl")]
-        public int Ttl { get; set; }
-    }
+    /// <summary>The captured full address, or null for an intentionally nonresumable connection.</summary>
+    public SessionStorageAddress? Address { get; }
+    /// <summary>The application snapshot; never contains the live SDK connection.</summary>
+    public SessionPersistenceContext? Context { get; internal set; }
+    /// <summary>Validated structured history to replay as native VoiceLive conversation items.</summary>
+    public IReadOnlyList<ChatMessage> Messages { get; }
+    internal SessionWriteTracker WriteTracker { get; } = new();
+    internal bool SaveAttempted { get; set; }
 }

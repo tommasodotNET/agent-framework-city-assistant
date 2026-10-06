@@ -9,17 +9,17 @@
 
   <ItemGroup>
     <!-- Core Agent Framework packages -->
-    <PackageReference Include="Microsoft.Agents.AI" Version="1.13.0" />
-    <PackageReference Include="Microsoft.Agents.AI.Abstractions" Version="1.13.0" />
-    <PackageReference Include="Microsoft.Agents.AI.Hosting" Version="1.13.0-preview.260703.1" />
+    <PackageReference Include="Microsoft.Agents.AI" Version="1.23.0" />
+    <PackageReference Include="Microsoft.Agents.AI.Abstractions" Version="1.23.0" />
+    <PackageReference Include="Microsoft.Agents.AI.Hosting" Version="1.23.0-preview.260928.1" />
     
     <!-- A2A Support -->
-    <PackageReference Include="Microsoft.Agents.AI.A2A" Version="1.13.0-preview.260703.1" />
-    <PackageReference Include="Microsoft.Agents.AI.Hosting.A2A.AspNetCore" Version="1.13.0-preview.260703.1" />
+    <PackageReference Include="Microsoft.Agents.AI.A2A" Version="1.23.0-preview.260928.1" />
+    <PackageReference Include="Microsoft.Agents.AI.Hosting.A2A.AspNetCore" Version="1.23.0-preview.260928.1" />
     
     <!-- Azure and Aspire integrations -->
-    <PackageReference Include="Aspire.Azure.AI.Inference" Version=" 13.2.0-preview.1.26162.21" />
-    <PackageReference Include="Aspire.Microsoft.Azure.Cosmos" Version=" 13.2.0-preview.1.26162.21" />
+    <PackageReference Include="Aspire.Azure.AI.Inference" Version="13.6.0-preview.1.26479.8" />
+    <PackageReference Include="Aspire.Microsoft.Azure.Cosmos" Version="13.6.0" />
   </ItemGroup>
 
   <ItemGroup>

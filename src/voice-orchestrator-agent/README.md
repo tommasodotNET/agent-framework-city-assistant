@@ -73,7 +73,7 @@ await session.ConfigureSessionAsync(options);
 1. User clicks the 🎙️ button in the UI
 2. Frontend creates a `VoiceSession`, opens WebSocket to `/ws/voice?conversationId={contextId}`
 3. Frontend requests microphone access, creates `AudioContext` at 24kHz, loads `AudioWorklet`
-4. Voice Orchestrator Agent accepts WebSocket, loads previous conversation history from Cosmos DB
+4. Voice Orchestrator Agent captures the trusted isolation key, if configured, and loads its resumable application state and history through the shared Cosmos repositories
 5. Voice Orchestrator Agent opens a WebSocket to the GPT Realtime model via `VoiceLiveClient.StartSessionAsync`
 6. Voice Orchestrator Agent configures the session: system prompt (+ conversation history), tools, voice, VAD settings
 7. Voice Orchestrator Agent sends `{ type: "ready" }` to frontend
@@ -84,13 +84,20 @@ await session.ConfigureSessionAsync(options);
 #### Stop Flow
 
 1. User clicks the 🔊 button (or closes the page)
-2. Frontend sends `{ type: "stop" }`, closes the WebSocket
-3. Voice Orchestrator Agent detects the close, cancels both processing loops via `CancellationTokenSource`
+2. Frontend stops microphone/playback immediately and sends `{ type: "stop" }`, keeping the WebSocket open while displaying **Saving voice session...**
+3. Voice Orchestrator Agent detects the close, cancels and awaits both processing loops before reading the collected messages
 4. In the `finally` block, **after the WebSocket session has ended**:
    - Conversation transcript is saved to Cosmos DB
    - OpenTelemetry gen_ai traces are emitted post-hoc
 
-Both persistence and telemetry happen **after** the voice session is fully closed — they cannot be emitted during the session because the conversation is a continuous WebSocket stream with no discrete request/response boundaries.
+The frontend closes the socket after receiving `persisted` or `persistence_error`.
+It waits at most 25 seconds (covering the server's 10-second drain and 10-second
+save budgets). Timeout or an earlier disconnect reports that persistence was not
+confirmed. Repeated Stop clicks cannot start another shutdown. Connections with
+no continuation id, or stopped before server readiness, do not wait for a save
+acknowledgement that the server does not send.
+
+This implementation persists the collected transcript and emits its aggregate telemetry at shutdown. A process crash before that point can lose the current connection's messages; the WebSocket protocol does not itself provide durable checkpoints.
 
 ### Barge-in (Interruption)
 
@@ -266,52 +273,36 @@ private async Task ExecuteFunctionCall(VoiceLiveSession session, Dictionary<stri
 
 ### Conversation Persistence (Cosmos DB)
 
-Voice conversations are persisted to the same `conversations` Cosmos DB container used by the text orchestrator. **All persistence happens after the voice session ends** — since the conversation is a continuous WebSocket stream, messages are collected in memory during the session and batch-saved to Cosmos once the user disconnects.
+Voice uses the same `sessions` and `conversations` containers, address types and repository implementations as the text agents. It retains a separate active history under the stable agent identity `voice-orchestrator-agent`; it does not share the text transcript or require a `-voice` suffix on the external lookup key.
+
+The public WebSocket parameter `conversationId` is an opaque **session lookup id**, not the internal history id. Its raw value is retained in the session address. Without an isolation provider, its scope is derived from this id. With a provider, the trusted key is captured before accepting the WebSocket and reused for the whole connection. The history layer never rereads `HttpContext`.
+
+The session snapshot contains the reference to the active history and its revision; the live VoiceLive connection is not serialized. A connection without a continuation id is not a resumable persisted conversation.
 
 ### Saving (after session ends)
 
-All conversation messages (user transcripts, assistant transcripts, tool calls, tool responses) are saved as individual documents:
+The adapter converts user transcripts, assistant transcripts, tool calls and tool results into the common structured message format. Tool call identifiers and Unicode are preserved.
 
-```json
-{
-  "id": "guid",
-  "conversationId": "{contextId}-voice",
-  "timestamp": 1700000000,
-  "role": "user | assistant | tool",
-  "message": "transcript text or JSON for tool interactions",
-  "type": "ChatMessage",
-  "ttl": 604800
-}
-```
+- Session partition key: `[/scopeKey, /sessionId]`.
+- Message/history partition key: `[/scopeKey, /conversationId]`, using the history reference in the application snapshot.
+- History updates check their expected revision; session updates use create-only writes or the loaded ETag.
+- Resumable voice state and active messages have a seven-day TTL. Container default TTL remains `-1`.
+- Failed writes are reported, not logged as successful. There is no transaction across the two containers and no automatic replay of tool effects.
 
-- The `-voice` suffix on `conversationId` differentiates voice from text conversations
-- Tool calls are stored as `{ tool, arguments }` JSON
-- Tool responses are stored as `{ tool, result }` JSON
-- Documents have a 7-day TTL
+While the browser connection is still open, the server sends `persisted` after a
+successful save, or `persistence_error` with a message on failure. The frontend
+routes persistence errors to the same error display as other voice errors. If the
+browser has already closed the socket (for example by navigating away), the server
+can report the outcome only in its logs; closing a connection is not proof that
+its transcript was saved.
 
 ### Loading (on session start)
 
-When a new voice session starts with a `conversationId`, previous messages are loaded from Cosmos DB and injected as **native conversation items** using `session.AddItemAsync`. This uses the Realtime API's `conversation.item.create` event to populate the model's conversation context properly, rather than appending text to the system prompt.
+When a voice session resumes, its stored history reference selects the messages to replay. A stale snapshot or a storage error must not be presented as a successful resume with an empty history. The adapter injects prior messages as **native conversation items** using `session.AddItemAsync`, rather than appending them to the system prompt.
 
 ```csharp
 // After ConfigureSessionAsync, before starting the audio loops:
 await InjectConversationHistoryAsync(session, cancellationToken);
-```
-
-The method loads messages from Cosmos and adds them as typed SDK items:
-
-```csharp
-foreach (var (role, text) in messages)
-{
-    ConversationRequestItem item = role switch
-    {
-        "user" => new UserMessageItem(text),
-        "assistant" => new AssistantMessageItem(text),
-        _ => new UserMessageItem(text)
-    };
-
-    await session.AddItemAsync(item, cancellationToken);
-}
 ```
 
 This approach is better than appending history to the system prompt because:
@@ -319,6 +310,10 @@ This approach is better than appending history to the system prompt because:
 - The model treats these as actual conversation turns, not as instruction text
 - The model's attention mechanism handles them properly as context
 - The system prompt stays clean and focused on behavior instructions
+
+See [the shared persistence architecture](../../.github/architecture.md#session-persistence-and-user-isolation)
+for schema recreation, identity boundaries and protocol limitations. Existing single-key containers
+require manual backup/recreation; no automatic data migration is performed.
 
 ### Telemetry (OpenTelemetry gen_ai Traces)
 
@@ -383,7 +378,7 @@ This section provides guidance on how to build a browser-based frontend to inter
 
 ### WebSocket Connection
 
-Connect to the Voice Orchestrator Agent via a WebSocket at `/ws/voice?conversationId={contextId}`. The `conversationId` is the same context identifier used by the text-based chat interface, allowing voice and text conversations to share context.
+Connect to the Voice Orchestrator Agent via a WebSocket at `/ws/voice?conversationId={contextId}`. The browser reuses the text chat's external context identifier, but voice and text have distinct agent snapshots and active histories. They share the persistence model and isolation scope, not the transcript.
 
 ### Message Protocol
 

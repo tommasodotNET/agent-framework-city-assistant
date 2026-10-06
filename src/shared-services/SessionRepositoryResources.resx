@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype"><value>text/microsoft-resx</value></resheader>
+  <resheader name="version"><value>2.0</value></resheader>
+  <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms</value></resheader>
+  <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms</value></resheader>
+  <data name="InvalidEnvelope" xml:space="preserve"><value>The session snapshot envelope is incomplete or invalid. It cannot be resumed.</value></data>
+  <data name="MissingETag" xml:space="preserve"><value>Cosmos did not return a session snapshot ETag. Conditional persistence cannot continue safely.</value></data>
+  <data name="MissingContainer" xml:space="preserve"><value>The sessions container is missing. Create it with schema-v2 hierarchical partition keys and TTL before resuming sessions.</value></data>
+  <data name="Conflict" xml:space="preserve"><value>The session snapshot was changed by another working copy or already exists. No overwrite or turn replay was attempted; reload explicitly or start a new session.</value></data>
+  <data name="TooLarge" xml:space="preserve"><value>Cosmos rejected the session snapshot as too large. Reduce the serialized state or start a new session; no automatic compaction was attempted.</value></data>
+  <data name="ConflictLog" xml:space="preserve"><value>Session snapshot conditional write conflict (HTTP {StatusCode}); no retry or overwrite was attempted.</value></data>
+  <data name="TooLargeLog" xml:space="preserve"><value>Cosmos rejected the session snapshot size (HTTP 413).</value></data>
+  <data name="AnonymousWarning" xml:space="preserve"><value>Session isolation is disabled for agent {AgentName}: no AgentIsolationKeyProvider is registered. Anyone who knows a client-supplied continuation id can resume that session.</value></data>
+</root>

@@ -1,9 +1,9 @@
-﻿#:package Aspire.Hosting.Azure.AppContainers@13.2.2
-#:sdk Aspire.AppHost.Sdk@13.2.0
-#:package Aspire.Hosting.Foundry@13.2.0-preview.1.26170.3
-#:package Aspire.Hosting.Azure.CosmosDB@13.2.0
-#:package Aspire.Hosting.JavaScript@13.2.0
-#:package Aspire.Hosting.Yarp@13.2.0
+﻿#:package Aspire.Hosting.Azure.AppContainers@13.6.0
+#:sdk Aspire.AppHost.Sdk@13.6.0
+#:package Aspire.Hosting.Foundry@13.6.0-preview.1.26479.8
+#:package Aspire.Hosting.Azure.CosmosDB@13.6.0
+#:package Aspire.Hosting.JavaScript@13.6.0
+#:package Aspire.Hosting.Yarp@13.6.0
 
 #:project ../activities-agent/ActivitiesAgent.csproj
 #:project ../accommodation-agent/AccommodationAgent.csproj
@@ -15,6 +15,7 @@
 #:project ../geocoding-mcp-server/GeocodingMcpServer.csproj
 
 using Aspire.Hosting.Yarp.Transforms;
+using Azure.Provisioning.CosmosDB;
 
 var builder = DistributedApplication.CreateBuilder(args);
 
@@ -33,9 +34,8 @@ tenantId.WithParentRelationship(foundry);
 existingFoundryName.WithParentRelationship(foundry);
 existingFoundryResourceGroup.WithParentRelationship(foundry);
 
-#pragma warning disable ASPIRECOSMOSDB001
 var cosmos = builder.AddAzureCosmosDB("cosmos-db")
-    .RunAsPreviewEmulator(
+    .RunAsEmulator(
         emulator =>
         {
             emulator.WithDataExplorer();
@@ -43,8 +43,21 @@ var cosmos = builder.AddAzureCosmosDB("cosmos-db")
         });
         
 var db = cosmos.AddCosmosDatabase("db");
-var sessions = db.AddContainer("sessions", "/conversationId");
-var conversations = db.AddContainer("conversations", "/conversationId");
+// Existing single-key containers require manual recreation; do not migrate or delete them here.
+var sessions = db.AddContainer("sessions", ["/scopeKey", "/sessionId"]);
+var conversations = db.AddContainer("conversations", ["/scopeKey", "/conversationId"]);
+
+// Enable TTL without a container-wide expiry (-1): each document's own "ttl" decides when it expires.
+// ContainerProperties drives emulator container creation; ConfigureInfrastructure drives the Azure Bicep.
+sessions.Resource.ContainerProperties.DefaultTimeToLive = -1;
+conversations.Resource.ContainerProperties.DefaultTimeToLive = -1;
+cosmos.ConfigureInfrastructure(infra =>
+{
+    foreach (var container in infra.GetProvisionableResources().OfType<CosmosDBSqlContainer>())
+    {
+        container.Resource.DefaultTtl = -1;
+    }
+});
 
 var geocodingMcpServer = builder.AddProject("geocodingmcpserver", "../geocoding-mcp-server/GeocodingMcpServer.csproj")
     .WithHttpHealthCheck("/health");
@@ -113,6 +126,7 @@ var a2aOrchestratorAgent = builder.AddProject("a2aorchestratoragent", "../a2a-or
 var voiceOrchestratorAgent = builder.AddProject("voiceorchestratoragent", "../voice-orchestrator-agent/VoiceOrchestratorAgent.csproj")
     .WithHttpHealthCheck("/health")
     .WithReference(foundry).WaitFor(foundry)
+    .WithReference(sessions).WaitFor(sessions)
     .WithReference(conversations).WaitFor(conversations)
     .WithReference(orchestratorAgent).WaitFor(orchestratorAgent)
     .WithReference(activitiesAgent).WaitFor(activitiesAgent)

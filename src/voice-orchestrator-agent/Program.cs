@@ -1,6 +1,8 @@
 using A2A;
+using Azure.AI.VoiceLive;
 using Azure.Identity;
 using Microsoft.Agents.AI;
+using Microsoft.Agents.AI.Hosting;
 using Microsoft.Azure.Cosmos;
 using OpenTelemetry.Trace;
 using SharedServices;
@@ -17,6 +19,13 @@ builder.AddKeyedAzureCosmosContainer("conversations",
     });
 
 builder.Services.AddSingleton(sp => sp.GetRequiredKeyedService<Container>("conversations"));
+builder.AddKeyedAzureCosmosContainer("sessions",
+    configureClientOptions: option => option.Serializer = new CosmosSystemTextJsonSerializer());
+builder.Services.AddSingleton(sp => new CosmosSessionRepository(
+    sp.GetRequiredKeyedService<Container>("sessions"), sp.GetRequiredService<ILogger<CosmosSessionRepository>>()));
+builder.Services.AddSingleton(sp => new CosmosChatMessageRepository(
+    sp.GetRequiredKeyedService<Container>("conversations"), sp.GetRequiredService<ILogger<CosmosChatMessageRepository>>()));
+builder.Services.AddSingleton<VoiceConversationStore>();
 
 // Register custom ActivitySource for gen_ai tracing
 builder.Services.AddOpenTelemetry()
@@ -98,25 +107,24 @@ app.Map("/ws/voice", async (HttpContext context) =>
 
     var credential = context.RequestServices.GetRequiredService<DefaultAzureCredential>();
     var a2aAgents = context.RequestServices.GetRequiredService<Dictionary<string, AIAgent>>();
-    var cosmosContainer = context.RequestServices.GetRequiredService<Container>();
-
+    var store = context.RequestServices.GetRequiredService<VoiceConversationStore>();
     var conversationId = context.Request.Query["conversationId"].FirstOrDefault();
-    if (!string.IsNullOrEmpty(conversationId))
-        conversationId = conversationId + "-voice";
+    var address = await VoiceConnectionIdentity.CaptureAsync(conversationId,
+        context.RequestServices.GetService<AgentIsolationKeyProvider>(), logger, context.RequestAborted);
 
     using var webSocket = await context.WebSockets.AcceptWebSocketAsync();
 
     var handler = new VoiceWebSocketHandler(
         webSocket,
-        credential,
+        new VoiceLiveClient(new Uri(endpoint), credential),
         endpoint,
         model,
         voice,
         systemPrompt,
         a2aAgents,
         logger,
-        conversationId,
-        cosmosContainer);
+        address,
+        store);
 
     await handler.RunAsync(context.RequestAborted);
 });

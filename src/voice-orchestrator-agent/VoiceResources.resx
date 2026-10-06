@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype"><value>text/microsoft-resx</value></resheader>
+  <resheader name="version"><value>2.0</value></resheader>
+  <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms</value></resheader>
+  <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms</value></resheader>
+  <data name="WrongAgent" xml:space="preserve"><value>The snapshot address does not belong to the voice agent.</value></data>
+  <data name="InvalidSnapshot" xml:space="preserve"><value>The voice persistence snapshot is missing or invalid.</value></data>
+  <data name="SaveAlreadyAttempted" xml:space="preserve"><value>This connection already attempted persistence. Reconnect rather than replaying a potentially committed append.</value></data>
+  <data name="InvalidArguments" xml:space="preserve"><value>Voice function arguments must be a JSON object.</value></data>
+  <data name="UnsupportedMessage" xml:space="preserve"><value>The persisted voice message cannot be converted to a native conversation item.</value></data>
+  <data name="AnonymousWarning" xml:space="preserve"><value>Voice session isolation is disabled: no AgentIsolationKeyProvider is registered. Anyone who knows a continuation id can resume its voice session.</value></data>
+  <data name="MissingIdentity" xml:space="preserve"><value>A registered voice isolation provider did not return a key. The connection cannot be accepted.</value></data>
+  <data name="SessionFailed" xml:space="preserve"><value>The voice session could not be initialized or completed. Reconnect with a new continuation id if its stored history is stale.</value></data>
+  <data name="SaveFailed" xml:space="preserve"><value>Voice persistence failed or was partial. This continuation may be stale; do not automatically retry the turn.</value></data>
+  <data name="ShutdownFailed" xml:space="preserve"><value>Voice processing did not stop within the shutdown budget. The incomplete conversation was not saved.</value></data>
+  <data name="ToolFailed" xml:space="preserve"><value>The requested tool could not complete. Please try again later.</value></data>
+</root>

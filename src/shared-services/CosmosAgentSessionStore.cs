@@ -1,159 +1,98 @@
-using System.Net;
+using System.Runtime.CompilerServices;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using Microsoft.Agents.AI;
-using Microsoft.Agents.AI.Hosting;
 using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.Logging;
 
+#pragma warning disable MAAI001
+
 namespace SharedServices;
 
-/// <summary>
-/// Configuration options for <see cref="CosmosAgentSessionStore"/>.
-/// </summary>
+/// <summary>Per-host snapshot retention configuration, also consumed by history metadata retention.</summary>
 public sealed class CosmosAgentSessionStoreOptions
 {
-    /// <summary>
-    /// Time-To-Live in seconds for session documents. 
-    /// Default is -1 (never expire). Set to a positive value to enable automatic expiration.
-    /// </summary>
+    /// <summary>Session TTL in seconds; -1 preserves the default of no expiration.</summary>
     public int TtlSeconds { get; set; } = -1;
 }
 
 /// <summary>
-/// Cosmos DB implementation of <see cref="AgentSessionStore"/> for persisting agent sessions.
+/// MAF adapter for schema-v2 snapshots. The container requires [/scopeKey, /sessionId] and TTL -1.
+/// Agents must provide stable ids; the full owning agent serialization is preserved.
 /// </summary>
-/// <remarks>
-/// <para>
-/// This store persists serialized agent sessions in Azure Cosmos DB, enabling conversation
-/// continuity across requests and server restarts.
-/// </para>
-/// 
-/// <para><b>Container Requirements:</b></para>
-/// <list type="bullet">
-///   <item><description>Partition key: /conversationId</description></item>
-///   <item><description>TTL enabled on container if using document expiration</description></item>
-/// </list>
-/// </remarks>
 public sealed class CosmosAgentSessionStore : AgentSessionStore
 {
-    private readonly Container _container;
-    private readonly ILogger<CosmosAgentSessionStore> _logger;
+    private readonly CosmosSessionRepository _repository;
     private readonly JsonSerializerOptions? _serializationOptions;
     private readonly int _ttl;
+    private readonly ConditionalWeakTable<AgentSession, SessionWriteTracker> _trackers = new();
 
-    private static readonly ItemRequestOptions s_noContentResponse = new() { EnableContentResponseOnWrite = false };
+    /// <summary>Preserves direct construction with an existing SDK container and optional MAF serializer options.</summary>
+    public CosmosAgentSessionStore(Container container, ILogger<CosmosAgentSessionStore> logger,
+        int ttl = -1, JsonSerializerOptions? jsonSerializerOptions = null)
+        : this(new CosmosSessionRepository(container, logger),
+            logger, ttl, jsonSerializerOptions) { }
 
-    /// <summary>
-    /// Initializes a new instance with a Cosmos DB container.
-    /// </summary>
-    /// <param name="container">The Cosmos DB container.</param>
-    /// <param name="logger">Logger instance.</param>
-    /// <param name="ttl">TTL in seconds. Use -1 for no expiration (default).</param>
-    /// <param name="jsonSerializerOptions">Optional JSON serialization options.</param>
-    public CosmosAgentSessionStore(
-        Container container,
-        ILogger<CosmosAgentSessionStore> logger,
-        int ttl = -1,
-        JsonSerializerOptions? jsonSerializerOptions = null)
+    /// <summary>Uses the shared repository also available to voice adapters through DI.</summary>
+    public CosmosAgentSessionStore(CosmosSessionRepository repository, ILogger<CosmosAgentSessionStore> logger,
+        int ttl = -1, JsonSerializerOptions? jsonSerializerOptions = null)
     {
-        ArgumentNullException.ThrowIfNull(container);
+        ArgumentNullException.ThrowIfNull(repository);
         ArgumentNullException.ThrowIfNull(logger);
-
-        _container = container;
-        _logger = logger;
+        if (ttl != -1 && ttl <= 0)
+        {
+            throw new ArgumentOutOfRangeException(nameof(ttl), StorageErrors.Get("InvalidTtl"));
+        }
+        _repository = repository;
         _ttl = ttl;
         _serializationOptions = jsonSerializerOptions;
     }
 
     /// <inheritdoc />
-    public override async ValueTask<AgentSession> GetSessionAsync(
-        AIAgent agent,
-        string conversationId,
-        CancellationToken cancellationToken = default)
+    public override async ValueTask<AgentSession?> GetSessionAsync(
+        AIAgent agent, AgentSessionStoreKey sessionKey, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(agent);
-        ArgumentException.ThrowIfNullOrWhiteSpace(conversationId);
-
-        var key = GetKey(conversationId, agent.Id);
-
-        _logger.LogDebug("Retrieving session for conversation {ConversationId}, agent {AgentId}", conversationId, agent.Id);
-
-        try
+        ArgumentNullException.ThrowIfNull(sessionKey);
+        var address = SessionStorageAddress.Create(agent.Id, sessionKey);
+        var result = await _repository.ReadAsync(address, cancellationToken).ConfigureAwait(false);
+        if (result is null)
         {
-            var response = await _container
-                .ReadItemAsync<CosmosSessionItem>(key, new PartitionKey(key), cancellationToken: cancellationToken)
-                .ConfigureAwait(false);
-
-            var jsonElement = JsonSerializer.Deserialize<JsonElement>(response.Resource.SerializedSession, _serializationOptions);
-
-            _logger.LogDebug("Retrieved session {Key}, RU: {RequestCharge}", key, response.RequestCharge);
-
-            return await agent
-                .DeserializeSessionAsync(jsonElement, jsonSerializerOptions: _serializationOptions, cancellationToken: cancellationToken)
-                .ConfigureAwait(false);
+            return null;
         }
-        catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.NotFound)
+        var session = await agent.DeserializeSessionAsync(result.Document.SerializedSession,
+            _serializationOptions, cancellationToken).ConfigureAwait(false);
+        SessionPersistenceState.GetRequired(session).ValidateFor(address);
+        _trackers.GetOrCreateValue(session).Record(result.Version);
+        return session;
+    }
+
+    /// <inheritdoc />
+    public override async ValueTask<AgentSession> GetOrCreateSessionAsync(
+        AIAgent agent, AgentSessionStoreKey key, CancellationToken cancellationToken = default)
+    {
+        var existing = await GetSessionAsync(agent, key, cancellationToken).ConfigureAwait(false);
+        if (existing is not null)
         {
-            _logger.LogDebug("No existing session found, creating new session for {ConversationId}", conversationId);
-            return await agent.CreateSessionAsync(cancellationToken).ConfigureAwait(false);
+            return existing;
         }
+        var session = await agent.CreateSessionAsync(cancellationToken).ConfigureAwait(false);
+        SessionPersistenceState.Initialize(session, SessionStorageAddress.Create(agent.Id, key));
+        return session;
     }
 
     /// <inheritdoc />
     public override async ValueTask SaveSessionAsync(
-        AIAgent agent,
-        string conversationId,
-        AgentSession session,
-        CancellationToken cancellationToken = default)
+        AIAgent agent, AgentSessionStoreKey sessionKey, AgentSession session, CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(agent);
-        ArgumentException.ThrowIfNullOrWhiteSpace(conversationId);
+        ArgumentNullException.ThrowIfNull(sessionKey);
         ArgumentNullException.ThrowIfNull(session);
-
-        var key = GetKey(conversationId, agent.Id);
-
-        _logger.LogDebug("Saving session for conversation {ConversationId}, agent {AgentId}", conversationId, agent.Id);
-
-        var serializedSession = await agent.SerializeSessionAsync(session, jsonSerializerOptions: _serializationOptions, cancellationToken: cancellationToken).ConfigureAwait(false);
-
-        var sessionItem = new CosmosSessionItem
-        {
-            Id = key,
-            AgentName = agent.Name ?? string.Empty,
-            ConversationId = key,
-            SerializedSession = JsonSerializer.Serialize(serializedSession, _serializationOptions),
-            LastUpdated = DateTime.UtcNow,
-            Ttl = _ttl
-        };
-
-        var response = await _container
-            .UpsertItemAsync(sessionItem, new PartitionKey(key), requestOptions: s_noContentResponse, cancellationToken: cancellationToken)
-            .ConfigureAwait(false);
-
-        _logger.LogDebug("Saved session {Key}, RU: {RequestCharge}", key, response.RequestCharge);
-    }
-
-    private static string GetKey(string conversationId, string agentId) => $"{agentId}:{conversationId}";
-
-    private sealed class CosmosSessionItem
-    {
-        [JsonPropertyName("id")]
-        public required string Id { get; init; }
-
-        [JsonPropertyName("agent")]
-        public required string AgentName { get; init; }
-
-        [JsonPropertyName("conversationId")]
-        public required string ConversationId { get; init; }
-
-        [JsonPropertyName("serializedSession")]
-        public required string SerializedSession { get; init; }
-
-        [JsonPropertyName("lastUpdated")]
-        public DateTime LastUpdated { get; init; } = DateTime.UtcNow;
-
-        [JsonPropertyName("ttl")]
-        public int Ttl { get; init; } = -1;
+        var address = SessionStorageAddress.Create(agent.Id, sessionKey);
+        SessionPersistenceState.GetRequired(session).ValidateFor(address);
+        var snapshot = await agent.SerializeSessionAsync(session, _serializationOptions, cancellationToken).ConfigureAwait(false);
+        var document = SessionDocument.Create(address, snapshot, DateTimeOffset.UtcNow, _ttl);
+        var tracker = _trackers.GetOrCreateValue(session);
+        var version = await _repository.WriteAsync(document, tracker.ForAddress(address), cancellationToken).ConfigureAwait(false);
+        tracker.Record(version);
     }
 }

@@ -21,7 +21,8 @@ builder.AddAzureChatCompletionsClient(connectionName: "foundry",
         settings.TokenCredential = new DefaultAzureCredential();
         settings.EnableSensitiveTelemetryData = true;
     })
-    .AddChatClient("gpt-4.1");
+    .AddChatClient(builder.Configuration["AI:ChatModel"] ?? "gpt-4.1")
+    .UseProtocolMetadataFilter();
 
 // Register services
 builder.Services.AddSingleton<ActivitiesService>();
@@ -75,6 +76,7 @@ builder.AddAIAgent("activities-agent", (sp, key) =>
 
     var agentOptions = new ChatClientAgentOptions()
     {
+        Id = key,
         Name = key,
         Description = "A friendly activities assistant that helps discover museums, theaters, cultural events, and attractions",
         ChatOptions = new ChatOptions()

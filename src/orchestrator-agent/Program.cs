@@ -39,7 +39,8 @@ builder.AddAzureChatCompletionsClient(connectionName: "foundry",
         settings.TokenCredential = new DefaultAzureCredential();
         settings.EnableSensitiveTelemetryData = true;
     })
-    .AddChatClient("gpt-4.1")
+    .AddChatClient(builder.Configuration["AI:ChatModel"] ?? "gpt-4.1")
+    .UseProtocolMetadataFilter()
     .UseStreamingUsage()
     .UseOpenTelemetry(
         sourceName: TelemetrySourceName,
@@ -104,6 +105,7 @@ builder.AddAIAgent("class-skills-orchestrator-agent", (sp, key) =>
 
     var agentOptions = new ChatClientAgentOptions()
     {
+        Id = key,
         Name = key,
         Description = "A city assistant that orchestrates multiple specialized agents",
         ChatOptions = new ChatOptions()

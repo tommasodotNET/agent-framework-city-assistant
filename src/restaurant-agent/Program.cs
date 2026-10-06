@@ -21,7 +21,8 @@ builder.AddAzureChatCompletionsClient(connectionName: "foundry",
         settings.TokenCredential = new DefaultAzureCredential();
         settings.EnableSensitiveTelemetryData = true;
     })
-    .AddChatClient("gpt-4.1");
+    .AddChatClient(builder.Configuration["AI:ChatModel"] ?? "gpt-4.1")
+    .UseProtocolMetadataFilter();
 
 // Register services
 builder.Services.AddSingleton<RestaurantService>();
@@ -74,6 +75,7 @@ builder.AddAIAgent("restaurant-agent", (sp, key) =>
 
     var agentOptions = new ChatClientAgentOptions()
     {
+        Id = key,
         Name = key,
         Description = "A friendly restaurant assistant that helps find restaurants in Agentburg",
         ChatOptions = new ChatOptions()

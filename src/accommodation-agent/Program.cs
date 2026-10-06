@@ -21,7 +21,8 @@ builder.AddAzureChatCompletionsClient(connectionName: "foundry",
         settings.TokenCredential = new DefaultAzureCredential();
         settings.EnableSensitiveTelemetryData = true;
     })
-    .AddChatClient("gpt-4.1");
+    .AddChatClient(builder.Configuration["AI:ChatModel"] ?? "gpt-4.1")
+    .UseProtocolMetadataFilter();
 
 // Register services
 builder.Services.AddSingleton<IAccommodationService, AccommodationService>();
@@ -76,6 +77,7 @@ builder.AddAIAgent("accommodation-agent", (sp, key) =>
 
     var agentOptions = new ChatClientAgentOptions()
     {
+        Id = key,
         Name = key,
         Description = "A friendly accommodation assistant that helps find hotels, B&Bs, and other lodging in Agentburg",
         ChatOptions = new ChatOptions()

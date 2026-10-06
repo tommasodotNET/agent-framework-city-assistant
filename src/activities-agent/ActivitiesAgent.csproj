@@ -9,23 +9,23 @@
 
   <ItemGroup>
     <!-- Core Agent Framework packages -->
-    <PackageReference Include="Microsoft.Agents.AI" Version="1.13.0" />
-    <PackageReference Include="Microsoft.Agents.AI.Abstractions" Version="1.13.0" />
-    <PackageReference Include="Microsoft.Agents.AI.Hosting" Version="1.13.0-preview.260703.1" />
-    <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.13.0" />
+    <PackageReference Include="Microsoft.Agents.AI" Version="1.23.0" />
+    <PackageReference Include="Microsoft.Agents.AI.Abstractions" Version="1.23.0" />
+    <PackageReference Include="Microsoft.Agents.AI.Hosting" Version="1.23.0-preview.260928.1" />
+    <PackageReference Include="Microsoft.Agents.AI.OpenAI" Version="1.23.0" />
     
     <!-- A2A Support -->
-    <PackageReference Include="Microsoft.Agents.AI.Hosting.A2A.AspNetCore" Version="1.13.0-preview.260703.1" />
+    <PackageReference Include="Microsoft.Agents.AI.Hosting.A2A.AspNetCore" Version="1.23.0-preview.260928.1" />
     
     <!-- OpenAI-compatible endpoints -->
-    <PackageReference Include="Microsoft.Agents.AI.Hosting.OpenAI" Version="1.13.0-alpha.260703.1" />
+    <PackageReference Include="Microsoft.Agents.AI.Hosting.OpenAI" Version="1.23.0-alpha.260928.1" />
     
     <!-- MCP Client Support -->
-    <PackageReference Include="ModelContextProtocol.Core" Version="1.0.0-rc.1" />
+    <PackageReference Include="ModelContextProtocol.Core" Version="2.2.0" />
     
     <!-- Azure and Aspire integrations -->
-    <PackageReference Include="Aspire.Azure.AI.Inference" Version=" 13.2.0-preview.1.26162.21" />
-    <PackageReference Include="Aspire.Microsoft.Azure.Cosmos" Version=" 13.2.0-preview.1.26162.21" />
+    <PackageReference Include="Aspire.Azure.AI.Inference" Version="13.6.0-preview.1.26479.8" />
+    <PackageReference Include="Aspire.Microsoft.Azure.Cosmos" Version="13.6.0" />
   </ItemGroup>
 
   <ItemGroup>

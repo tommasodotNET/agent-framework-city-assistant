@@ -12,11 +12,10 @@ namespace SharedServices;
 /// <summary>
 /// Extension methods for configuring <see cref="CosmosChatHistoryProvider"/> with <see cref="ChatClientAgentOptions"/>.
 /// </summary>
+/// <remarks>Standalone sessions must be explicitly initialized with SessionPersistenceState before running the agent.
+/// No overload creates anonymous history or reads an ambient identity.</remarks>
 public static class CosmosChatHistoryProviderExtensions
 {
-    private static readonly Func<AgentSession?, CosmosChatHistoryProvider.State> s_defaultStateInitializer =
-        _ => new CosmosChatHistoryProvider.State(Guid.NewGuid().ToString("N"));
-
     /// <summary>
     /// Single factory: creates, configures, and returns a <see cref="CosmosChatHistoryProvider"/>.
     /// All public methods delegate here.
@@ -25,24 +24,23 @@ public static class CosmosChatHistoryProviderExtensions
         CosmosClient cosmosClient,
         string databaseId,
         string containerId,
-        Func<AgentSession?, CosmosChatHistoryProvider.State> stateInitializer,
         CosmosChatHistoryProviderOptions options,
         bool ownsClient = false,
         ILogger<CosmosChatHistoryProvider>? logger = null)
     {
         var provider = new CosmosChatHistoryProvider(
-            cosmosClient, databaseId, containerId, stateInitializer,
-            ownsClient, options.StateKey,
+            cosmosClient, databaseId, containerId,
+            ownsClient,
             options.ProvideOutputMessageFilter, options.StoreInputMessageFilter, logger)
         {
             ChatReducer = options.ChatReducer,
-            ReductionStoragePolicy = options.ReductionStoragePolicy ?? ReductionStoragePolicy.Clear,
+            ReductionStoragePolicy = options.ReductionStoragePolicy ?? ReductionStoragePolicy.Clear
         };
 
         if (options.MaxItemCount.HasValue) provider.MaxItemCount = options.MaxItemCount.Value;
         if (options.MaxBatchSize.HasValue) provider.MaxBatchSize = options.MaxBatchSize.Value;
         if (options.MaxMessagesToRetrieve.HasValue) provider.MaxMessagesToRetrieve = options.MaxMessagesToRetrieve;
-        if (options.MessageTtlSeconds.HasValue) provider.MessageTtlSeconds = options.MessageTtlSeconds;
+        provider.MessageTtlSeconds = options.MessageTtlSeconds;
         options.ConfigureProvider?.Invoke(provider);
 
         return provider;
@@ -130,7 +128,7 @@ public static class CosmosChatHistoryProviderExtensions
 
         options.ChatHistoryProvider = BuildProvider(
             container.Database.Client, container.Database.Id, container.Id,
-            s_defaultStateInitializer, providerOptions, logger: logger);
+            providerOptions, logger: logger);
 
         return options;
     }
@@ -149,7 +147,6 @@ public static class CosmosChatHistoryProviderExtensions
         string connectionString,
         string databaseId,
         string containerId,
-        Func<AgentSession?, CosmosChatHistoryProvider.State>? stateInitializer = null,
         Action<CosmosChatHistoryProviderOptions>? configure = null)
     {
         ArgumentNullException.ThrowIfNull(options);
@@ -158,7 +155,7 @@ public static class CosmosChatHistoryProviderExtensions
         var providerOptions = ResolveOptions(null, configure);
         options.ChatHistoryProvider = BuildProvider(
             new CosmosClient(connectionString), databaseId, containerId,
-            stateInitializer ?? s_defaultStateInitializer, providerOptions, ownsClient: true);
+            providerOptions, ownsClient: true);
 
         return options;
     }
@@ -174,7 +171,6 @@ public static class CosmosChatHistoryProviderExtensions
         string databaseId,
         string containerId,
         TokenCredential tokenCredential,
-        Func<AgentSession?, CosmosChatHistoryProvider.State>? stateInitializer = null,
         Action<CosmosChatHistoryProviderOptions>? configure = null)
     {
         ArgumentNullException.ThrowIfNull(options);
@@ -184,7 +180,7 @@ public static class CosmosChatHistoryProviderExtensions
         var providerOptions = ResolveOptions(null, configure);
         options.ChatHistoryProvider = BuildProvider(
             new CosmosClient(accountEndpoint, tokenCredential), databaseId, containerId,
-            stateInitializer ?? s_defaultStateInitializer, providerOptions, ownsClient: true);
+            providerOptions, ownsClient: true);
 
         return options;
     }
@@ -199,7 +195,6 @@ public static class CosmosChatHistoryProviderExtensions
         CosmosClient cosmosClient,
         string databaseId,
         string containerId,
-        Func<AgentSession?, CosmosChatHistoryProvider.State>? stateInitializer = null,
         Action<CosmosChatHistoryProviderOptions>? configure = null)
     {
         ArgumentNullException.ThrowIfNull(options);
@@ -208,7 +203,7 @@ public static class CosmosChatHistoryProviderExtensions
         var providerOptions = ResolveOptions(null, configure);
         options.ChatHistoryProvider = BuildProvider(
             cosmosClient, databaseId, containerId,
-            stateInitializer ?? s_defaultStateInitializer, providerOptions);
+            providerOptions);
 
         return options;
     }
@@ -229,25 +224,31 @@ internal sealed class CosmosChatHistoryProviderRegistration(string containerServ
 /// </summary>
 public sealed class CosmosChatHistoryProviderOptions
 {
-    public string? StateKey { get; set; }
-
+    /// <summary>Filters provided history without changing persisted messages.</summary>
     public Func<IEnumerable<ChatMessage>, IEnumerable<ChatMessage>>? ProvideOutputMessageFilter { get; set; }
 
+    /// <summary>Filters request messages for persistence; null preserves the framework's history-exclusion default.</summary>
     public Func<IEnumerable<ChatMessage>, IEnumerable<ChatMessage>>? StoreInputMessageFilter { get; set; }
 
 #pragma warning disable MEAI001
+    /// <summary>Legacy reducer, off by default; no automatic compaction is enabled.</summary>
     public IChatReducer? ChatReducer { get; set; }
 #pragma warning restore MEAI001
 
+    /// <summary>The legacy policy for an explicitly configured reducer.</summary>
     public ReductionStoragePolicy? ReductionStoragePolicy { get; set; }
 
+    /// <summary>The query page size.</summary>
     public int? MaxItemCount { get; set; }
 
+    /// <summary>Total batch operations (2..100), including one metadata operation.</summary>
     public int? MaxBatchSize { get; set; }
 
+    /// <summary>Optional latest-message limit, bypassing reduction when specified.</summary>
     public int? MaxMessagesToRetrieve { get; set; }
 
-    public int? MessageTtlSeconds { get; set; }
+    /// <summary>Message retention, default 24 hours; null/-1 disables expiration.</summary>
+    public int? MessageTtlSeconds { get; set; } = 86400;
 
     /// <summary>
     /// Escape hatch: direct access to the provider instance after construction for advanced scenarios.
@@ -256,7 +257,6 @@ public sealed class CosmosChatHistoryProviderOptions
 
     internal CosmosChatHistoryProviderOptions Clone() => new()
     {
-        StateKey = StateKey,
         ProvideOutputMessageFilter = ProvideOutputMessageFilter,
         StoreInputMessageFilter = StoreInputMessageFilter,
         ChatReducer = ChatReducer,

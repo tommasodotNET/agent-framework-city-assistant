@@ -1,440 +1,344 @@
-﻿using Microsoft.Azure.Cosmos;
+using System.Net;
+using System.Runtime.CompilerServices;
+using System.Text.Json;
+using Microsoft.Azure.Cosmos;
+using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Logging.Abstractions;
-using System.Diagnostics.CodeAnalysis;
-using System.Net;
-using System.Text.Json.Serialization;
 
 namespace SharedServices;
 
 /// <summary>
-/// Represents a chat message document stored in Cosmos DB.
+/// Shared text/voice history persistence. Every operation uses a full HPK and an expected revision.
+/// Conditional batches are mandatory. Multiple batches and session snapshots are not one transaction.
 /// </summary>
-[SuppressMessage("Performance", "CA1812:Avoid uninstantiated internal classes", Justification = "Deserialized by Cosmos DB")]
-sealed class CosmosMessageDocument
+public sealed class CosmosChatMessageRepository
 {
-    [JsonPropertyName("id")] public string Id { get; set; } = string.Empty;
-    [JsonPropertyName("conversationId")] public string ConversationId { get; set; } = string.Empty;
-    [JsonPropertyName("timestamp")] public long Timestamp { get; set; }
-    [JsonPropertyName("messageId")] public string? MessageId { get; set; }
-    [JsonPropertyName("role")] public string? Role { get; set; }
-    [JsonPropertyName("message")] public string Message { get; set; } = string.Empty;
-    [JsonPropertyName("type")] public string Type { get; set; } = string.Empty;
-    [JsonPropertyName("ttl")] public int? Ttl { get; set; }
-    [JsonPropertyName("tenantId")] public string? TenantId { get; set; }
-    [JsonPropertyName("userId")] public string? UserId { get; set; }
-    [JsonPropertyName("sessionId")] public string? SessionId { get; set; }
-}
-
-
-internal sealed class CosmosChatMessageRepository
-{
+    // Leave wire-operation overhead below Cosmos's 2 MB batch limit.
+    private const int PayloadBudget = 1_800_000;
+    private const int OperationOverhead = 1024;
+    private const int HeadBudget = 65_536;
+    private static readonly ConditionalWeakTable<Container, SchemaGate> s_schemaGates = new();
     private readonly Container _container;
     private readonly ILogger _logger;
-    private readonly bool _isEmulator;
     private int _maxItemCount = 100;
     private int _maxBatchSize = 100;
 
-    /// <summary>
-    /// Gets or sets the maximum number of messages to return in a single query batch.
-    /// Default is 100 for optimal performance.
-    /// </summary>
-    public int MaxItemCount
+    /// <summary>Uses an existing container without owning its client.</summary>
+    public CosmosChatMessageRepository(Container container, ILogger? logger = null)
     {
-        get => _maxItemCount;
-        set
-        {
-            if (value <= 0)
-            {
-                throw new ArgumentOutOfRangeException(nameof(value), "MaxItemCount must be greater than 0.");
-            }
-
-            _maxItemCount = value;
-        }
-    }
-
-    /// <summary>
-    /// Gets or sets the maximum number of items per transactional batch operation.
-    /// Default is 100, maximum allowed by Cosmos DB is 100.
-    /// Note: This setting is ignored when connected to the emulator.
-    /// </summary>
-    public int MaxBatchSize
-    {
-        get => _maxBatchSize;
-        set
-        {
-            if (value <= 0 || value > 100)
-            {
-                throw new ArgumentOutOfRangeException(nameof(value), "MaxBatchSize must be between 1 and 100.");
-            }
-
-            _maxBatchSize = value;
-        }
-    }
-
-    /// <summary>
-    /// Determines if the given CosmosClient is connected to the local emulator.
-    /// </summary>
-    /// <param name="cosmosClient">The CosmosClient to check.</param>
-    /// <returns>True if connected to the emulator, false otherwise.</returns>
-    private static bool DetectEmulator(CosmosClient cosmosClient) =>
-        cosmosClient.Endpoint?.Host is { } host &&
-        (host.Equals("localhost", StringComparison.OrdinalIgnoreCase) ||
-         host.StartsWith("127.", StringComparison.OrdinalIgnoreCase) ||
-         host.Equals("host.docker.internal", StringComparison.OrdinalIgnoreCase));
-
-
-    public CosmosChatMessageRepository(CosmosClient cosmosClient, string databaseId, string containerId, ILogger? logger=null)
-    {
-        ArgumentNullException.ThrowIfNull(cosmosClient, nameof(cosmosClient));
-        ArgumentException.ThrowIfNullOrWhiteSpace(databaseId, nameof(databaseId));
-        ArgumentException.ThrowIfNullOrEmpty(containerId, nameof(containerId));
-
-        _container = cosmosClient.GetContainer(databaseId, containerId);
-        _isEmulator = DetectEmulator(cosmosClient);
+        ArgumentNullException.ThrowIfNull(container);
+        _container = container;
         _logger = logger ?? NullLogger.Instance;
     }
 
-    /// <summary>
-    /// Retrieves chat message documents from Cosmos DB.
-    /// </summary>
-    /// <param name="conversationId">The conversation ID to query.</param>
-    /// <param name="partitionKey">The partition key for the query.</param>
-    /// <param name="maxMessages">Optional maximum number of messages to retrieve.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>A list of message documents and the total RU consumed.</returns>
-    public async Task<List<CosmosMessageDocument>> GetMessageDocumentAsync(
-        string conversationId,
-        PartitionKey partitionKey,
-        int? maxMessages = null,
-        CancellationToken cancellationToken = default)
+    /// <summary>Uses an existing Cosmos client without owning its lifecycle.</summary>
+    public CosmosChatMessageRepository(CosmosClient cosmosClient, string databaseId, string containerId, ILogger? logger = null)
+        : this(GetContainer(cosmosClient, databaseId, containerId), logger) { }
+
+    /// <summary>Query page size, positive; independent of the total read limit.</summary>
+    public int MaxItemCount
     {
-        _logger.LogDebug("Querying messages for conversation {ConversationId}", conversationId);
+        get => _maxItemCount;
+        set => _maxItemCount = value > 0 ? value : throw new ArgumentOutOfRangeException(nameof(value), HistoryErrors.Get("PositiveLimit"));
+    }
 
-        var orderDirection = maxMessages.HasValue ? "DESC" : "ASC";
-        var query = new QueryDefinition($"SELECT * FROM c WHERE c.conversationId = @conversationId AND c.type = @type ORDER BY c.timestamp {orderDirection}")
-            .WithParameter("@conversationId", conversationId)
-            .WithParameter("@type", "ChatMessage");
+    /// <summary>Total operations per batch, including one reserved metadata operation (2..100).</summary>
+    public int MaxBatchSize
+    {
+        get => _maxBatchSize;
+        set => _maxBatchSize = value is >= 2 and <= 100 ? value : throw new ArgumentOutOfRangeException(nameof(value), HistoryErrors.Get("BatchLimit"));
+    }
 
-        var iterator = _container.GetItemQueryIterator<CosmosMessageDocument>(query, requestOptions: new QueryRequestOptions
+    /// <summary>Reads ordered, typed messages only after checking the expected history revision.</summary>
+    public async Task<HistoryReadResult> ReadAsync(HistoryReference reference, int? maxMessages = null, CancellationToken cancellationToken = default)
+    {
+        var documents = await ReadDocumentsAsync(reference, maxMessages, cancellationToken).ConfigureAwait(false);
+        return new(reference, documents.Select(document => document.ToChatMessage()).ToArray());
+    }
+
+    /// <summary>
+    /// Appends typed messages and advances the head with create-only/IfMatch in the same batch.
+    /// onCommitted is called exactly once per successful chunk so adapters can advance their cursor.
+    /// Empty input checks the revision but does not create metadata or advance a cursor.
+    /// </summary>
+    public async Task<HistoryWriteResult> AppendAsync(
+        HistoryReference reference, IReadOnlyList<ChatMessage> messages, int? messageTtlSeconds = 86400,
+        Action<HistoryReference>? onCommitted = null, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(reference);
+        ArgumentNullException.ThrowIfNull(messages);
+        var ttl = ValidateTtl(messageTtlSeconds);
+        var address = reference.ToAddress();
+        var head = await ReadHeadAsync(reference, cancellationToken).ConfigureAwait(false);
+        var documents = messages.Select((message, index) =>
         {
-            PartitionKey = partitionKey,
-            MaxItemCount = MaxItemCount
-        });
+            ArgumentNullException.ThrowIfNull(message);
+            return new HistoryMessageDocument
+            {
+                ScopeKey = address.ScopeKey, ConversationId = address.ConversationId,
+                Sequence = checked(head.Document.NextSequence + index),
+                Timestamp = DateTimeOffset.UtcNow,
+                Message = JsonSerializer.SerializeToElement(message, HistoryJson.Options), Ttl = ttl
+            };
+        }).ToArray();
+        // Validate the complete request before the first commit, including oversized single messages.
+        var chunks = Chunk(documents);
+        return await CommitChunksAsync(reference, chunks, delete: false, onCommitted, cancellationToken).ConfigureAwait(false);
+    }
 
-        var documents = new List<CosmosMessageDocument>();
-        var totalRu = 0.0;
-
+    /// <summary>Counts only messages in this full history partition, verifying the revision before and after.</summary>
+    public async Task<int> CountAsync(HistoryReference reference, CancellationToken cancellationToken = default)
+    {
+        await ReadHeadAsync(reference, cancellationToken).ConfigureAwait(false);
+        var query = MessageQuery(reference, "SELECT VALUE COUNT(1) FROM c");
+        using var iterator = _container.GetItemQueryStreamIterator(query, requestOptions: QueryOptions(reference));
+        var count = 0;
         while (iterator.HasMoreResults)
         {
-            var response = await iterator.ReadNextAsync(cancellationToken).ConfigureAwait(false);
-            totalRu += response.RequestCharge;
-
-            foreach (var document in response)
-            {
-                if (maxMessages.HasValue && documents.Count >= maxMessages.Value)
-                { 
-                    break;
-                }
-
-                if (!string.IsNullOrEmpty(document.Message))
-                {
-                    documents.Add(document);
-                }
-
-            }
-
-            if (maxMessages.HasValue && documents.Count >= maxMessages.Value)
-            {
-                break;
-            }
+            using var response = await iterator.ReadNextAsync(cancellationToken).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            using var json = await JsonDocument.ParseAsync(response.Content, cancellationToken: cancellationToken).ConfigureAwait(false);
+            count = checked(count + json.RootElement.GetProperty("Documents").EnumerateArray().Sum(value => value.GetInt32()));
         }
-
-        // If we fetched in descending order (most recent first), reverse to ascending order
-        if (maxMessages.HasValue)
-        {
-            documents.Reverse();
-        }
-
-        _logger.LogDebug("Retrieved {MessageCount} message documents for conversation {ConversationId}, RU: {RequestCharge:F2}",
-            documents.Count, conversationId, totalRu);
-
-        return documents;
-    }
-
-    /// <summary>
-    /// Stores chat message documents to Cosmos DB.
-    /// Uses transactional batch for Azure Cosmos DB or sequential operations for the emulator.
-    /// </summary>
-    /// <param name="documents">The documents to store.</param>
-    /// <param name="partitionKey">The partition key for the documents.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    public async Task StoreDocumentsAsync(
-        List<CosmosMessageDocument> documents,
-        PartitionKey partitionKey,
-        CancellationToken cancellationToken = default)
-    {
-        if (documents.Count == 0)
-        {
-            _logger.LogDebug("No documents to store");
-            return;
-        }
-
-        _logger.LogDebug("Storing {DocumentCount} documents", documents.Count);
-        double totalRu;
-        if (_isEmulator)
-        {
-            totalRu = await AddDocumentsSequentiallyAsync(documents, partitionKey, cancellationToken).ConfigureAwait(false);
-        }
-        else
-        {
-            totalRu = await AddDocumentsWithBatchAsync(documents, partitionKey, cancellationToken).ConfigureAwait(false);
-        }
-
-        _logger.LogDebug("Successfully stored {DocumentCount} documents, RU: {RequestCharge:F2}", documents.Count, totalRu);
-    }
-
-    /// <summary>
-    /// Deletes all chat messages for a conversation.
-    /// </summary>
-    /// <param name="conversationId">The conversation ID.</param>
-    /// <param name="partitionKey">The partition key.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    public async Task<int> DeleteDocumentsAsync(
-        string conversationId,
-        PartitionKey partitionKey,
-        CancellationToken cancellationToken = default)
-    {
-        _logger.LogDebug("Deleting all documents for conversation {ConversationId}", conversationId);
-
-        var query = new QueryDefinition("SELECT VALUE c.id FROM c WHERE c.conversationId = @conversationId AND c.type = @type")
-            .WithParameter("@conversationId", conversationId)
-            .WithParameter("@type", "ChatMessage");
-
-        var iterator = _container.GetItemQueryIterator<string>(query, requestOptions: new QueryRequestOptions
-        {
-            PartitionKey = partitionKey,
-            MaxItemCount = MaxItemCount
-        });
-
-        var deletedCount = 0;
-        var totalRu = 0.0;
-
-        while (iterator.HasMoreResults)
-        {
-            var response = await iterator.ReadNextAsync(cancellationToken).ConfigureAwait(false);
-            totalRu += response.RequestCharge;
-            var itemIds = response.Where(id => !string.IsNullOrEmpty(id)).ToList();
-
-            if (_isEmulator)
-            {
-                foreach (var itemId in itemIds)
-                {
-                    var deleteResponse = await _container.DeleteItemAsync<object>(itemId, partitionKey, cancellationToken: cancellationToken).ConfigureAwait(false);
-                    totalRu += deleteResponse.RequestCharge;
-                    deletedCount++;
-                }
-            }
-            else if (itemIds.Count > 0)
-            {
-                var batch = _container.CreateTransactionalBatch(partitionKey);
-                foreach (var itemId in itemIds)
-                {
-                    batch.DeleteItem(itemId);
-                }
-
-                var batchResponse = await batch.ExecuteAsync(cancellationToken).ConfigureAwait(false);
-                totalRu += batchResponse.RequestCharge;
-                deletedCount += itemIds.Count;
-            }
-        }
-
-        _logger.LogDebug("Deleted {DeletedCount} messages for conversation {ConversationId}, RU: {RequestCharge:F2}",
-            deletedCount, conversationId, totalRu);
-
-        return deletedCount;
-    }
-
-    /// <summary>
-    /// Gets the count of messages in a conversation.
-    /// </summary>
-    /// <param name="conversationId">The conversation ID.</param>
-    /// <param name="partitionKey">The partition key.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    /// <returns>The document count </returns>
-    public async Task<int> GetDocumentCountAsync(
-        string conversationId,
-        PartitionKey partitionKey,
-        CancellationToken cancellationToken = default)
-    {
-        var query = new QueryDefinition("SELECT VALUE COUNT(1) FROM c WHERE c.conversationId = @conversationId AND c.type = @type")
-            .WithParameter("@conversationId", conversationId)
-            .WithParameter("@type", "ChatMessage");
-
-        var iterator = _container.GetItemQueryIterator<int>(query, requestOptions: new QueryRequestOptions
-        {
-            PartitionKey = partitionKey
-        });
-
-        var response = await iterator.ReadNextAsync(cancellationToken).ConfigureAwait(false);
-        var count = response.FirstOrDefault();
-
-        _logger.LogDebug("Message count for conversation {ConversationId}: {Count}, RU: {RequestCharge:F2}",
-            conversationId, count, response.RequestCharge);
-
+        await ReadHeadAsync(reference, cancellationToken).ConfigureAwait(false);
         return count;
     }
 
-
-    // All new archived documents share the same target partition; batching logic below handles this efficiently.
+    /// <summary>
+    /// Deletes existing messages through conditional batches, retaining the monotonic sequence/head.
+    /// Partial failure exposes the committed cursor/count rather than reporting a completed clear.
+    /// </summary>
+    public async Task<HistoryWriteResult> ClearAsync(
+        HistoryReference reference, Action<HistoryReference>? onCommitted = null, CancellationToken cancellationToken = default)
+    {
+        var documents = await ReadDocumentsAsync(reference, null, cancellationToken).ConfigureAwait(false);
+        return await CommitChunksAsync(reference, Chunk(documents), delete: true, onCommitted, cancellationToken).ConfigureAwait(false);
+    }
 
     /// <summary>
-    /// Copies documents to a new conversation ID (for archiving).
+    /// Copies the source into an explicitly supplied, new history with permanent message/head TTL.
+    /// Does not delete the source; this is not an atomic cross-partition move.
     /// </summary>
-    /// <param name="documents">The documents to copy.</param>
-    /// <param name="targetConversationId">The target conversation ID.</param>
-    /// <param name="targetPartitionKey">The target partition key.</param>
-    /// <param name="tenantId">Optional tenant ID for hierarchical partitioning.</param>
-    /// <param name="userId">Optional user ID for hierarchical partitioning.</param>
-    /// <param name="cancellationToken">Cancellation token.</param>
-    public async Task CopyDocumentsAsync(
-        IList<CosmosMessageDocument> documents,
-        string targetConversationId,
-        PartitionKey targetPartitionKey,
+    public async Task<HistoryWriteResult> ArchiveAsync(
+        HistoryReference source, HistoryStorageAddress target, Action<HistoryReference>? onCommitted = null,
         CancellationToken cancellationToken = default)
     {
-        if (documents.Count == 0)
-        {
-            _logger.LogDebug("No documents to copy");
-            return;
-        }
-
-        _logger.LogDebug("Copying {DocumentCount} documents to conversation {TargetConversationId}",
-            documents.Count, targetConversationId);
-
-        List<CosmosMessageDocument> archivedDocuments = new List<CosmosMessageDocument>(documents.Count);
-
-        // Note: We can't use transactional batch across different partition keys
-        foreach (var doc in documents)
-        {
-            var archivedDoc = new CosmosMessageDocument
-            {
-                Id = Guid.NewGuid().ToString(),
-                ConversationId = targetConversationId,
-                Timestamp = doc.Timestamp,
-                MessageId = doc.MessageId,
-                Role = doc.Role,
-                Message = doc.Message,
-                Type = doc.Type,
-                Ttl = null, // Archived messages don't expire
-                TenantId = doc.TenantId,
-                UserId = doc.UserId,
-                SessionId = doc.SessionId
-            };
-
-            archivedDocuments.Add(archivedDoc);
-        }
-
-        double totalRu;
-        if (_isEmulator)
-        {
-            totalRu = await AddDocumentsSequentiallyAsync(archivedDocuments, targetPartitionKey, cancellationToken).ConfigureAwait(false);
-        }
-        else
-        {
-            totalRu = await AddDocumentsWithBatchAsync(archivedDocuments, targetPartitionKey, cancellationToken).ConfigureAwait(false);
-        }
-
-        _logger.LogDebug("Copied {DocumentCount} documents to {TargetConversationId}, RU: {RequestCharge:F2}",  documents.Count, targetConversationId, totalRu);
+        ArgumentNullException.ThrowIfNull(source);
+        ArgumentNullException.ThrowIfNull(target);
+        if (source.ToAddress() == target || source.ScopeKey != target.ScopeKey)
+            throw new ArgumentException(StorageErrors.Get("IncompatibleContext"), nameof(target));
+        var messages = await ReadAsync(source, cancellationToken: cancellationToken).ConfigureAwait(false);
+        return await AppendAsync(new(target.ScopeKey, target.ConversationId, 0), messages.Messages, -1, onCommitted, cancellationToken).ConfigureAwait(false);
     }
 
-
-    #region Private Helpers
-
-    private async Task<double> AddDocumentsSequentiallyAsync(
-        IList<CosmosMessageDocument> documents,
-        PartitionKey partitionKey,
-        CancellationToken cancellationToken)
+    private async Task<List<HistoryMessageDocument>> ReadDocumentsAsync(
+        HistoryReference reference, int? maxMessages, CancellationToken cancellationToken)
     {
-        var totalRu = 0.0;
+        ArgumentNullException.ThrowIfNull(reference);
+        if (maxMessages is <= 0) throw new ArgumentOutOfRangeException(nameof(maxMessages), HistoryErrors.Get("PositiveLimit"));
+        await ReadHeadAsync(reference, cancellationToken).ConfigureAwait(false);
+        var select = maxMessages.HasValue ? "SELECT TOP @limit * FROM c" : "SELECT * FROM c";
+        var query = MessageQuery(reference, select, maxMessages.HasValue ? " ORDER BY c.sequence DESC" : " ORDER BY c.sequence ASC");
+        if (maxMessages.HasValue) query.WithParameter("@limit", maxMessages.Value);
+        using var iterator = _container.GetItemQueryStreamIterator(query, requestOptions: QueryOptions(reference));
+        var documents = new List<HistoryMessageDocument>();
+        while (iterator.HasMoreResults)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            using var response = await iterator.ReadNextAsync(cancellationToken).ConfigureAwait(false);
+            response.EnsureSuccessStatusCode();
+            using var json = await JsonDocument.ParseAsync(response.Content, cancellationToken: cancellationToken).ConfigureAwait(false);
+            foreach (var item in json.RootElement.GetProperty("Documents").EnumerateArray())
+            {
+                var document = item.Deserialize<HistoryMessageDocument>(HistoryJson.Options)
+                    ?? throw new InvalidOperationException(StorageErrors.Get("InvalidSchema"));
+                document.ValidateFor(reference.ToAddress());
+                documents.Add(document);
+            }
+        }
+        // This also detects writes racing the query rather than returning mixed revisions.
+        await ReadHeadAsync(reference, cancellationToken).ConfigureAwait(false);
+        return documents.OrderBy(document => document.Sequence).ThenBy(document => document.Id, StringComparer.Ordinal).ToList();
+    }
 
+    private async Task<HistoryWriteResult> CommitChunksAsync(
+        HistoryReference reference, IReadOnlyList<IReadOnlyList<HistoryMessageDocument>> chunks,
+        bool delete, Action<HistoryReference>? onCommitted, CancellationToken cancellationToken)
+    {
+        var current = reference;
+        var committed = 0;
+        // An empty operation must still reject a stale snapshot.
+        if (chunks.Count == 0) await ReadHeadAsync(current, cancellationToken).ConfigureAwait(false);
+        foreach (var chunk in chunks)
+        {
+            try
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var head = await ReadHeadAsync(current, cancellationToken).ConfigureAwait(false);
+                var next = head.Document with
+                {
+                    Revision = checked(current.Revision + 1),
+                    NextSequence = delete ? head.Document.NextSequence : checked(chunk[^1].Sequence + 1),
+                    // Snapshot saves can occur arbitrarily later without a history append. A finite
+                    // head TTL therefore cannot safely cover all snapshots, even with a grace period.
+                    Ttl = -1
+                };
+                var batch = _container.CreateTransactionalBatch(current.ToAddress().ToPartitionKey());
+                var streams = new List<MemoryStream>();
+                try
+                {
+                    foreach (var document in chunk)
+                    {
+                        if (delete) batch.DeleteItem(document.Id);
+                        else
+                        {
+                            var stream = new MemoryStream(JsonSerializer.SerializeToUtf8Bytes(document, HistoryJson.Options), writable: false);
+                            streams.Add(stream);
+                            batch.CreateItemStream(stream);
+                        }
+                    }
+                    var headStream = new MemoryStream(JsonSerializer.SerializeToUtf8Bytes(next, HistoryJson.Options), writable: false);
+                    streams.Add(headStream);
+                    if (head.ETag is null) batch.CreateItemStream(headStream);
+                    else batch.ReplaceItemStream(HistoryHeadDocument.DocumentId, headStream,
+                        new TransactionalBatchItemRequestOptions { IfMatchEtag = head.ETag });
+                    using var response = await batch.ExecuteAsync(cancellationToken).ConfigureAwait(false);
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        _logger.LogError("Conditional history batch failed with status {StatusCode}", response.StatusCode);
+                        if (response.StatusCode is HttpStatusCode.Conflict or HttpStatusCode.PreconditionFailed
+                            || Enumerable.Range(0, response.Count).Any(index => response[index].StatusCode is HttpStatusCode.Conflict or HttpStatusCode.PreconditionFailed))
+                            throw new HistoryConcurrencyException();
+                        throw new InvalidOperationException(HistoryErrors.Get("BatchFailed"));
+                    }
+                }
+                finally
+                {
+                    foreach (var stream in streams) stream.Dispose();
+                }
+                current = current.WithRevision(next.Revision);
+                committed += chunk.Count;
+                onCommitted?.Invoke(current);
+                _logger.LogDebug("Committed history batch with {MessageCount} messages at revision {Revision}", chunk.Count, current.Revision);
+            }
+            catch (OperationCanceledException exception) when (committed > 0)
+            {
+                throw new HistoryWriteCanceledException(current, committed, exception);
+            }
+            catch (CosmosException exception) when (committed > 0)
+            {
+                throw new HistoryPartialWriteException(current, committed, exception);
+            }
+            catch (CosmosException exception) when (exception.StatusCode is HttpStatusCode.Conflict or HttpStatusCode.PreconditionFailed)
+            {
+                throw new HistoryConcurrencyException();
+            }
+            catch (InvalidOperationException exception) when (committed > 0)
+            {
+                throw new HistoryPartialWriteException(current, committed, exception);
+            }
+            catch (JsonException exception) when (committed > 0)
+            {
+                throw new HistoryPartialWriteException(current, committed, exception);
+            }
+            catch (NotSupportedException exception) when (committed > 0)
+            {
+                throw new HistoryPartialWriteException(current, committed, exception);
+            }
+            catch (OverflowException exception) when (committed > 0)
+            {
+                throw new HistoryPartialWriteException(current, committed, exception);
+            }
+        }
+        return new(current, committed);
+    }
+
+    private List<IReadOnlyList<HistoryMessageDocument>> Chunk(IReadOnlyList<HistoryMessageDocument> documents)
+    {
+        var chunks = new List<IReadOnlyList<HistoryMessageDocument>>();
+        var chunk = new List<HistoryMessageDocument>();
+        // Reserve the largest possible head and its wire overhead.
+        var bytes = HeadBudget;
         foreach (var document in documents)
         {
-            try
+            var size = JsonSerializer.SerializeToUtf8Bytes(document, HistoryJson.Options).Length + OperationOverhead;
+            if (size + HeadBudget > PayloadBudget) throw new InvalidOperationException(HistoryErrors.Get("TooLarge"));
+            if (chunk.Count >= MaxBatchSize - 1 || bytes + size > PayloadBudget)
             {
-                var response = await _container.CreateItemAsync(document, partitionKey, cancellationToken: cancellationToken).ConfigureAwait(false);
-                totalRu += response.RequestCharge;
+                chunks.Add(chunk);
+                chunk = [];
+                bytes = HeadBudget;
             }
-            catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.RequestEntityTooLarge)
-            {
-                _logger.LogError(ex, "Document exceeds 2MB limit, DocumentId: {DocumentId}", document.Id);
-                throw new InvalidOperationException(
-                    $"Document exceeds Cosmos DB's maximum item size limit of 2MB. Document ID: {document.Id}", ex);
-            }
+            chunk.Add(document);
+            bytes += size;
         }
-
-        _logger.LogDebug("Added {DocumentCount} documents sequentially, RU: {RequestCharge:F2}",
-            documents.Count, totalRu);
-
-        return totalRu;
+        if (chunk.Count > 0) chunks.Add(chunk);
+        return chunks;
     }
 
-    private async Task<double> AddDocumentsWithBatchAsync(
-        IList<CosmosMessageDocument> documents,
-        PartitionKey partitionKey,
-        CancellationToken cancellationToken,
-        int startIndex = 0,
-        int? count = null)
+    private async Task<(HistoryHeadDocument Document, string? ETag)> ReadHeadAsync(HistoryReference reference, CancellationToken cancellationToken)
     {
-        var totalRu = 0.0;
-        var itemsToProcess = count ?? documents.Count - startIndex;
-        if (itemsToProcess <= 0) return totalRu;
-
-        for (var i = startIndex; i < startIndex + itemsToProcess; i += MaxBatchSize)
+        ArgumentNullException.ThrowIfNull(reference);
+        await ValidateSchemaAsync(cancellationToken).ConfigureAwait(false);
+        var address = reference.ToAddress();
+        using var response = await _container.ReadItemStreamAsync(
+            HistoryHeadDocument.DocumentId, address.ToPartitionKey(), cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (response.StatusCode == HttpStatusCode.NotFound)
         {
-            var chunkSize = Math.Min(MaxBatchSize, startIndex + itemsToProcess - i);
-            var chunk = documents.Skip(i).Take(chunkSize).ToList();
-
-            var batch = _container.CreateTransactionalBatch(partitionKey);
-            foreach (var doc in chunk)
-                batch.CreateItem(doc);
-
-            try
-            {
-                var response = await batch.ExecuteAsync(cancellationToken).ConfigureAwait(false);
-                if (!response.IsSuccessStatusCode)
-                {
-                    _logger.LogError("Batch operation failed: {StatusCode} - {ErrorMessage}",
-                        response.StatusCode, response.ErrorMessage);
-                    throw new InvalidOperationException($"Batch operation failed: {response.StatusCode} - {response.ErrorMessage}");
-                }
-
-                totalRu += response.RequestCharge;
-                _logger.LogDebug("Batch added {DocumentCount} documents, RU: {RequestCharge:F2}",
-                    chunk.Count, response.RequestCharge);
-            }
-            catch (CosmosException ex) when (ex.StatusCode == HttpStatusCode.RequestEntityTooLarge)
-            {
-                _logger.LogWarning("Batch too large, splitting: {DocumentCount} documents", chunk.Count);
-
-                if (chunk.Count == 1)
-                {
-                    totalRu += await AddDocumentsSequentiallyAsync(chunk, partitionKey, cancellationToken).ConfigureAwait(false);
-                    continue;
-                }
-
-                var mid = chunk.Count / 2;
-                totalRu += await AddDocumentsWithBatchAsync(documents, partitionKey, cancellationToken, i, mid).ConfigureAwait(false);
-                totalRu += await AddDocumentsWithBatchAsync(documents, partitionKey, cancellationToken, i + mid, chunk.Count - mid).ConfigureAwait(false);
-
-                i += chunkSize - MaxBatchSize;
-            }
+            if (reference.Revision != 0) throw new InvalidOperationException(HistoryErrors.Get("MissingHead"));
+            return (new() { ScopeKey = address.ScopeKey, ConversationId = address.ConversationId }, null);
         }
-
-        return totalRu;
+        response.EnsureSuccessStatusCode();
+        var head = await JsonSerializer.DeserializeAsync<HistoryHeadDocument>(response.Content, HistoryJson.Options, cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException(StorageErrors.Get("InvalidSchema"));
+        if (head.SchemaVersion != StorageSchema.Version || head.Id != HistoryHeadDocument.DocumentId || head.Type != "HistoryHead"
+            || head.ScopeKey != address.ScopeKey || head.ConversationId != address.ConversationId
+            || head.Revision < 0 || head.NextSequence < 0 || (head.Ttl != -1 && head.Ttl <= 0))
+            throw new InvalidOperationException(StorageErrors.Get("InvalidSchema"));
+        if (head.Revision != reference.Revision) throw new HistoryConcurrencyException();
+        if (string.IsNullOrWhiteSpace(response.Headers.ETag)) throw new InvalidOperationException(StorageErrors.Get("InvalidSchema"));
+        return (head, response.Headers.ETag);
     }
 
-    #endregion
+    private async Task ValidateSchemaAsync(CancellationToken cancellationToken)
+    {
+        var gate = s_schemaGates.GetValue(_container, _ => new());
+        await gate.Semaphore.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
+        {
+            if (gate.Validated) return;
+            var response = await _container.ReadContainerAsync(cancellationToken: cancellationToken).ConfigureAwait(false);
+            StorageSchema.ValidateContainer(response.Resource, isSessionContainer: false);
+            gate.Validated = true;
+        }
+        finally { gate.Semaphore.Release(); }
+    }
 
+    private static int ValidateTtl(int? ttl) => ttl is null or -1 ? -1
+        : ttl > 0 ? ttl.Value : throw new ArgumentOutOfRangeException(nameof(ttl), StorageErrors.Get("InvalidTtl"));
+
+    private QueryRequestOptions QueryOptions(HistoryReference reference) => new()
+    {
+        PartitionKey = reference.ToAddress().ToPartitionKey(), MaxItemCount = MaxItemCount
+    };
+
+    private static QueryDefinition MessageQuery(HistoryReference reference, string select, string ordering = "") =>
+        new QueryDefinition(select + " WHERE c.scopeKey = @scopeKey AND c.conversationId = @conversationId AND c.type = @type" + ordering)
+            .WithParameter("@scopeKey", reference.ScopeKey).WithParameter("@conversationId", reference.ConversationId)
+            .WithParameter("@type", "ChatMessage");
+
+    private static Container GetContainer(CosmosClient client, string databaseId, string containerId)
+    {
+        ArgumentNullException.ThrowIfNull(client);
+        ArgumentException.ThrowIfNullOrWhiteSpace(databaseId);
+        ArgumentException.ThrowIfNullOrWhiteSpace(containerId);
+        return client.GetContainer(databaseId, containerId);
+    }
+
+    private sealed class SchemaGate
+    {
+        internal SemaphoreSlim Semaphore { get; } = new(1, 1);
+        internal bool Validated { get; set; }
+    }
 }
-

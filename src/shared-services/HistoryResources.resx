@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype"><value>text/microsoft-resx</value></resheader>
+  <resheader name="version"><value>2.0</value></resheader>
+  <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms</value></resheader>
+  <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms</value></resheader>
+  <data name="Conflict" xml:space="preserve"><value>The history revision is stale or a competing writer committed. Start a new session or explicitly recover the snapshot; do not replay tools automatically.</value></data>
+  <data name="Partial" xml:space="preserve"><value>The history operation did not complete. Earlier batches remain committed; inspect the last committed reference and count. No rollback across batches or containers is provided.</value></data>
+  <data name="MissingHead" xml:space="preserve"><value>The history metadata is missing for an existing snapshot. It cannot be reset to revision zero.</value></data>
+  <data name="BatchFailed" xml:space="preserve"><value>The conditional history batch failed. Transactional batches and ETag conditions are required, including on the emulator; no sequential fallback is supported.</value></data>
+  <data name="TooLarge" xml:space="preserve"><value>A history message exceeds the safe transactional batch payload budget. Reduce the message size before retrying.</value></data>
+  <data name="BatchLimit" xml:space="preserve"><value>The batch limit must be between 2 and 100, including the reserved history metadata operation.</value></data>
+  <data name="PositiveLimit" xml:space="preserve"><value>The message/query limit must be positive.</value></data>
+</root>
