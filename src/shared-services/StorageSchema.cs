@@ -85,6 +85,10 @@ public static class StorageSchema
             throw new ArgumentException(StorageErrors.Get("PartitionKeyTooLong"));
         }
     }
+
+    internal static bool IsRotationOperationId(string? value) =>
+        value is { Length: 32 } && Guid.TryParseExact(value, "N", out var id)
+        && id.ToString("N") == value && value[12] == '4' && value[16] is '8' or '9' or 'a' or 'b';
 }
 
 internal static class StorageErrors

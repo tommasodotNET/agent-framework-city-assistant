@@ -46,7 +46,17 @@ public sealed record HistoryMessageDocument
 }
 
 /// <summary>A consistent history read at the requested revision.</summary>
-public sealed record HistoryReadResult(HistoryReference Reference, IReadOnlyList<ChatMessage> Messages);
+public sealed record HistoryReadResult(HistoryReference Reference, IReadOnlyList<ChatMessage> Messages)
+{
+    internal IReadOnlyList<long> MessageSequences { get; init; } = [];
+
+    internal long LastSequence => MessageSequences.Count == 0 ? -1 : MessageSequences[^1];
+
+    // Messages are immutable and sequences are never reused, including after Clear.
+    // Missing messages at or before this boundary therefore mean the original prefix was lost.
+    internal bool HasOriginalPrefix(long lastSequence, int expectedCount) =>
+        MessageSequences.TakeWhile(sequence => sequence <= lastSequence).Count() == expectedCount;
+}
 
 /// <summary>The cursor and number of messages affected by a completed operation.</summary>
 public sealed record HistoryWriteResult(HistoryReference Reference, int MessageCount);
@@ -99,16 +109,24 @@ internal sealed record HistoryHeadDocument
     [JsonPropertyName("revision"), JsonRequired] public long Revision { get; init; }
     [JsonPropertyName("nextSequence"), JsonRequired] public long NextSequence { get; init; }
     [JsonPropertyName("ttl"), JsonRequired] public int Ttl { get; init; } = -1;
+    // Absent fields preserve schema-2 heads' original active-history semantics.
+    [JsonPropertyName("rotationState"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? RotationState { get; init; }
+    [JsonPropertyName("rotationCandidate"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public HistoryRotationBinding? RotationCandidate { get; init; }
+    [JsonPropertyName("rotationTransition"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public HistoryRotationBinding? RotationTransition { get; init; }
 }
 
-internal static class HistoryJson
+// The same immutable binding on both heads proves publication without a cross-partition transaction.
+internal sealed record HistoryRotationBinding
 {
-    internal static readonly JsonSerializerOptions Options = new()
-    {
-        // Cosmos may reorder JSON properties, including polymorphic AIContent discriminators.
-        AllowOutOfOrderMetadataProperties = true,
-        TypeInfoResolver = new System.Text.Json.Serialization.Metadata.DefaultJsonTypeInfoResolver()
-    };
+    [JsonPropertyName("operationId"), JsonRequired] public required string OperationId { get; init; }
+    [JsonPropertyName("source"), JsonRequired] public required HistoryReference Source { get; init; }
+    [JsonPropertyName("target"), JsonRequired] public required HistoryReference Target { get; init; }
+    [JsonPropertyName("snapshotHash"), JsonRequired] public required string SnapshotHash { get; init; }
+    [JsonPropertyName("messageCount"), JsonRequired] public int MessageCount { get; init; }
+    [JsonPropertyName("messageTtl"), JsonRequired] public int MessageTtl { get; init; }
 }
 
 internal static class HistoryErrors

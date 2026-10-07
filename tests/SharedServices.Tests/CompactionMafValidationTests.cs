@@ -1,0 +1,505 @@
+#pragma warning disable MAAI001 // Test validation of installed MAF summary metadata.
+
+using System.Text.Json;
+using Microsoft.Agents.AI.Compaction;
+using Microsoft.Extensions.AI;
+using SharedServices;
+
+namespace SharedServices.Tests;
+
+public class CompactionMafValidationTests
+{
+    [Fact]
+    public void MeasureUsesExactContractSerializationIncludingMetadata()
+    {
+        IReadOnlyList<ChatMessage> messages =
+        [
+            new(ChatRole.User, "quoted \" text")
+            {
+                AuthorName = "author",
+                MessageId = "id",
+                CreatedAt = DateTimeOffset.Parse("2026-10-07T00:00:00Z"),
+                AdditionalProperties = new() { ["metadata"] = new string('m', 500) }
+            }
+        ];
+
+        var bytes = JsonSerializer.SerializeToUtf8Bytes<IReadOnlyList<ChatMessage>>(messages, JsonSerializerOptions.Default);
+
+        Assert.Equal(bytes.LongLength, HistoryCompactionValidation.Measure(messages));
+    }
+
+    [Fact]
+    public void MeasureRejectsNullList()
+    {
+        Assert.Throws<ArgumentNullException>(() => HistoryCompactionValidation.Measure(null!));
+    }
+
+    [Fact]
+    public void MeasureRejectsNullMessage()
+    {
+        Assert.Throws<ArgumentException>(() => HistoryCompactionValidation.Measure(new ChatMessage[] { null! }));
+    }
+
+    [Fact]
+    public void MeasureRejectsNullContent()
+    {
+        var source = Source();
+        source[1].Contents.Add(null!);
+
+        Assert.Throws<ArgumentException>(() => HistoryCompactionValidation.Measure(source));
+    }
+
+    [Theory]
+    [InlineData("system")]
+    [InlineData("developer")]
+    [InlineData("user")]
+    public void OrdinaryInstructionOrUserSummaryTextIsNotFrameworkSummary(string role)
+    {
+        IReadOnlyList<ChatMessage> source = [new(new ChatRole(role), "[Summary]\n[Summary unavailable]")];
+
+        var error = Record.Exception(() => HistoryCompactionValidation.ValidateFallback(source, 100_000));
+
+        Assert.Null(error);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void FallbackRejectsNonpositiveExplicitBudget(long cap)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() => HistoryCompactionValidation.ValidateFallback(Source(), cap));
+    }
+
+    [Fact]
+    public void FallbackCannotBypassBudget()
+    {
+        var error = Assert.Throws<HistoryCompactionValidationException>(() =>
+            HistoryCompactionValidation.ValidateFallback(Source(), 1));
+
+        Assert.Equal(HistoryCompactionFailureReason.BudgetExceeded, error.Reason);
+    }
+
+    [Fact]
+    public void FallbackWithNullCapStillRejectsNullMessageAndContent()
+    {
+        Assert.Throws<ArgumentException>(() =>
+            HistoryCompactionValidation.ValidateFallback(new ChatMessage[] { null! }, null));
+        var source = Source();
+        source[1].Contents.Add(null!);
+        Assert.Throws<ArgumentException>(() => HistoryCompactionValidation.ValidateFallback(source, null));
+    }
+
+    [Fact]
+    public void NullCapStillRequiresARealReduction()
+    {
+        var source = Source();
+        var error = Assert.Throws<HistoryCompactionValidationException>(() =>
+            HistoryCompactionValidation.ValidateCandidate(source, source, null));
+
+        Assert.Equal(HistoryCompactionFailureReason.NotReduced, error.Reason);
+    }
+
+    [Fact]
+    public void ExplicitCapAllowsExactlyTheMeasuredSizeButNotOneByteLess()
+    {
+        var source = Source();
+        var size = HistoryCompactionValidation.Measure(source);
+        HistoryCompactionValidation.ValidateFallback(source, size);
+        var error = Assert.Throws<HistoryCompactionValidationException>(() =>
+            HistoryCompactionValidation.ValidateFallback(source, size - 1));
+
+        Assert.Equal(HistoryCompactionFailureReason.BudgetExceeded, error.Reason);
+    }
+
+    [Fact]
+    public void SafeOriginalPendingApprovalMayFallbackWithoutBeingApproved()
+    {
+        var call = new FunctionCallContent("pending", "lookup", null);
+        IReadOnlyList<ChatMessage> messages =
+        [
+            new(ChatRole.Assistant, [new ToolApprovalRequestContent("approval", call)])
+        ];
+
+        HistoryCompactionValidation.ValidateFallback(messages, 100_000);
+
+        Assert.False(call.InformationalOnly);
+    }
+
+    [Fact]
+    public void BindingFromDifferentSourceVersionIsRejected()
+    {
+        var request = Request();
+        var result = Completed(request, Candidate(), binding: "wrong-source");
+
+        var error = Assert.Throws<HistoryCompactionValidationException>(() => HistoryCompactionValidation.ValidateResult(request, result));
+
+        Assert.Equal(HistoryCompactionFailureReason.SourceBindingMismatch, error.Reason);
+    }
+
+    [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void ForgedPluginByteDiagnosticsAreRejected(bool forgeBefore)
+    {
+        var request = Request();
+        var candidate = Candidate();
+        var before = HistoryCompactionValidation.Measure(request.Messages);
+        var after = HistoryCompactionValidation.Measure(candidate);
+        var result = new HistoryCompactionResult(HistoryCompactionStatus.Completed, request.SourceBinding, candidate,
+            forgeBefore ? before - 1 : before, forgeBefore ? after : after - 1);
+
+        var error = Assert.Throws<HistoryCompactionValidationException>(() => HistoryCompactionValidation.ValidateResult(request, result));
+
+        Assert.Equal(HistoryCompactionFailureReason.InvalidDiagnostics, error.Reason);
+    }
+
+    [Fact]
+    public void ChangedHistoryCannotBeLabeledUnchangedEvenAtEqualSize()
+    {
+        var request = Request();
+        var modified = Source();
+        ((TextContent)modified[1].Contents[0]).Text = new string('x', 500);
+        var size = HistoryCompactionValidation.Measure(modified);
+        var result = new HistoryCompactionResult(HistoryCompactionStatus.Unchanged, request.SourceBinding, modified, size, size);
+
+        var error = Assert.Throws<HistoryCompactionValidationException>(() => HistoryCompactionValidation.ValidateResult(request, result));
+
+        Assert.Equal(HistoryCompactionFailureReason.InvalidUnchangedResult, error.Reason);
+    }
+
+    [Fact]
+    public void UnchangedPluginResultCannotBypassProviderBudget()
+    {
+        var request = Request(cap: 1);
+        var size = HistoryCompactionValidation.Measure(request.Messages);
+        var result = new HistoryCompactionResult(HistoryCompactionStatus.Unchanged, request.SourceBinding, request.Messages, size, size);
+
+        var error = Assert.Throws<HistoryCompactionValidationException>(() => HistoryCompactionValidation.ValidateResult(request, result));
+
+        Assert.Equal(HistoryCompactionFailureReason.BudgetExceeded, error.Reason);
+    }
+
+    [Fact]
+    public void CompletedPluginResultCannotBypassProviderSystemProtection()
+    {
+        var request = Request();
+        var candidate = Candidate();
+        candidate.RemoveAt(0);
+        var result = Completed(request, candidate);
+
+        var error = Assert.Throws<HistoryCompactionValidationException>(() => HistoryCompactionValidation.ValidateResult(request, result));
+
+        Assert.Equal(HistoryCompactionFailureReason.ProtectedMessagesChanged, error.Reason);
+    }
+
+    [Fact]
+    public void CompletedPluginResultCannotDropPendingApproval()
+    {
+        var source = Source();
+        source.Insert(2, new(ChatRole.Assistant,
+            [new ToolApprovalRequestContent("approval", new FunctionCallContent("pending", "lookup", null))]));
+        var request = Request(source);
+        var result = Completed(request, Candidate());
+
+        var error = Assert.Throws<HistoryCompactionValidationException>(() => HistoryCompactionValidation.ValidateResult(request, result));
+
+        Assert.Equal(HistoryCompactionFailureReason.UnsafeToolHistory, error.Reason);
+    }
+
+    [Fact]
+    public void CompletedPluginCannotInventToolExecution()
+    {
+        var request = Request();
+        var candidate = Candidate();
+        candidate.Add(new(ChatRole.Assistant, [new FunctionCallContent("invented", "lookup", null)]));
+        candidate.Add(new(ChatRole.Tool, [new FunctionResultContent("invented", "answer")]));
+        var result = Completed(request, candidate);
+
+        var error = Assert.Throws<HistoryCompactionValidationException>(() => HistoryCompactionValidation.ValidateResult(request, result));
+
+        Assert.Equal(HistoryCompactionFailureReason.UnsafeToolHistory, error.Reason);
+    }
+
+    [Fact]
+    public void CompletedPluginCannotRewriteConsumedApprovalDecision()
+    {
+        var source = ExchangeSource();
+        var call = new FunctionCallContent("first", "lookup", null) { InformationalOnly = true };
+        source.Insert(2, new(ChatRole.Assistant, [new ToolApprovalRequestContent("approval", call)]));
+        source.Insert(3, new(ChatRole.User, [new ToolApprovalResponseContent("approval", false, call)]));
+        var request = Request(source);
+        var candidate = source.Where((_, index) => index != 1).ToList();
+        candidate[2] = new(ChatRole.User, [new ToolApprovalResponseContent("approval", true, call)]);
+        var result = Completed(request, candidate);
+
+        var error = Assert.Throws<HistoryCompactionValidationException>(() => HistoryCompactionValidation.ValidateResult(request, result));
+
+        Assert.Equal(HistoryCompactionFailureReason.ProtectedMessagesChanged, error.Reason);
+    }
+
+    [Theory]
+    [InlineData("duplicate-call")]
+    [InlineData("duplicate-result")]
+    [InlineData("unrelated-result")]
+    [InlineData("missing-parallel-result")]
+    [InlineData("result-before-call")]
+    [InlineData("interrupted-exchange")]
+    [InlineData("wrong-call-role")]
+    [InlineData("wrong-result-role")]
+    [InlineData("call-in-result-message")]
+    [InlineData("uncorrelated-text-result")]
+    [InlineData("reused-call-id")]
+    public void MalformedFunctionExchangeCannotBeRewritten(string condition)
+    {
+        var source = MalformedExchange(condition);
+
+        var error = Assert.Throws<HistoryCompactionValidationException>(() =>
+            HistoryCompactionValidation.ValidateCandidate(source, Candidate(), 100_000));
+
+        Assert.Equal(HistoryCompactionFailureReason.UnsafeToolHistory, error.Reason);
+    }
+
+    [Fact]
+    public void ParallelResultsAreMatchedByIdRatherThanResultOrder()
+    {
+        var source = ExchangeSource();
+        source[2].Contents.Add(new FunctionCallContent("second", "lookup", null));
+        source[3].Contents.Insert(0, new FunctionResultContent("second", "second answer"));
+        var candidate = source.Where((_, index) => index != 1).ToArray();
+
+        var error = Record.Exception(() => HistoryCompactionValidation.ValidateCandidate(source, candidate, 100_000));
+
+        Assert.Null(error);
+    }
+
+    [Fact]
+    public void RetainedExchangesCannotBeReordered()
+    {
+        var source = ExchangeSource();
+        source.Insert(4, new(ChatRole.Assistant, [new FunctionCallContent("second", "lookup", null)]));
+        source.Insert(5, new(ChatRole.Tool, [new FunctionResultContent("second", "second answer")]));
+        IReadOnlyList<ChatMessage> candidate = [source[0], source[4], source[5], source[2], source[3], source[6], source[7]];
+
+        var error = Assert.Throws<HistoryCompactionValidationException>(() =>
+            HistoryCompactionValidation.ValidateCandidate(source, candidate, 100_000));
+
+        Assert.Equal(HistoryCompactionFailureReason.UnsafeToolHistory, error.Reason);
+    }
+
+    [Fact]
+    public void EntireCompletedExchangeMayBeRemovedWithoutAffectingLaterExchange()
+    {
+        var source = ExchangeSource();
+        source.Insert(4, new(ChatRole.Assistant, [new FunctionCallContent("second", "lookup", null)]));
+        source.Insert(5, new(ChatRole.Tool, [new FunctionResultContent("second", "second answer")]));
+        IReadOnlyList<ChatMessage> candidate = [source[0], source[4], source[5], source[6], source[7]];
+
+        var error = Record.Exception(() => HistoryCompactionValidation.ValidateCandidate(source, candidate, 100_000));
+
+        Assert.Null(error);
+    }
+
+    [Fact]
+    public void ReasoningAttachedToRetainedExchangeCannotBeDropped()
+    {
+        var source = ExchangeSource();
+        source.Insert(2, new(ChatRole.Assistant, [new TextReasoningContent("reasoning") { ProtectedData = "opaque" }]));
+        IReadOnlyList<ChatMessage> candidate = [source[0], source[3], source[4], source[5], source[6]];
+
+        var error = Assert.Throws<HistoryCompactionValidationException>(() =>
+            HistoryCompactionValidation.ValidateCandidate(source, candidate, 100_000));
+
+        Assert.Equal(HistoryCompactionFailureReason.UnsafeToolHistory, error.Reason);
+    }
+
+    [Fact]
+    public void ReasoningAroundRetainedExchangeCanBePreserved()
+    {
+        var source = ExchangeSource();
+        source.Insert(2, new(ChatRole.Assistant, [new TextReasoningContent("leading") { ProtectedData = "opaque leading" }]));
+        source.Insert(5, new(ChatRole.Assistant, [new TextReasoningContent("trailing") { ProtectedData = "opaque trailing" }]));
+        var candidate = source.Where((_, index) => index != 1).ToArray();
+
+        var error = Record.Exception(() => HistoryCompactionValidation.ValidateCandidate(source, candidate, 100_000));
+
+        Assert.Null(error);
+    }
+
+    [Theory]
+    [InlineData("[Summary unavailable]", false)]
+    [InlineData("[Summary]\n[Summary unavailable]", false)]
+    [InlineData("[Summary]\n   ", false)]
+    [InlineData("   ", true)]
+    public void InvalidSummaryCannotBypassProviderByDroppingMetadata(string text, bool flagged)
+    {
+        var request = Request();
+        var candidate = Candidate();
+        candidate.Insert(1, new(ChatRole.Assistant, text)
+        {
+            AdditionalProperties = new() { [CompactionMessageGroup.SummaryPropertyKey] = flagged }
+        });
+        var result = Completed(request, candidate);
+
+        var error = Assert.Throws<HistoryCompactionValidationException>(() => HistoryCompactionValidation.ValidateResult(request, result));
+
+        Assert.Equal(HistoryCompactionFailureReason.InvalidSummary, error.Reason);
+    }
+
+    [Fact]
+    public void ValidCandidateFromOversizedOriginalPassesIndependentValidation()
+    {
+        var candidate = Candidate();
+        var request = Request(cap: HistoryCompactionValidation.Measure(candidate));
+        var result = Completed(request, candidate);
+
+        var error = Record.Exception(() => HistoryCompactionValidation.ValidateResult(request, result));
+
+        Assert.Null(error);
+    }
+
+    [Fact]
+    public void ReorderedMetadataIsSemanticallyUnchanged()
+    {
+        var left = Source();
+        left[0].AdditionalProperties = new() { ["a"] = 1, ["b"] = 2 };
+        var right = Source();
+        right[0].AdditionalProperties = new() { ["b"] = 2, ["a"] = 1 };
+        var request = Request(left);
+        var size = HistoryCompactionValidation.Measure(left);
+        var result = new HistoryCompactionResult(HistoryCompactionStatus.Unchanged, request.SourceBinding, right, size, size);
+
+        var error = Record.Exception(() => HistoryCompactionValidation.ValidateResult(request, result));
+
+        Assert.Null(error);
+    }
+
+    [Fact]
+    public void EmptyCandidateIsRejectedByReusableValidation()
+    {
+        var error = Assert.Throws<HistoryCompactionValidationException>(() =>
+            HistoryCompactionValidation.ValidateCandidate(Source(), Array.Empty<ChatMessage>(), 100_000));
+
+        Assert.Equal(HistoryCompactionFailureReason.EmptyCandidate, error.Reason);
+    }
+
+    [Fact]
+    public void WhitespaceOnlyCandidateIsNotUsefulHistory()
+    {
+        var error = Assert.Throws<HistoryCompactionValidationException>(() =>
+            HistoryCompactionValidation.ValidateCandidate(Source(), new[] { new ChatMessage(ChatRole.Assistant, "  ") }, 100_000));
+
+        Assert.Equal(HistoryCompactionFailureReason.EmptyCandidate, error.Reason);
+    }
+
+    [Fact]
+    public void ValidationDoesNotMutateMessages()
+    {
+        var source = Source();
+        var candidate = Candidate();
+        var before = JsonSerializer.Serialize(new { source, candidate });
+
+        HistoryCompactionValidation.ValidateCandidate(source, candidate, 100_000);
+
+        Assert.Equal(before, JsonSerializer.Serialize(new { source, candidate }));
+    }
+
+    [Fact]
+    public void UndefinedFailureReasonIsRejected()
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new HistoryCompactionValidationException((HistoryCompactionFailureReason)999));
+    }
+
+    [Fact]
+    public void FailureMessageDoesNotContainOpaqueBinding()
+    {
+        var request = Request();
+        var result = Completed(request, Candidate(), binding: "different-private-binding");
+        var error = Assert.Throws<HistoryCompactionValidationException>(() => HistoryCompactionValidation.ValidateResult(request, result));
+
+        Assert.DoesNotContain("binding", error.Message, StringComparison.Ordinal);
+    }
+
+    private static List<ChatMessage> Source() =>
+    [
+        new(ChatRole.System, "instructions"),
+        new(ChatRole.User, new string('q', 500)),
+        new(ChatRole.Assistant, new string('a', 500)),
+        new(ChatRole.User, "latest question"),
+        new(ChatRole.Assistant, "latest answer")
+    ];
+
+    private static List<ChatMessage> Candidate() =>
+    [
+        new(ChatRole.System, "instructions"),
+        new(ChatRole.User, "latest question"),
+        new(ChatRole.Assistant, "latest answer")
+    ];
+
+    private static List<ChatMessage> ExchangeSource() =>
+    [
+        new(ChatRole.System, "instructions"),
+        new(ChatRole.User, new string('q', 500)),
+        new(ChatRole.Assistant, [new FunctionCallContent("first", "lookup", null)]),
+        new(ChatRole.Tool, [new FunctionResultContent("first", "answer")]),
+        new(ChatRole.User, "latest question"),
+        new(ChatRole.Assistant, "latest answer")
+    ];
+
+    private static List<ChatMessage> MalformedExchange(string condition)
+    {
+        var source = ExchangeSource();
+        switch (condition)
+        {
+            case "duplicate-call":
+                source[2].Contents.Add(new FunctionCallContent("first", "lookup", null));
+                break;
+            case "duplicate-result":
+                source[3].Contents.Add(new FunctionResultContent("first", "duplicate"));
+                break;
+            case "unrelated-result":
+                source[3].Contents.Add(new FunctionResultContent("unknown", "unrelated"));
+                break;
+            case "missing-parallel-result":
+                source[2].Contents.Add(new FunctionCallContent("second", "lookup", null));
+                break;
+            case "result-before-call":
+                (source[2], source[3]) = (source[3], source[2]);
+                break;
+            case "interrupted-exchange":
+                source.Insert(3, new(ChatRole.Assistant, "interruption"));
+                break;
+            case "wrong-call-role":
+                source[2].Role = ChatRole.User;
+                break;
+            case "wrong-result-role":
+                source[3].Role = ChatRole.Assistant;
+                break;
+            case "call-in-result-message":
+                source[3].Contents.Add(new FunctionCallContent("second", "lookup", null));
+                break;
+            case "uncorrelated-text-result":
+                source.Insert(4, new(ChatRole.Tool, "uncorrelated"));
+                break;
+            case "reused-call-id":
+                source.Insert(4, new(ChatRole.Assistant, [new FunctionCallContent("first", "lookup", null)]));
+                source.Insert(5, new(ChatRole.Tool, [new FunctionResultContent("first", "reused")]));
+                break;
+            default:
+                throw new ArgumentOutOfRangeException(nameof(condition));
+        }
+        return source;
+    }
+
+    private static HistoryCompactionRequest Request(IReadOnlyList<ChatMessage>? source = null, long cap = 100_000) =>
+        new("agent", "opaque-private-binding", source ?? Source(), new HistoryCompactionOptions
+        {
+            CompactorKey = "foreground-test",
+            MaxHistoryUtf8Bytes = cap
+        });
+
+    private static HistoryCompactionResult Completed(
+        HistoryCompactionRequest request, IReadOnlyList<ChatMessage> candidate, string? binding = null) =>
+        new(HistoryCompactionStatus.Completed, binding ?? request.SourceBinding, candidate,
+            HistoryCompactionValidation.Measure(request.Messages), HistoryCompactionValidation.Measure(candidate));
+}

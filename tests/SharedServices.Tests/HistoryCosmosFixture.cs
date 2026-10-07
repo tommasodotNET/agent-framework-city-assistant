@@ -71,6 +71,8 @@ internal sealed class HistoryCosmosFixture
     internal Dictionary<int, HttpStatusCode> BatchFailures { get; } = [];
     internal Action? BeforeQuery { get; set; }
     internal Func<Task>? BeforeExecuteAsync { get; set; }
+    // Failure injection after persistence models a lost SDK response, not a failed transaction.
+    internal Func<HistoryBatch, Task>? AfterCommitAsync { get; set; }
     internal IReadOnlyList<JsonElement> Documents => _documents.Values.Select(value => value.Document).ToArray();
     internal CosmosChatMessageRepository CreateRepository() => new(Container.Object);
 
@@ -89,6 +91,11 @@ internal sealed class HistoryCosmosFixture
             _documents[(address.ToPartitionKey().ToString(), document.GetProperty("id").GetString()!)] =
                 (document.Clone(), $"etag-{++_etag}");
         }
+    }
+
+    internal void ExpireMessage(HistoryStorageAddress address, string id)
+    {
+        lock (_gate) _documents.Remove((address.ToPartitionKey().ToString(), id));
     }
 
     private TransactionalBatch CreateBatch(PartitionKey partition)
@@ -143,6 +150,8 @@ internal sealed class HistoryCosmosFixture
                         }
                     }
                 }
+                if (status == HttpStatusCode.OK && AfterCommitAsync is { } afterCommit)
+                    await afterCommit(captured);
                 var response = new Mock<TransactionalBatchResponse>();
                 response.SetupGet(value => value.IsSuccessStatusCode).Returns(status == HttpStatusCode.OK);
                 response.SetupGet(value => value.StatusCode).Returns(status);

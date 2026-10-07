@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<root>
+  <resheader name="resmimetype"><value>text/microsoft-resx</value></resheader>
+  <resheader name="version"><value>2.0</value></resheader>
+  <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms</value></resheader>
+  <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms</value></resheader>
+  <data name="BudgetExceeded" xml:space="preserve"><value>The complete serialized history exceeds the configured byte budget. Do not use or persist it without a safe reduction.</value></data>
+  <data name="EmptyCandidate" xml:space="preserve"><value>History compaction produced an empty replacement.</value></data>
+  <data name="SourceBindingMismatch" xml:space="preserve"><value>The compaction result is not bound to the requested source history version.</value></data>
+  <data name="InvalidDiagnostics" xml:space="preserve"><value>Compaction byte diagnostics do not match the independently measured history.</value></data>
+  <data name="InvalidUnchangedResult" xml:space="preserve"><value>An unchanged compaction result contains modified history.</value></data>
+  <data name="NotReduced" xml:space="preserve"><value>The compaction candidate does not reduce the complete serialized history.</value></data>
+  <data name="ProtectedMessagesChanged" xml:space="preserve"><value>Compaction changed protected instructions or invented, reordered or tampered with retained tool approval records.</value></data>
+  <data name="UnsafeToolHistory" xml:space="preserve"><value>Compaction is deferred or rejected because tool calls or approvals are pending, unsupported, malformed or no longer atomic. Do not replay or approve tools automatically.</value></data>
+  <data name="InvalidSummary" xml:space="preserve"><value>Compaction produced a blank, invalid or unavailable summary. It cannot be persisted as useful history.</value></data>
+  <data name="NullMessage" xml:space="preserve"><value>History cannot contain null messages.</value></data>
+  <data name="NullContent" xml:space="preserve"><value>History messages cannot contain null content items.</value></data>
+  <data name="UnsupportedMode" xml:space="preserve"><value>The selected compactor does not support the requested mode. Background requires IBackgroundHistoryCompactor; the MAF adapter supports only Foreground.</value></data>
+  <data name="InvalidLifecycle" xml:space="preserve"><value>The compaction result or ticket is incompatible with the requested lifecycle.</value></data>
+  <data name="BackgroundLog" xml:space="preserve"><value>Background compaction deferred or discarded: {Reason}.</value></data>
+  <data name="OperationTimeout" xml:space="preserve"><value>The history compactor call exceeded its configured timeout.</value></data>
+  <data name="InvalidSerialization" xml:space="preserve"><value>The detached history could not be deserialized.</value></data>
+  <data name="OutcomeLog" xml:space="preserve"><value>Foreground compaction {Status}: {BeforeUtf8Bytes} to {AfterUtf8Bytes} history bytes in {DurationMs} ms; independently validated change {Changed}, strategy warning {StrategyWarning}.</value></data>
+  <data name="ValidationLog" xml:space="preserve"><value>Foreground compaction deferred or rejected: {Reason}.</value></data>
+  <data name="FailureLog" xml:space="preserve"><value>Foreground compaction failed or was cancelled: cancellation requested {CancellationRequested}, duration {DurationMs} ms. No replacement was returned.</value></data>
+  <data name="StrategyLog" xml:space="preserve"><value>MAF foreground compaction strategy diagnostic event {StrategyEventId}.</value></data>
+</root>

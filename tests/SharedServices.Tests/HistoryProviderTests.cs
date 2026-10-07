@@ -6,7 +6,6 @@ using Microsoft.Extensions.DependencyInjection;
 using Moq;
 
 #pragma warning disable MAAI001 // Exercise the public MAF 1.23 provider contexts.
-#pragma warning disable MEAI001 // Exercise the preserved opt-in reducer, not a new compaction algorithm.
 
 namespace SharedServices.Tests;
 
@@ -165,24 +164,63 @@ public class HistoryProviderTests
         Assert.Equal(1, await provider.GetMessageCountAsync(session));
     }
 
-    [Fact]
-    public async Task LatestMessageLimitIsPreservedByProvider()
+    [Theory]
+    [InlineData(null, 3)]
+    [InlineData(1, 1)]
+    [InlineData(2, 2)]
+    [InlineData(3, 3)]
+    [InlineData(10, 3)]
+    public async Task LatestMessageLimitPreservesOrderAndDoesNotMutateStorage(int? limit, int expectedCount)
     {
-        using var provider = new CosmosChatHistoryProvider(new HistoryCosmosFixture().CreateRepository()) { MaxMessagesToRetrieve = 1 };
+        var fixture = new HistoryCosmosFixture();
+        using var provider = new CosmosChatHistoryProvider(fixture.CreateRepository()) { MaxMessagesToRetrieve = limit };
         var session = NewSession();
-        await provider.InvokedAsync(new(Agent(), session, [new(ChatRole.User, "one")], [new(ChatRole.Assistant, "two")]));
+        await provider.InvokedAsync(new(Agent(), session,
+            [new(ChatRole.User, "one"), new(ChatRole.Assistant, "two")], [new(ChatRole.User, "three")]));
+        var reference = SessionPersistenceState.GetRequired(session).ActiveHistory;
+        var writes = fixture.Batches.Count;
 
         var messages = await provider.InvokingAsync(new(Agent(), session, []));
 
-        Assert.Equal("two", Assert.Single(messages).Text);
+        Assert.Equal(new[] { "one", "two", "three" }.TakeLast(expectedCount), messages.Select(message => message.Text));
+        Assert.Equal(3, await provider.GetMessageCountAsync(session));
+        Assert.Equal(reference, SessionPersistenceState.GetRequired(session).ActiveHistory);
+        Assert.Equal(writes, fixture.Batches.Count);
     }
 
     [Fact]
-    public void ReducerIsOffByDefault()
+    public void LatestMessageLimitIsOffByDefault()
     {
         using var provider = new CosmosChatHistoryProvider(new HistoryCosmosFixture().CreateRepository());
 
-        Assert.Null(provider.ChatReducer);
+        Assert.Null(provider.MaxMessagesToRetrieve);
+        Assert.Null(new CosmosChatHistoryProviderOptions().MaxMessagesToRetrieve);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    public void LatestMessageLimitMustBePositiveWhenSet(int limit)
+    {
+        using var provider = new CosmosChatHistoryProvider(new HistoryCosmosFixture().CreateRepository());
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => provider.MaxMessagesToRetrieve = limit);
+    }
+
+    [Fact]
+    public async Task LatestMessageLimitCanBeDisabledWithoutLosingHistory()
+    {
+        var fixture = new HistoryCosmosFixture();
+        using var provider = new CosmosChatHistoryProvider(fixture.CreateRepository()) { MaxMessagesToRetrieve = 1 };
+        var session = NewSession();
+        await provider.InvokedAsync(new(Agent(), session, [new(ChatRole.User, "one")], [new(ChatRole.Assistant, "two")]));
+        Assert.Equal("two", Assert.Single(await provider.InvokingAsync(new(Agent(), session, []))).Text);
+
+        provider.MaxMessagesToRetrieve = null;
+        var messages = await provider.InvokingAsync(new(Agent(), session, []));
+
+        Assert.Equal(new[] { "one", "two" }, messages.Select(message => message.Text));
+        Assert.Single(fixture.Batches);
     }
 
     [Theory]
@@ -233,67 +271,6 @@ public class HistoryProviderTests
         provider.Dispose();
 
         await Assert.ThrowsAsync<ObjectDisposedException>(() => provider.ClearMessagesAsync(NewSession()));
-    }
-
-    [Theory]
-    [InlineData(ReductionStoragePolicy.Clear)]
-    [InlineData(ReductionStoragePolicy.Archive)]
-    public async Task ExplicitLegacyReductionReplacesActiveHistoryUsingCas(ReductionStoragePolicy policy)
-    {
-        var fixture = new HistoryCosmosFixture();
-        using var provider = new CosmosChatHistoryProvider(fixture.CreateRepository())
-        {
-            ChatReducer = Reducer(), ReductionStoragePolicy = policy
-        };
-        var session = NewSession();
-        await provider.InvokedAsync(new(Agent(), session, [new(ChatRole.User, "one")], [new(ChatRole.Assistant, "two")]));
-
-        await provider.InvokingAsync(new(Agent(), session, []));
-
-        Assert.Equal(3, SessionPersistenceState.GetRequired(session).ActiveHistory.Revision);
-    }
-
-    [Fact]
-    public async Task ExplicitLegacyArchivePreservesUnexpiredOriginalsInSeparatePartition()
-    {
-        var fixture = new HistoryCosmosFixture();
-        using var provider = new CosmosChatHistoryProvider(fixture.CreateRepository())
-        {
-            ChatReducer = Reducer(), ReductionStoragePolicy = ReductionStoragePolicy.Archive
-        };
-        var session = NewSession();
-        var originalId = SessionPersistenceState.GetRequired(session).ActiveHistory.ConversationId;
-        await provider.InvokedAsync(new(Agent(), session, [new(ChatRole.User, "one")], [new(ChatRole.Assistant, "two")]));
-
-        await provider.InvokingAsync(new(Agent(), session, []));
-
-        Assert.Equal(2, fixture.Documents.Count(document => document.GetProperty("type").GetString() == "ChatMessage"
-            && document.GetProperty("conversationId").GetString() != originalId && document.GetProperty("ttl").GetInt32() == -1));
-    }
-
-    [Fact]
-    public async Task LimitedReadBypassesExplicitLegacyReducer()
-    {
-        var fixture = new HistoryCosmosFixture();
-        var reducer = new Mock<IChatReducer>(MockBehavior.Strict);
-        using var provider = new CosmosChatHistoryProvider(fixture.CreateRepository())
-        {
-            ChatReducer = reducer.Object, MaxMessagesToRetrieve = 1
-        };
-        var session = NewSession();
-        await provider.InvokedAsync(new(Agent(), session, [new(ChatRole.User, "one")], [new(ChatRole.Assistant, "two")]));
-
-        await provider.InvokingAsync(new(Agent(), session, []));
-
-        Assert.Equal(1, SessionPersistenceState.GetRequired(session).ActiveHistory.Revision);
-    }
-
-    private static IChatReducer Reducer()
-    {
-        var reducer = new Mock<IChatReducer>();
-        reducer.Setup(value => value.ReduceAsync(It.IsAny<IEnumerable<ChatMessage>>(), It.IsAny<CancellationToken>()))
-            .ReturnsAsync(new[] { new ChatMessage(ChatRole.System, "legacy summary") });
-        return reducer.Object;
     }
 
     private static AIAgent Agent() => new Mock<AIAgent>().Object;

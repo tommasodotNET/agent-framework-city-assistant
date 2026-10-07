@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using Microsoft.Agents.AI;
+using Microsoft.Extensions.AI;
 
 namespace SharedServices;
 
@@ -52,12 +53,18 @@ public sealed record SessionPersistenceContext
 {
     /// <summary>Restores ownership and the single active history reference.</summary>
     [JsonConstructor]
-    public SessionPersistenceContext(string agentId, HistoryReference activeHistory)
+    public SessionPersistenceContext(string agentId, HistoryReference activeHistory, PendingHistoryCompaction? pendingCompaction = null)
     {
         StorageSchema.ValidateKey(agentId, nameof(agentId));
         ArgumentNullException.ThrowIfNull(activeHistory);
+        if (pendingCompaction is { } pending
+            && (pending.Source.ScopeKey != activeHistory.ScopeKey
+                || pending.Source.ConversationId != activeHistory.ConversationId
+                || pending.Source.Revision > activeHistory.Revision))
+            throw new InvalidOperationException(StorageErrors.Get("IncompatibleContext"));
         AgentId = agentId;
         ActiveHistory = activeHistory;
+        PendingCompaction = pendingCompaction;
     }
 
     /// <summary>The stable agent owning this session and its history.</summary>
@@ -66,6 +73,19 @@ public sealed record SessionPersistenceContext
     /// <summary>The single source of truth for the active history, including its anchor scope.</summary>
     [JsonPropertyName("activeHistory")]
     public HistoryReference ActiveHistory { get; }
+
+    /// <summary>Optional background job; lives only in the serialized session, not the snapshot envelope.</summary>
+    [JsonPropertyName("pendingCompaction"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public PendingHistoryCompaction? PendingCompaction { get; }
+
+    // Live invocation state only. Serializing a session must not turn a prepared model view
+    // into a durable job or lose it from the original session while inference is in progress.
+    [JsonIgnore]
+    internal PreparedHistoryCompaction? PreparedCompaction { get; init; }
+
+    /// <summary>Updates the pending job without changing ownership or active history.</summary>
+    public SessionPersistenceContext WithPendingCompaction(PendingHistoryCompaction? pending) =>
+        new(AgentId, ActiveHistory, pending) { PreparedCompaction = PreparedCompaction };
 
     /// <summary>Initializes new state before history is used; the history id is generated server-side.</summary>
     public static SessionPersistenceContext Create(SessionStorageAddress initialAddress)
@@ -105,9 +125,16 @@ public sealed record SessionPersistenceContext
         {
             throw new ArgumentOutOfRangeException(nameof(history), StorageErrors.Get("InvalidRevision"));
         }
-        return new(AgentId, history);
+        var sameConversation = history.ConversationId == ActiveHistory.ConversationId;
+        return new(AgentId, history, sameConversation ? PendingCompaction : null)
+        {
+            PreparedCompaction = sameConversation ? PreparedCompaction : null
+        };
     }
 }
+
+internal sealed record PreparedHistoryCompaction(
+    HistoryReference Source, IReadOnlyList<ChatMessage> Messages, string OperationId, HistoryCompactionOptions Options);
 
 /// <summary>
 /// Explicit StateBag entry point shared by the session store and history provider. The provider
@@ -149,4 +176,11 @@ public static class SessionPersistenceState
         var context = GetRequired(session);
         s_state.SaveState(session, context.WithHistory(history));
     }
+
+    /// <summary>Records or clears a durable job; normal hosting remains responsible for the session checkpoint.</summary>
+    public static void SetPendingCompaction(AgentSession session, PendingHistoryCompaction? pending) =>
+        s_state.SaveState(session, GetRequired(session).WithPendingCompaction(pending));
+
+    internal static void SetPreparedCompaction(AgentSession session, PreparedHistoryCompaction? prepared) =>
+        s_state.SaveState(session, GetRequired(session) with { PreparedCompaction = prepared });
 }

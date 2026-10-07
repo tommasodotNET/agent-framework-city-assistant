@@ -1,5 +1,6 @@
 using System.Runtime.CompilerServices;
 using Microsoft.Agents.AI;
+using Microsoft.Agents.AI.Compaction;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
@@ -68,13 +69,120 @@ public sealed class HistoryApprovalTests
         Assert.False(Assert.IsType<FunctionCallContent>(approval.ToolCall).InformationalOnly);
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public async Task Deferred_compaction_preserves_native_tool_loops_and_autoapproval_without_replay(
+        bool streaming, bool approval)
+    {
+        var history = new HistoryCosmosFixture();
+        var sessions = new SessionCosmosSdkFixture();
+        var invocations = 0;
+        var tool = AIFunctionFactory.Create(() => ++invocations, "increment");
+        using var provider = new CosmosChatHistoryProvider(history.CreateRepository(),
+            compactor: new MafForegroundHistoryCompactor(new SlidingWindowCompactionStrategy(
+                CompactionTriggers.TurnsExceed(1), minimumPreservedTurns: 1)),
+            compactionOptions: new() { CompactorKey = "tool-test" });
+        var model = new SequenceChatClient();
+        var agent = ToolAgent(provider, model, tool, approval);
+        var store = new CosmosAgentSessionStore(sessions.Repository, NullLogger<CosmosAgentSessionStore>.Instance);
+        var key = new AgentSessionStoreKey("deferred-tools");
+        var session = await store.GetOrCreateSessionAsync(agent, key);
+        await provider.InvokedAsync(new(agent, session, SeedHistory(), []));
+        var source = SessionPersistenceState.GetRequired(session).ActiveHistory;
+        var observed = new List<(HistoryReference Reference, int Batches)>();
+        model.BeforeResponse = () => observed.Add((SessionPersistenceState.GetRequired(session).ActiveHistory, history.Batches.Count));
+
+        await RunToolAgentAsync(agent, session, streaming);
+
+        var target = SessionPersistenceState.GetRequired(session).ActiveHistory;
+        var stored = (await history.CreateRepository().ReadAsync(target)).Messages;
+        Assert.Equal((source, 1), observed[0]);
+        Assert.NotEqual(source.ConversationId, target.ConversationId);
+        Assert.Equal(1, stored.Count(message => message.Text == "run twice"));
+        Assert.Equal(new[] { "call-1", "call-2" },
+            stored.SelectMany(message => message.Contents).OfType<FunctionCallContent>().Select(call => call.CallId));
+        Assert.Equal(new[] { "call-1", "call-2" },
+            stored.SelectMany(message => message.Contents).OfType<FunctionResultContent>().Select(result => result.CallId));
+        Assert.Equal(new[] { "recent question", "recent answer" }, stored.Take(2).Select(message => message.Text));
+        Assert.Equal(6, history.Documents.Count(document => document.GetProperty("type").GetString() == "ChatMessage"
+            && document.GetProperty("conversationId").GetString() == source.ConversationId));
+
+        await store.SaveSessionAsync(agent, key, session);
+        var restored = await store.GetSessionAsync(agent, key);
+        Assert.NotNull(restored);
+        await agent.RunAsync("follow-up", restored);
+        Assert.Equal((2, 4), (invocations, model.Requests));
+    }
+
+    [Fact]
+    public async Task Pending_autoapproval_save_over_explicit_cap_fails_before_publication_or_tool_execution()
+    {
+        var history = new HistoryCosmosFixture();
+        var invocations = 0;
+        var tool = AIFunctionFactory.Create(() => ++invocations, "increment");
+        using var provider = new CosmosChatHistoryProvider(history.CreateRepository(),
+            compactor: new MafForegroundHistoryCompactor(new SlidingWindowCompactionStrategy(
+                CompactionTriggers.TurnsExceed(1), minimumPreservedTurns: 1)),
+            compactionOptions: new()
+            {
+                CompactorKey = "tool-test",
+                MaxHistoryUtf8Bytes = HistoryCompactionValidation.Measure(SeedHistory().TakeLast(2).ToArray())
+            });
+        var model = new SequenceChatClient();
+        var agent = ToolAgent(provider, model, tool, approval: true);
+        var session = await agent.CreateSessionAsync();
+        SessionPersistenceState.Initialize(session, SessionStorageAddress.Create(agent.Id, "budget"));
+        await provider.InvokedAsync(new(agent, session, SeedHistory(), []));
+        var source = SessionPersistenceState.GetRequired(session).ActiveHistory;
+
+        var error = await Assert.ThrowsAsync<HistoryCompactionValidationException>(() => agent.RunAsync("run twice", session));
+
+        Assert.Equal((HistoryCompactionFailureReason.BudgetExceeded, source, 1, 0),
+            (error.Reason, SessionPersistenceState.GetRequired(session).ActiveHistory, history.Batches.Count, invocations));
+    }
+
+    private static ChatMessage[] SeedHistory() =>
+        [new(ChatRole.User, "old question"), new(ChatRole.Assistant, "old answer"),
+         new(ChatRole.User, "middle question"), new(ChatRole.Assistant, "middle answer"),
+         new(ChatRole.User, "recent question"), new(ChatRole.Assistant, "recent answer")];
+
+    private static AIAgent ToolAgent(CosmosChatHistoryProvider provider, IChatClient model, AIFunction tool, bool approval)
+    {
+        var agent = new ChatClientAgent(model, new ChatClientAgentOptions
+        {
+            Id = "approval-agent", Name = "approval-agent", ChatHistoryProvider = provider,
+            ChatOptions = new() { Tools = [approval ? new ApprovalRequiredAIFunction(tool) : tool] }
+        });
+        return approval ? agent.AsBuilder().UseToolApproval(new ToolApprovalAgentOptions
+        {
+            AutoApprovalRules = [ToolApprovalAgent.AllToolsAutoApprovalRule]
+        }).Build() : agent;
+    }
+
+    private static async Task RunToolAgentAsync(AIAgent agent, AgentSession session, bool streaming)
+    {
+        if (streaming)
+        {
+            await foreach (var _ in agent.RunStreamingAsync("run twice", session)) { }
+        }
+        else
+        {
+            await agent.RunAsync("run twice", session);
+        }
+    }
+
     private sealed class SequenceChatClient : IChatClient
     {
         public int Requests { get; private set; }
+        internal Action? BeforeResponse { get; set; }
 
         public Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null,
             CancellationToken cancellationToken = default)
         {
+            BeforeResponse?.Invoke();
             Requests++;
             var contents = Requests <= 2
                 ? new List<AIContent> { new FunctionCallContent($"call-{Requests}", "increment") }

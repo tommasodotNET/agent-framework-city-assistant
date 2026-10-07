@@ -152,4 +152,55 @@ public class SessionPersistenceContextTests
 
         Assert.NotEqual(text.ActiveHistory.ConversationId, voice.ActiveHistory.ConversationId);
     }
+
+    [Fact]
+    public void PendingJobRoundTripsAndSurvivesAppendButNotRotation()
+    {
+        var session = new TestAgentSession();
+        var original = SessionPersistenceState.Initialize(session, SessionStorageAddress.Create("agent", "id"));
+        var pending = Pending(original.ActiveHistory);
+        SessionPersistenceState.SetPendingCompaction(session, pending);
+        SessionPersistenceState.SetHistory(session, original.ActiveHistory.WithRevision(1));
+        var restored = new TestAgentSession(AgentSessionStateBag.Deserialize(session.StateBag.Serialize()));
+
+        Assert.Equal(pending, SessionPersistenceState.GetRequired(restored).PendingCompaction);
+        Assert.Equal(1, restored.StateBag.Count);
+        SessionPersistenceState.SetHistory(restored, new(original.ActiveHistory.ScopeKey, "rotation", 1));
+        Assert.Null(SessionPersistenceState.GetRequired(restored).PendingCompaction);
+    }
+
+    [Fact]
+    public void PendingJobCannotReferToAnotherHistoryOrAFutureRevision()
+    {
+        var source = new HistoryReference(StorageScope.Create("id"), "original", 2);
+        Assert.Throws<InvalidOperationException>(() =>
+            new SessionPersistenceContext("agent", source, Pending(new(source.ScopeKey, "other", 2))));
+        Assert.Throws<InvalidOperationException>(() =>
+            new SessionPersistenceContext("agent", source, Pending(source.WithRevision(3))));
+    }
+
+    [Fact]
+    public void OldSnapshotsWithoutPendingFieldRemainValid()
+    {
+        var json = """{"agentId":"agent","activeHistory":{"scopeKey":"[\"anonymous\",\"id\"]","conversationId":"history","revision":1}}""";
+        var state = System.Text.Json.JsonSerializer.Deserialize<SessionPersistenceContext>(json);
+
+        Assert.NotNull(state);
+        Assert.Null(state.PendingCompaction);
+        Assert.DoesNotContain("pendingCompaction", System.Text.Json.JsonSerializer.Serialize(state), StringComparison.Ordinal);
+    }
+
+    [Theory]
+    [InlineData(-1, 1)]
+    [InlineData(0, 2)]
+    public void PendingJobRequiresASequenceBoundaryConsistentWithItsMessageCount(long lastSequence, int count)
+    {
+        var source = new HistoryReference(StorageScope.Create("id"), "history", 1);
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            new PendingHistoryCompaction("background", new("job", "binding"), source, count,
+                lastSequence, Guid.NewGuid().ToString("N")));
+    }
+
+    private static PendingHistoryCompaction Pending(HistoryReference source) =>
+        new("background", new("job", "source-binding"), source, 2, 1, Guid.NewGuid().ToString("N"));
 }
