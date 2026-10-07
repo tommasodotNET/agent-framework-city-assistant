@@ -65,18 +65,12 @@ builder.AddKeyedAzureCosmosContainer("conversations",
 // Register session and chat history providers using keyed containers
 builder.Services.AddCosmosAgentSessionStore("sessions", opt => { opt.TtlSeconds = 86400 * 7; });
 
-//Register the reducer for chat history
-#pragma warning disable MEAI001 // Type is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
-
-builder.Services.AddSingleton<IChatReducer, Microsoft.Extensions.AI.SummarizingChatReducer>(sp => new SummarizingChatReducer(sp.GetRequiredService<IChatClient>(), 5, 3));
-builder.Services.AddCosmosChatHistoryProvider("conversations", (sp, opt) =>
+var historyCompaction = builder.Services.AddHistoryCompactionProfile(builder.Configuration.GetSection("HistoryCompaction"));
+builder.Services.AddCosmosChatHistoryProvider("conversations", opt =>
 {
     opt.MessageTtlSeconds = 86400 * 7;
-    //opt.ChatReducer = sp.GetRequiredService<IChatReducer>();
-    //opt.ReductionStoragePolicy = ReductionStoragePolicy.Archive;
+    opt.Compaction = historyCompaction;
 });
-
-#pragma warning restore MEAI001 // Type is for evaluation purposes only and is subject to change or removal in future updates. Suppress this diagnostic to proceed.
 
 // Register the in-process class-based skills and their progressive-disclosure provider.
 builder.Services.AddSingleton<ActivitiesService>();

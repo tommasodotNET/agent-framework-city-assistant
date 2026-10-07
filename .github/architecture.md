@@ -183,7 +183,7 @@ options remain intact, and actual model parameters are preserved. Otherwise the
 Azure AI Inference adapter forwards that metadata as an unsupported model
 parameter.
 
-### Retention and future compaction
+### Retention and history compaction
 
 Both containers have `DefaultTimeToLive = -1`: per-document TTL is enabled without a container-wide expiration.
 
@@ -192,11 +192,206 @@ Both containers have `DefaultTimeToLive = -1`: per-document TTL is enabled witho
 | Class-skills and A2A orchestrators | 7 days | 7 days |
 | Restaurant, activities and accommodation agents | No expiration | 24 hours |
 | Voice | 7 days for resumable application state | 7 days |
-| Legacy archived messages | According to the owning session policy | No expiration |
 
 History revision metadata has **no expiration**. A later Responses alias can renew a snapshot's TTL without appending messages, so deriving metadata TTL from the last append would allow it to expire too early. Metadata therefore requires explicit maintenance when its histories are no longer needed. Expiring individual messages does not delete the session or reset its revision. Message TTL is measured from each message's last update, not from the last activity of the entire conversation.
 
-The reference can later select a new conversation within the same scope without changing the external session lookup id. **New compaction, automatic rotation and branch-specific histories are not implemented in this redesign.** Existing reducer policies are not enabled by default.
+Compaction is opt-in and disabled by default. The text history provider can apply
+an injected `IHistoryCompactor` while loading a complete history. The first
+implementation, `MafForegroundHistoryCompactor`, uses MAF's experimental
+`CompactionStrategy` APIs; it does not access Cosmos or mutate an agent session.
+
+| Responsibility | Owner |
+|---|---|
+| When and how to reduce messages | DI-configured MAF strategy, trigger and target |
+| Foreground/background selection | Nullable `CosmosChatHistoryProviderOptions.Compaction` options |
+| Execute reduction and return a candidate/ticket | Storage-independent `IHistoryCompactor`; background retrieval through `IBackgroundHistoryCompactor` |
+| Write and activate the candidate history | History provider and its Cosmos repository |
+| Save the complete agent session | Normal A2A/Responses hosting and session store |
+
+`Foreground` awaits and validates a candidate during Load, but publishes it only
+at Save. `Background` starts
+work during Load and retrieves a result once per Save. The provider implements
+both lifecycles; the supplied `MafForegroundHistoryCompactor` supports only
+foreground. A background registration must implement `IBackgroundHistoryCompactor`
+and advertise the mode. There is no production background worker or queue in
+this repository, and no process-local `Task` is treated as a durable job.
+
+Foreground Load keeps C1 and its expected revision active. A ready candidate, its
+exact source reference, operation id and immutable profile are held only in
+`SessionPersistenceContext.PreparedCompaction`, a transient `[JsonIgnore]` property
+beside `ActiveHistory` and durable `PendingCompaction`. There is no provider field,
+separate StateBag entry, ticket, global cache or external store for this value.
+Every new Load clears abandoned preparation **before** reading, including after a
+failed/cancelled model invocation and when compaction is disabled. Clear invalidates
+it too. Serialization excludes it from snapshots without clearing the live value;
+a restored session recalculates. The supported same-session contract is non-overlapping
+invocations, not concurrent use of one `AgentSession`.
+
+The simple `ProvideChatHistoryAsync`/`StoreChatHistoryAsync` hooks retain MAF's base
+merging, stamping, filtering and failure behavior. The model/output-filter view is a
+deep copy of the already detached canonical candidate. At Save, the provider joins
+that canonical prefix with the exact newly filtered request/response messages, checks
+the combined byte cap, and publishes against the captured source revision. It does
+not append to C1 first or append the same turn twice. Only successful publication
+updates `ActiveHistory` and clears preparation; hosting saves the snapshot normally.
+Profile/options changes cannot apply an old preparation. A model failure skips Store
+entirely and therefore leaves C1 untouched (apart from independent concurrent writers
+or TTL expiry).
+
+Tool/approval middleware can call Save with an incomplete new exchange. The foreground
+prefix has already passed full compaction validation, including complete tool groups;
+the appended suffix is copied unchanged, not reduced. This allows a native approval
+pause to be persisted without dropping its messages or retaining a foreground job.
+The combined history must still fit an explicit cap; failure is surfaced instead of
+silently exceeding it or appending to the unreduced source. A subsequent Load with
+pending tools uses the existing safe unchanged-history path. Background behavior
+remains different: the original history was used for inference, so an incomplete
+later exchange can defer application while appending normally.
+
+Background start returns `Unchanged` or `Pending(ticket)`, never inline `Completed`.
+The additive `pendingCompaction` field lives inside `SessionPersistenceContext`
+in the serialized session. It holds the profile key, opaque ticket/source binding,
+original history reference, original message count, inclusive last sequence and
+publication operation id, not a second copy of the messages. Existing snapshots
+without compaction state remain valid.
+
+Source tracking relies on the repository's append-only invariant: message payloads
+are immutable, and sequences increase without being reused, even after Clear.
+Counting live messages at or before the recorded sequence detects lost originals
+(TTL expiry or clear/recreate) while excluding later appends. There is no source
+content hash or support for out-of-band edits of message documents. The distinct
+candidate `SnapshotHash` remains part of rotation retry validation.
+
+At Save the provider **retrieves the job first**. `Pending` keeps the ticket and
+appends normally, with no history query for compaction. Only a ready result triggers
+a full read at the **expected current revision**, after retrieval, and a check of
+the original prefix. Expiry during retrieval is therefore observed by that read.
+`Completed` is independently validated against that original prefix; the candidate
+is then joined with the exact ordered stored suffix and the current invocation's
+filtered input/output. The merged history is validated, and C2 is published against
+the current source revision. As with foreground, this uses the live-message snapshot
+at read time, not an atomic transaction with the independent TTL sweeper. This Save
+does not also append to C1 or append the same turn twice to C2. Invalid results
+against the original prefix always discard the ticket, including malformed or
+invented tool exchanges. Incomplete tool or approval exchanges in the subsequent
+turns defer application of a valid result; the original messages are saved normally.
+No background result is applied solely because the worker finishes: a Save is needed.
+
+The provider exposes these steps as separate methods: foreground execution,
+background enqueue, result retrieval, merge/validation and publication. Deep copies
+are confined to plugin input/output, the foreground model view and new framework messages; already-private
+repository messages do not need repeated serialization just to form the merge.
+
+Profile changes, explicit clear, original-prefix expiry/replacement, or invalid/
+terminal job outcomes discard the pending ticket with diagnostics where applicable.
+Once cleared, the next Load asks the compactor to evaluate the current history
+again; it does not overwrite a valid job while that job remains pending.
+Transient retrieval failures keep it for another Save. Cancellation and storage/
+publication errors propagate; no fallback append follows an uncertain publication.
+Normal hosting checkpoints the ticket and history reference, preserving Responses
+alias and `store=false` behavior. Compactors own job retention and report missing/
+expired jobs explicitly; unsaved sessions can leave orphan jobs to expire.
+Retrieval must not consume a result, since retries and fresh replicas can request it.
+
+A profile identifies a keyed compactor and can optionally set a positive
+`MaxHistoryUtf8Bytes` cap. It is nullable and **disabled by default**: missing or
+null skips the application byte-cap checks for both fallback history and
+replacement candidates. Structural and source-version validation remain enabled,
+as do Cosmos document/batch limits. The metric is the UTF-8 JSON array of the
+complete `ChatMessage` history, including content and metadata. It is **not**
+an exact model token count or a complete prompt budget: leave capacity for
+instructions, tool schemas, the new input and model output. MAF triggers may
+separately use token estimates or a configured tokenizer.
+
+The provider must validate the returned candidate independently. Fewer messages
+are not required: replacing a large tool result with shorter content can change
+size without changing the message count. System messages, unresolved approvals
+and tool-call/result relationships must not be silently lost. Compaction never
+grants approval to a pending tool.
+
+The summarizer, if used, is a separate `IChatClient` dependency without the main
+agent's tools/history/compaction pipeline. Otherwise summarization could recurse
+or execute application tools. Strategies use per-invocation copies and indexes;
+no full compaction index is placed in `AgentSession.StateBag`.
+
+The installed MAF 1.23 exposes the ad-hoc `CompactionProvider.CompactAsync`
+entry point publicly, but its `CompactionMessageIndex.Create` factory is internal.
+The adapter uses only the public entry point, with MAF's default content token
+estimation (bytes / 4 per group); it does not use reflection/unsafe access or
+claim custom tokenizer support that this entry point does not expose.
+
+`IHistoryCompactor` is the only history-reduction path. There is no in-place
+clear-and-rewrite reduction or automatic permanent archive.
+When compaction is off, `MaxMessagesToRetrieve` can select the latest N messages
+in chronological order without modifying stored history or its revision. A
+positive value enables the window; null loads the complete history. It counts
+messages, not tokens or complete tool groups.
+Configuring compaction against a partial `MaxMessagesToRetrieve` window is an
+error: safe compaction requires the complete history.
+
+#### Publishing a compacted history
+
+The provider loads C1 at an expected revision and obtains a candidate. At Save it
+writes C2 completely (including the filtered new turn) under the same scope and
+conditionally publishes its replacement.
+C1's message documents and their existing TTLs stay unchanged; its control
+metadata prevents new writes after retirement. New C2 documents receive the
+provider's configured retention. The reference in the working session changes
+only after successful publication, and hosting persists the snapshot normally.
+
+This is optimistic concurrency, **not** automatic request queuing or merging of
+competing writers. Background merges only the proven prefix/suffix of the same
+linear working history.
+If another request advances C1 during compaction, the stale rotation cannot win.
+A request already running on retired C1 cannot silently redirect its output to
+C2. A conflicting turn is not automatically replayed.
+
+Rotation is not a transaction across partitions or containers. If publication
+completed but the session checkpoint did not, recovery may follow only the
+exact recorded source revision to the exact published, still-unadvanced target.
+It must not chase the newest history and thereby revive a stale Responses
+snapshot. Incomplete/unpublished candidates can require maintenance; permanent
+TTL does not make them disappear automatically.
+Because the initial target now includes the current turn, exact recovery after a
+lost checkpoint can return that completed turn, even if the client did not receive
+its successful completion. This preserves a single linear history, not immutable
+historical Responses snapshots. Recovery advances only the history reference: other
+skill/context/session state remains at the last successful checkpoint. It cannot identify a resent user
+request as a retry or deduplicate model/tool execution; application-level request
+idempotency is outside this provider's contract.
+
+The provider has no notification that hosting successfully checkpointed the
+session. It can therefore rotate once per successful Save, including more than once
+on the same working session across inner approval invocations. If a checkpoint
+is lost after C1 -> C2 -> C3, recovery from C1 fails explicitly: it follows one
+exact transition, not an arbitrary chain. Repeated, very aggressive test triggers
+are not a promise of automatic crash recovery through every intermediate history.
+
+Compactor failure during Load may use the original history only when its revision
+is still current and it satisfies the byte cap, if configured. With a null cap,
+there is no application byte-threshold guarantee; the MAF strategy still controls
+its own trigger and target. Cancellation,
+storage conflicts, Save validation/publication failures and an unusable context must be surfaced, not converted into
+a successful empty or truncated history.
+
+#### Scope and measurement
+
+This delivery covers **text only**. Voice keeps its existing load/replay/save
+flow and separate transcript. Live audio compaction, ACS adapters, independent
+Responses branches and a concrete durable background compactor/worker remain separate work.
+
+Measure history loading, local indexing, optional summarizer inference, target
+writes and publication separately. Foreground still awaits compaction before model
+inference, but target staging/publication is deferred until Save, after inference.
+Even a no-op requires local analysis. No latency SLO is
+implied by the configuration, and the compactor's success is distinct from a
+successful history publication and session checkpoint.
+
+Enable only after all writers understand the additive rotation metadata.
+Existing nonrotated schema-v2 histories remain readable and no partition-key
+migration is required. Disabling the feature later stops new compactions; a
+checkpoint still pointing to a purely rotated source can use the same exact
+recovery path even when the profile is disabled.
 
 Hierarchical keys allow a scope prefix to span partitions; they do not remove the 20-GB limit on each complete logical partition key or guarantee unlimited throughput for a hot scope.
 

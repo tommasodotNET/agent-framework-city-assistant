@@ -57,13 +57,12 @@ builder.AddKeyedAzureCosmosContainer("conversations",
 
 builder.Services.AddCosmosAgentSessionStore("sessions", opt => { opt.TtlSeconds = 86400 * 7; });
 
-#pragma warning disable MEAI001
-builder.Services.AddSingleton<IChatReducer, Microsoft.Extensions.AI.SummarizingChatReducer>(sp => new SummarizingChatReducer(sp.GetRequiredService<IChatClient>(), 5, 3));
-builder.Services.AddCosmosChatHistoryProvider("conversations", (sp, opt) =>
+var historyCompaction = builder.Services.AddHistoryCompactionProfile(builder.Configuration.GetSection("HistoryCompaction"));
+builder.Services.AddCosmosChatHistoryProvider("conversations", opt =>
 {
     opt.MessageTtlSeconds = 86400 * 7;
+    opt.Compaction = historyCompaction;
 });
-#pragma warning restore MEAI001
 
 var restaurantAgent = await ResolveA2AAgentAsync("restaurantagent");
 var activitiesAgent = await ResolveA2AAgentAsync("activitiesagent");

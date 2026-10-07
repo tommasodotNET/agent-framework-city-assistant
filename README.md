@@ -256,6 +256,145 @@ cd src/orchestrator-agent && dotnet build
 cd src/a2a-orchestrator-agent && dotnet build
 ```
 
+### Optional history compaction
+
+Text history compaction is **disabled by default**. Register an
+`IHistoryCompactor` through DI and select it in the history provider's options.
+The compactor produces a candidate or a durable ticket; the provider owns the Cosmos writes and
+the active-history reference.
+
+For example, this deliberately small demonstration profile retains recent turns:
+
+```csharp
+using Microsoft.Agents.AI.Compaction;
+using SharedServices;
+
+#pragma warning disable MAAI001 // Experimental MAF compaction APIs.
+builder.Services.AddHistoryCompactor("recent-turns", _ =>
+    new MafForegroundHistoryCompactor(
+        new SlidingWindowCompactionStrategy(CompactionTriggers.TurnsExceed(4))));
+#pragma warning restore MAAI001
+
+builder.Services.AddCosmosChatHistoryProvider("conversations", options =>
+{
+    options.Compaction = new HistoryCompactionOptions
+    {
+        Mode = HistoryCompactionMode.Foreground,
+        CompactorKey = "recent-turns"
+    };
+});
+```
+
+Extend the existing registration rather than registering the same history
+provider twice. Choose the trigger and algorithm for the application; these
+sample limits are not production recommendations.
+
+`MaxHistoryUtf8Bytes` is an **optional** application guard, defaulting to `null`.
+Omit it or set it to `null` to skip the byte-cap checks. Set a positive value
+only when the use case needs a maximum size for serialized history. It is not a
+token limit or a MAF trigger. Structural validation, concurrency checks and
+Cosmos document/batch limits still apply without it.
+
+Any supported MAF `CompactionStrategy`, including a pipeline or a summarization
+strategy with a separately injected chat client, can be supplied. The foreground
+adapter uses the public ad-hoc MAF API and its default token estimate; it does
+not depend on internal index factories or keep an index in the session snapshot.
+
+When compaction changes history, foreground Load prepares and validates a detached
+candidate without writing to Cosmos or changing the active history. Only a successful
+Save writes the candidate plus the exact filtered new turn to a new conversation
+and conditionally retires the original. Original messages retain their TTLs.
+The external continuation id is unchanged; the normal hosting layer saves the
+updated session. Concurrent writes fail explicitly. Recovery can follow only one
+exact published, unadvanced target; after a failed session checkpoint that target
+can include an unacknowledged turn, without restoring newer skill/session state or
+deduplicating a resent request. See the
+[compaction architecture](.github/architecture.md#retention-and-history-compaction)
+for publication, recovery and remaining cross-container consistency limitations.
+
+Without compaction, `MaxMessagesToRetrieve` optionally returns only the latest
+N messages in chronological order without deleting or rewriting persisted history.
+It must be positive when set; `null` loads the complete history. This is a
+message-count window, not a token budget or a guarantee of complete tool groups.
+Compaction is the only supported history-reduction mechanism.
+
+Do not combine compaction with `MaxMessagesToRetrieve`: the compactor must read
+the complete history. The provider supports both execution lifecycles:
+
+| Mode | At Load | At Save |
+|---|---|---|
+| `Foreground` | Await and validate `Unchanged`/`Completed`; use a detached candidate for inference, without publishing it | Publish candidate + exact filtered new messages once, or append normally when no candidate was prepared |
+| `Background` | Start work and retain `Pending(ticket)` in serialized session state; keep using the original history | Retrieve once; if ready, publish the compacted original prefix plus the exact stored suffix and current turn |
+
+Foreground preparation is a transient `[JsonIgnore]` value inside the existing
+`SessionPersistenceContext`, not a durable job or a second StateBag entry. A model
+failure/cancellation leaves the source history intact; the next Load clears abandoned
+preparation before reading and recalculates if needed. Serialization keeps preparation
+in the live session but excludes it from restored snapshots. Explicit Clear and changed
+profiles invalidate it. Calls on the same `AgentSession` must not overlap.
+
+The simple MAF provider hooks retain their default error handling and storage filters:
+history supplied to inference is not appended again. The output filter affects only the
+model view, not the canonical candidate. Context-provider state, tools and instructions
+are not copied into history; a contributed `ChatMessage` still follows MAF's normal
+request filtering policy. Intermediate tool/approval Saves may publish a prevalidated
+complete prefix plus an unchanged pending exchange. That suffix is never compacted;
+the combined history must fit an explicit byte cap or Save fails without publication.
+Target staging, source CAS publication and the normal hosted session checkpoint remain
+separate operations, not a single atomic write.
+
+**The supplied `MafForegroundHistoryCompactor` supports only `Foreground`.**
+To use `Background`, register an `IBackgroundHistoryCompactor` with durable
+enqueue and repeatable `GetResultAsync` retrieval. The provider lifecycle is
+implemented, but no production queue, worker or background MAF adapter is
+supplied. Selecting `Background` with the built-in compactor fails at composition.
+
+Pending jobs survive normal hosted session checkpoints and replica changes.
+Unfinished jobs keep their ticket and Save appends normally, without querying
+the history for compaction. Once the job is ready, the original prefix is checked
+using its last sequence and message count, relying on immutable messages and
+non-reused sequences rather than a source hash. Expired/cleared original
+messages or a changed profile invalidate the ticket with a warning;
+storage conflicts remain explicit errors. An invalid final job result clears
+the ticket, even if its error concerns tool history; the next Load can evaluate
+whether a new job is needed. Only a valid result waiting for unfinished tool/
+approval exchanges in later turns keeps its ticket for another Save. A background
+job is applied only on a later Save, not by an autonomous writer. The compactor
+owns job retention, including cleanup of orphan jobs after an unsaved session.
+Voice compaction remains out of scope.
+
+The five text hosts also accept an explicit `HistoryCompaction` configuration
+section. An absent/empty section or `Enabled=false` leaves the feature off:
+
+```json
+{
+  "HistoryCompaction": {
+    "Enabled": true,
+    "Mode": "Foreground",
+    "CompactorKey": "test-sliding-window",
+    "MaxTurns": 4
+  }
+}
+```
+
+These values can also be passed to an agent process as environment variables,
+for example `HistoryCompaction__Enabled=true`. The built-in
+`test-sliding-window` profile is model-free and requires `MaxTurns`; it is meant
+for controlled tests. `MaxTurns` follows MAF's turn grouping, not a guaranteed
+number of human requests: user-role approval responses can consume the window.
+In the skills UI, a two-turn window can remove the latest human prompt and its
+constraints while retaining tool output. Do not treat this test profile as a
+production policy for preserving recent user intent.
+Other keys must be supplied through a normal keyed DI
+registration. `Timeout` optionally accepts a positive TimeSpan for cooperative
+foreground execution or each background enqueue/retrieval call, not a job deadline;
+it does not abandon a plugin task that ignores cancellation.
+
+The existing hierarchical container schemas are retained. Rotation adds optional
+control metadata rather than changing partition keys. Update every writer before
+enabling compaction: an older application does not understand retired history.
+The feature does not migrate or delete existing histories.
+
 ### Persistence regression tests
 
 ```powershell
