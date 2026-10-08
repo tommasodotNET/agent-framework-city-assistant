@@ -761,15 +761,17 @@ public class CompactionProviderTests
     }
 
     [Fact]
-    public void BackgroundRequiresRetrievalInterfaceEvenWhenPluginAdvertisesSupport()
+    public void BackgroundProviderConstructionUsesOnlyAdvertisedModes()
     {
         var plugin = new Plugin((request, _) => Task.FromResult(Unchanged(request)))
         {
             SupportedModes = new HashSet<HistoryCompactionMode> { HistoryCompactionMode.Foreground, HistoryCompactionMode.Background }
         };
 
-        Assert.Throws<NotSupportedException>(() => Provider(new HistoryCosmosFixture(), plugin,
-            Options() with { Mode = HistoryCompactionMode.Background }));
+        using var provider = Provider(new HistoryCosmosFixture(), plugin,
+            Options() with { Mode = HistoryCompactionMode.Background });
+
+        Assert.NotNull(provider);
     }
 
     [Fact]

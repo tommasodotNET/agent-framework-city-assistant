@@ -46,8 +46,7 @@ public static class HistoryCompactionExtensions
 
     internal static void ValidateCapabilities(IHistoryCompactor compactor, HistoryCompactionOptions options)
     {
-        if (compactor.SupportedModes is null || !compactor.SupportedModes.Contains(options.Mode)
-            || (options.Mode == HistoryCompactionMode.Background && compactor is not IBackgroundHistoryCompactor))
+        if (compactor.SupportedModes is null || !compactor.SupportedModes.Contains(options.Mode))
         {
             throw new NotSupportedException(CompactionErrors.Get("UnsupportedMode"));
         }

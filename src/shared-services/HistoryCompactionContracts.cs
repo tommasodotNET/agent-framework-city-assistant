@@ -8,7 +8,7 @@ public enum HistoryCompactionMode
 {
     /// <summary>Await compaction before providing history to the model.</summary>
     Foreground,
-    /// <summary>Start durable work during Load and retrieve its result during Save.</summary>
+    /// <summary>Start work during Load and retrieve its result during Save.</summary>
     Background
 }
 
@@ -19,7 +19,7 @@ public enum HistoryCompactionStatus
     Unchanged,
     /// <summary>A candidate replacement; only the provider may persist and activate it.</summary>
     Completed,
-    /// <summary>Durable work is outstanding; no replacement history is available yet.</summary>
+    /// <summary>Accepted work is outstanding; no replacement history is available yet.</summary>
     Pending
 }
 
@@ -28,38 +28,38 @@ public enum HistoryCompactionStatus
 /// Implementations must reject unsupported modes, propagate failures and cancellation, and never write
 /// history or agent sessions. They must deep-copy mutable messages and contents before running a strategy.
 /// Per-invocation indexes and message state must not be shared between calls.
+/// SupportedModes alone declares capabilities; background implementations must override GetResultAsync.
+/// Background jobs may be local best-effort or durable remote work; ticket persistence does not make
+/// the job durable. Implementations own execution and retention, not the history provider.
 /// </remarks>
 public interface IHistoryCompactor
 {
     /// <summary>The execution modes this implementation supports.</summary>
     IReadOnlySet<HistoryCompactionMode> SupportedModes { get; }
 
-    /// <summary>Produces a detached result in foreground, or acknowledges durable work in background; never writes history.</summary>
+    /// <summary>Produces a detached result in foreground, or acknowledges accepted work in background; never writes history.</summary>
     Task<HistoryCompactionResult> CompactAsync(
         HistoryCompactionRequest request,
         CancellationToken cancellationToken = default);
-}
-
-/// <summary>A compactor with durable, repeatable result retrieval across requests and replicas.</summary>
-/// <remarks>
-/// In Background mode CompactAsync returns Unchanged or Pending, never an inline Completed result.
-/// Enqueue must be durable before returning a ticket. Retrieval is nonblocking: return Pending if
-/// work is not ready, or the final Unchanged/Completed result bound to the original source.
-/// Results must remain repeatable; reading does not acknowledge or consume them. Implementations
-/// own job retention and must report missing/expired/failed jobs explicitly, not as empty history.
-/// Use InvalidOperationException for a terminal job failure; HttpRequestException/TimeoutException
-/// represent transient retrieval failures. Providers log only the failure category, not its payload.
-/// Cancellation of a request cancels enqueue/retrieval, not an already accepted durable job.
-/// Neither this interface nor the provider schedules process-local background Tasks.
-/// </remarks>
-public interface IBackgroundHistoryCompactor : IHistoryCompactor
-{
     /// <summary>Retrieves one job outcome without waiting for unfinished compaction.</summary>
+    /// <remarks>
+    /// In Background mode CompactAsync returns Unchanged or Pending, never inline Completed.
+    /// Return Pending only for a known accepted job that is still running, or the final
+    /// Unchanged/Completed result bound to the original source. Reads must be repeatable while
+    /// retained: retrieval does not acknowledge or consume a result. Report missing, expired or
+    /// failed jobs (including local jobs lost on restart or another replica) with InvalidOperationException,
+    /// never fake Pending or empty history. HttpRequestException/TimeoutException denote transient
+    /// retrieval failures. Providers log the category and clear terminal tickets, but retain transient ones.
+    /// Request cancellation cancels enqueue/retrieval, not an already accepted job.
+    /// Foreground-only implementations can use this default, which explicitly rejects retrieval.
+    /// </remarks>
+    /// <exception cref="NotSupportedException">The compactor does not implement background retrieval.</exception>
     Task<HistoryCompactionResult> GetResultAsync(
-        HistoryCompactionTicket ticket, CancellationToken cancellationToken = default);
+        HistoryCompactionTicket ticket, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException(CompactionErrors.Get("RetrievalNotSupported"));
 }
 
-/// <summary>Opaque durable job identity bound to the original provider request.</summary>
+/// <summary>Opaque accepted job identity bound to the original provider request.</summary>
 public sealed record HistoryCompactionTicket
 {
     /// <summary>Creates a ticket; neither value should contain credentials or be logged.</summary>
@@ -71,7 +71,7 @@ public sealed record HistoryCompactionTicket
         SourceBinding = sourceBinding;
     }
 
-    /// <summary>The backend's opaque correlation id, usable by another instance of the same profile.</summary>
+    /// <summary>The backend's opaque correlation id; availability across instances depends on the backend.</summary>
     [JsonPropertyName("jobId")]
     public string JobId { get; }
     /// <summary>The exact opaque source binding received when the job was started.</summary>

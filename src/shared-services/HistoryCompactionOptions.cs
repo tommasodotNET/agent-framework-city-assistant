@@ -24,7 +24,7 @@ public sealed record HistoryCompactionOptions
 
     /// <summary>
     /// An optional timeout per foreground operation or background enqueue/retrieval call. This is
-    /// not a durable job deadline. Calls are cooperatively cancelled and awaited; null imposes no timeout.
+    /// not a background job deadline. Calls are cooperatively cancelled and awaited; null imposes no timeout.
     /// </summary>
     public TimeSpan? Timeout { get; init; }
 

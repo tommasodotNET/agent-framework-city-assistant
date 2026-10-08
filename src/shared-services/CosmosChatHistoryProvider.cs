@@ -382,7 +382,7 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
     private async Task<HistoryCompactionResult?> TryGetBackgroundResultAsync(
         AgentSession session, HistoryCompactionTicket ticket, CancellationToken cancellationToken)
     {
-        var compactor = _compactor as IBackgroundHistoryCompactor ?? throw new InvalidOperationException();
+        var compactor = _compactor ?? throw new InvalidOperationException();
         try
         {
             var result = await ExecuteCompactorAsync(

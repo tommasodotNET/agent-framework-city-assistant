@@ -204,7 +204,7 @@ implementation, `MafForegroundHistoryCompactor`, uses MAF's experimental
 |---|---|
 | When and how to reduce messages | DI-configured MAF strategy, trigger and target |
 | Foreground/background selection | Nullable `CosmosChatHistoryProviderOptions.Compaction` options |
-| Execute reduction and return a candidate/ticket | Storage-independent `IHistoryCompactor`; background retrieval through `IBackgroundHistoryCompactor` |
+| Execute reduction and return a candidate/ticket or retrieve its result | Storage-independent `IHistoryCompactor` |
 | Write and activate the candidate history | History provider and its Cosmos repository |
 | Save the complete agent session | Normal A2A/Responses hosting and session store |
 
@@ -212,14 +212,17 @@ implementation, `MafForegroundHistoryCompactor`, uses MAF's experimental
 at Save. `Background` starts
 work during Load and retrieves a result once per Save. The provider implements
 both lifecycles; the supplied `MafForegroundHistoryCompactor` supports only
-foreground. A background registration must implement `IBackgroundHistoryCompactor`
-and advertise the mode. There is no production background worker or queue in
-this repository, and no process-local `Task` is treated as a durable job.
+foreground. A background registration advertises the mode in `SupportedModes`
+and overrides `IHistoryCompactor.GetResultAsync`. This single contract has a default
+retrieval implementation throwing `NotSupportedException` for foreground-only engines;
+composition validates capabilities, not runtime subtypes. Jobs may be local best-effort
+or durable remote work. There is no background executor or queue in this repository,
+and persisting a ticket does not make a local job durable or available on another replica.
 
 Foreground Load keeps C1 and its expected revision active. A ready candidate, its
 exact source reference, operation id and immutable profile are held only in
 `SessionPersistenceContext.PreparedCompaction`, a transient `[JsonIgnore]` property
-beside `ActiveHistory` and durable `PendingCompaction`. There is no provider field,
+beside `ActiveHistory` and serialized `PendingCompaction`. There is no provider field,
 separate StateBag entry, ticket, global cache or external store for this value.
 Every new Load clears abandoned preparation **before** reading, including after a
 failed/cancelled model invocation and when compaction is disabled. Clear invalidates
@@ -286,12 +289,15 @@ Profile changes, explicit clear, original-prefix expiry/replacement, or invalid/
 terminal job outcomes discard the pending ticket with diagnostics where applicable.
 Once cleared, the next Load asks the compactor to evaluate the current history
 again; it does not overwrite a valid job while that job remains pending.
-Transient retrieval failures keep it for another Save. Cancellation and storage/
+Terminal `InvalidOperationException` clears the ticket; transient
+`HttpRequestException`/`TimeoutException` keeps it for another Save. Cancellation and storage/
 publication errors propagate; no fallback append follows an uncertain publication.
 Normal hosting checkpoints the ticket and history reference, preserving Responses
-alias and `store=false` behavior. Compactors own job retention and report missing/
-expired jobs explicitly; unsaved sessions can leave orphan jobs to expire.
-Retrieval must not consume a result, since retries and fresh replicas can request it.
+alias and `store=false` behavior. Compactors own job retention and report missing,
+expired or failed jobs explicitly (including lost local jobs), never fake `Pending`
+or empty history. Unsaved sessions can leave orphan jobs to expire.
+Accepted-job results support repeatable reads while retained; retrieval must not consume
+a result, since retries and fresh replicas can request it.
 
 A profile identifies a keyed compactor and can optionally set a positive
 `MaxHistoryUtf8Bytes` cap. It is nullable and **disabled by default**: missing or
@@ -314,11 +320,39 @@ agent's tools/history/compaction pipeline. Otherwise summarization could recurse
 or execute application tools. Strategies use per-invocation copies and indexes;
 no full compaction index is placed in `AgentSession.StateBag`.
 
+All five text hosts accept a built-in opt-in `summary` profile via
+`AddHistoryCompactionProfile`. It requires an explicit `HistoryCompaction:Model`
+deployment, positive `TriggerTokens` and positive `MinimumPreservedGroups`, and rejects
+`Background`. No default activation, implicit model reuse or fixed threshold is supplied.
+Each host provides a lazy factory that calls `AsIChatClient(model)` on the already
+registered Azure Inference `ChatCompletionsClient`, reusing the `foundry`
+endpoint/credentials but not the agent's wrapped `IChatClient`. The separate adapter
+is DI-owned and created only when the enabled compactor is resolved. The shared
+profile constructs the public MAF `SummarizationCompactionStrategy` and wraps it
+in the existing `MafForegroundHistoryCompactor`, retaining all provider validation
+and deferred publication behavior. MAF's default summarization prompt is used.
+Summary output is trusted persisted assistant content, so deployment trust and
+workload-specific recall testing are essential; no semantic-fidelity guarantee is implied.
+
 The installed MAF 1.23 exposes the ad-hoc `CompactionProvider.CompactAsync`
 entry point publicly, but its `CompactionMessageIndex.Create` factory is internal.
 The adapter uses only the public entry point, with MAF's default content token
 estimation (bytes / 4 per group); it does not use reflection/unsafe access or
 claim custom tokenizer support that this entry point does not expose.
+The summary trigger uses `CompactionTriggers.TokensExceed` on `IncludedTokenCount`;
+this estimated history-only count is not the full prompt or a model-window cap.
+Debug logs in `SharedServices.MafForegroundHistoryCompactor` expose
+`EstimatedHistoryTokens` and `TriggerTokens`, not content. Preserved groups are
+MAF non-system atomic groups, not human turns, and form a hard floor even above
+the threshold. Both the threshold and preservation count must be workload-calibrated.
+Optional `HistoryCompaction:TargetTokens` must be positive and below `TriggerTokens`.
+When configured, the profile passes MAF's native target predicate
+`index.IncludedTokenCount <= targetTokens`; omitted/null retains the native
+inverse-trigger default. MAF evaluates the target while excluding older groups,
+before adding the generated summary, and cannot cross the preserved-group floor.
+The final history can therefore exceed the target even in estimated tokens.
+This is an estimated retained-history target, not a guaranteed prompt/window cap
+or an additional compaction engine.
 
 `IHistoryCompactor` is the only history-reduction path. There is no in-place
 clear-and-rewrite reduction or automatic permanent archive.

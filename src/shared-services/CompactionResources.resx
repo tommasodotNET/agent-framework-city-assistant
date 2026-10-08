@@ -15,7 +15,14 @@
   <data name="InvalidSummary" xml:space="preserve"><value>Compaction produced a blank, invalid or unavailable summary. It cannot be persisted as useful history.</value></data>
   <data name="NullMessage" xml:space="preserve"><value>History cannot contain null messages.</value></data>
   <data name="NullContent" xml:space="preserve"><value>History messages cannot contain null content items.</value></data>
-  <data name="UnsupportedMode" xml:space="preserve"><value>The selected compactor does not support the requested mode. Background requires IBackgroundHistoryCompactor; the MAF adapter supports only Foreground.</value></data>
+  <data name="UnsupportedMode" xml:space="preserve"><value>The selected compactor does not advertise the requested mode in SupportedModes. The MAF adapter supports only Foreground.</value></data>
+  <data name="RetrievalNotSupported" xml:space="preserve"><value>This history compactor does not implement background result retrieval. Foreground-only compactors cannot retrieve job results.</value></data>
+  <data name="SummaryModelRequired" xml:space="preserve"><value>The summary profile requires an explicit HistoryCompaction:Model deployment name; it does not reuse AI:ChatModel.</value></data>
+  <data name="SummaryTriggerRequired" xml:space="preserve"><value>The summary profile requires a positive HistoryCompaction:TriggerTokens estimate threshold.</value></data>
+  <data name="SummaryTargetInvalid" xml:space="preserve"><value>HistoryCompaction:TargetTokens must be positive and less than HistoryCompaction:TriggerTokens when specified.</value></data>
+  <data name="SummaryGroupsRequired" xml:space="preserve"><value>The summary profile requires a positive HistoryCompaction:MinimumPreservedGroups value.</value></data>
+  <data name="SummaryClientRequired" xml:space="preserve"><value>The summary profile requires a dedicated summarization chat client factory, separate from the agent's tools and history pipeline.</value></data>
+  <data name="SummaryTriggerLog" xml:space="preserve"><value>History summary trigger evaluated: {EstimatedHistoryTokens} estimated history tokens; configured threshold {TriggerTokens}. This estimate is not a full-prompt or model-window budget.</value></data>
   <data name="InvalidLifecycle" xml:space="preserve"><value>The compaction result or ticket is incompatible with the requested lifecycle.</value></data>
   <data name="BackgroundLog" xml:space="preserve"><value>Background compaction deferred or discarded: {Reason}.</value></data>
   <data name="OperationTimeout" xml:space="preserve"><value>The history compactor call exceeded its configured timeout.</value></data>

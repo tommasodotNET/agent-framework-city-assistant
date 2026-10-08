@@ -1,5 +1,6 @@
 using A2A;
 using A2A.AspNetCore;
+using Azure.AI.Inference;
 using Azure.Identity;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Hosting;
@@ -65,7 +66,9 @@ builder.AddKeyedAzureCosmosContainer("conversations",
 // Register session and chat history providers using keyed containers
 builder.Services.AddCosmosAgentSessionStore("sessions", opt => { opt.TtlSeconds = 86400 * 7; });
 
-var historyCompaction = builder.Services.AddHistoryCompactionProfile(builder.Configuration.GetSection("HistoryCompaction"));
+var historyCompaction = builder.Services.AddHistoryCompactionProfile(
+    builder.Configuration.GetSection("HistoryCompaction"),
+    static (sp, model) => sp.GetRequiredService<ChatCompletionsClient>().AsIChatClient(model));
 builder.Services.AddCosmosChatHistoryProvider("conversations", opt =>
 {
     opt.MessageTtlSeconds = 86400 * 7;

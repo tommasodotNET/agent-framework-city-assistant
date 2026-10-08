@@ -564,7 +564,7 @@ public sealed class ProtocolPersistenceTests
         public bool Ready { get; set; }
     }
 
-    private sealed class ProtocolBackgroundCompactor(ProtocolBackgroundJobs jobs) : IBackgroundHistoryCompactor
+    private sealed class ProtocolBackgroundCompactor(ProtocolBackgroundJobs jobs) : IHistoryCompactor
     {
         public IReadOnlySet<HistoryCompactionMode> SupportedModes { get; } =
             new HashSet<HistoryCompactionMode> { HistoryCompactionMode.Background };
@@ -581,10 +581,12 @@ public sealed class ProtocolPersistenceTests
         }
         public Task<HistoryCompactionResult> GetResultAsync(HistoryCompactionTicket ticket, CancellationToken cancellationToken = default)
         {
+            if (jobs.Request is not { } request || ticket != new HistoryCompactionTicket("protocol-job", request.SourceBinding))
+                throw new InvalidOperationException("The accepted job is no longer available.");
             ChatMessage[] summary = [new(ChatRole.User, "summary")];
             return Task.FromResult(jobs.Ready
                 ? new HistoryCompactionResult(HistoryCompactionStatus.Completed, ticket.SourceBinding, summary,
-                    HistoryCompactionValidation.Measure(jobs.Request!.Messages), HistoryCompactionValidation.Measure(summary))
+                    HistoryCompactionValidation.Measure(request.Messages), HistoryCompactionValidation.Measure(summary))
                 : HistoryCompactionResult.Pending(ticket));
         }
     }

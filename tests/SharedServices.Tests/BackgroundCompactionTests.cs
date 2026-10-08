@@ -165,6 +165,8 @@ public class BackgroundCompactionTests
     [InlineData("wrong-ticket")]
     [InlineData("invalid-diagnostics")]
     [InlineData("empty-job")]
+    [InlineData("expired-job")]
+    [InlineData("failed-job")]
     public async Task InvalidOrMissingJobIsDiscardedAndNewTurnIsStillSaved(string failure)
     {
         using var scenario = await SetupAsync();
@@ -230,12 +232,15 @@ public class BackgroundCompactionTests
         Assert.Single(scenario.Fixture.Batches);
     }
 
-    [Fact]
-    public async Task RetrievalFailureKeepsTicketForNextSaveAndDoesNotDropCurrentTurn()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RetrievalFailureKeepsTicketForNextSaveAndDoesNotDropCurrentTurn(bool timeout)
     {
         using var scenario = await SetupAsync();
         await LoadAsync(scenario.Provider, scenario.Session);
-        scenario.Backend.OnPoll = (_, _) => throw new HttpRequestException("sensitive");
+        scenario.Backend.OnPoll = (_, _) => throw (timeout
+            ? new TimeoutException("sensitive") : new HttpRequestException("sensitive"));
 
         await SaveAsync(scenario.Provider, scenario.Session, "current", "answer");
 
@@ -557,7 +562,7 @@ public class BackgroundCompactionTests
     }
 
     [Fact]
-    public void BackgroundConfigurationResolvesARealRetrievalCapableRegistration()
+    public void BackgroundConfigurationResolvesRetrievalThroughTheSingleContract()
     {
         var services = new ServiceCollection();
         var compactor = new TestCompactor(new Backend());
@@ -570,6 +575,35 @@ public class BackgroundCompactionTests
         using var provider = services.BuildServiceProvider();
 
         Assert.Same(compactor, provider.GetHistoryCompactor(options));
+    }
+
+    [Fact]
+    public async Task RetainedBackgroundResultCanBeReadRepeatedlyThroughTheSingleContract()
+    {
+        var backend = new Backend();
+        IHistoryCompactor compactor = new TestCompactor(backend);
+        var pending = await compactor.CompactAsync(new("agent", "binding", Original, Options()));
+        backend.Ready = true;
+
+        var first = await compactor.GetResultAsync(pending.Ticket!);
+        var second = await compactor.GetResultAsync(pending.Ticket!);
+
+        Assert.Equal(JsonSerializer.Serialize(first), JsonSerializer.Serialize(second));
+    }
+
+    [Fact]
+    public async Task LostLocalJobAfterSessionRestoreIsTerminalRatherThanPermanentlyPending()
+    {
+        using var scenario = await SetupAsync();
+        await LoadAsync(scenario.Provider, scenario.Session);
+        var restored = new TestAgentSession(AgentSessionStateBag.Deserialize(scenario.Session.StateBag.Serialize()));
+        var restartedBackend = new Backend();
+        using var provider = new CosmosChatHistoryProvider(scenario.Fixture.CreateRepository(),
+            compactor: new TestCompactor(restartedBackend), compactionOptions: Options());
+
+        await SaveAsync(provider, restored, "current", "answer");
+
+        Assert.Null(State(restored).PendingCompaction);
     }
 
     private static readonly ChatMessage[] Original =
@@ -629,7 +663,7 @@ public class BackgroundCompactionTests
         public Func<HistoryCompactionRequest, CancellationToken, Task<HistoryCompactionResult>>? OnStart { get; set; }
         public Func<HistoryCompactionTicket, CancellationToken, Task<HistoryCompactionResult>>? OnPoll { get; set; }
     }
-    private sealed class TestCompactor(Backend backend) : IBackgroundHistoryCompactor
+    private sealed class TestCompactor(Backend backend) : IHistoryCompactor
     {
         public IReadOnlySet<HistoryCompactionMode> SupportedModes { get; } =
             new HashSet<HistoryCompactionMode> { HistoryCompactionMode.Foreground, HistoryCompactionMode.Background };
@@ -643,8 +677,11 @@ public class BackgroundCompactionTests
         public Task<HistoryCompactionResult> GetResultAsync(HistoryCompactionTicket ticket, CancellationToken cancellationToken = default)
         {
             backend.Polls++;
-            return backend.OnPoll?.Invoke(ticket, cancellationToken)
-                ?? Task.FromResult(backend.Ready ? Completed(backend.Request!) : HistoryCompactionResult.Pending(ticket));
+            if (backend.OnPoll is not null)
+                return backend.OnPoll(ticket, cancellationToken);
+            if (backend.Request is not { } request || ticket != new HistoryCompactionTicket("job", request.SourceBinding))
+                throw new InvalidOperationException("The accepted job is no longer available.");
+            return Task.FromResult(backend.Ready ? Completed(request) : HistoryCompactionResult.Pending(ticket));
         }
     }
     private sealed class TestLogger : ILogger<CosmosChatHistoryProvider>

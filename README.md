@@ -260,7 +260,7 @@ cd src/a2a-orchestrator-agent && dotnet build
 
 Text history compaction is **disabled by default**. Register an
 `IHistoryCompactor` through DI and select it in the history provider's options.
-The compactor produces a candidate or a durable ticket; the provider owns the Cosmos writes and
+The compactor produces a candidate or an accepted-job ticket; the provider owns the Cosmos writes and
 the active-history reference.
 
 For example, this deliberately small demonstration profile retains recent turns:
@@ -344,12 +344,20 @@ Target staging, source CAS publication and the normal hosted session checkpoint 
 separate operations, not a single atomic write.
 
 **The supplied `MafForegroundHistoryCompactor` supports only `Foreground`.**
-To use `Background`, register an `IBackgroundHistoryCompactor` with durable
-enqueue and repeatable `GetResultAsync` retrieval. The provider lifecycle is
-implemented, but no production queue, worker or background MAF adapter is
-supplied. Selecting `Background` with the built-in compactor fails at composition.
+To use `Background`, register an `IHistoryCompactor` advertising that mode in
+`SupportedModes` and implementing `GetResultAsync`. There is only one DI contract;
+capability validation uses `SupportedModes`, not a runtime subtype. Foreground-only
+implementations inherit a default retrieval method that throws `NotSupportedException`.
+The provider lifecycle is implemented, but no queue, worker or background MAF adapter
+is supplied. Selecting `Background` with either built-in profile fails at composition.
 
-Pending jobs survive normal hosted session checkpoints and replica changes.
+Jobs may be local best-effort or durable remote work; the compactor owns that choice.
+Pending **tickets** survive normal hosted session checkpoints; a serialized ticket
+does not make the underlying job survive a restart or become available on another replica.
+Accepted-job results must support repeatable, non-consuming reads while retained.
+Missing, expired or failed jobs must throw an explicit terminal `InvalidOperationException`,
+which is logged by category and clears the ticket; never return fake `Pending` for
+lost work. Transient `HttpRequestException`/`TimeoutException` keeps the ticket.
 Unfinished jobs keep their ticket and Save appends normally, without querying
 the history for compaction. Once the job is ready, the original prefix is checked
 using its last sequence and message count, relying on immutable messages and
@@ -385,8 +393,68 @@ number of human requests: user-role approval responses can consume the window.
 In the skills UI, a two-turn window can remove the latest human prompt and its
 constraints while retaining tool output. Do not treat this test profile as a
 production policy for preserving recent user intent.
-Other keys must be supplied through a normal keyed DI
-registration. `Timeout` optionally accepts a positive TimeSpan for cooperative
+For real LLM summarization, the same five text hosts support the opt-in `summary`
+profile using the public MAF `SummarizationCompactionStrategy` through
+`MafForegroundHistoryCompactor`:
+
+```json
+{
+  "HistoryCompaction": {
+    "Enabled": true,
+    "CompactorKey": "summary",
+    "Mode": "Foreground",
+    "Model": "gpt-5.4-mini",
+    "TriggerTokens": 24000,
+    "TargetTokens": 12000,
+    "MinimumPreservedGroups": 6,
+    "Timeout": "00:01:30",
+    "MaxHistoryUtf8Bytes": null
+  }
+}
+```
+
+These are explicit example/calibration values, not production defaults or a model-window
+limit. Measure the actual tool-heavy workload before selecting a threshold and preservation
+floor. Nothing is enabled in checked-in appsettings. `Model` (deployment name),
+positive `TriggerTokens`, and positive `MinimumPreservedGroups` are required; invalid
+configuration fails before inference. `Mode` defaults to `Foreground`, and omitting
+the timeout or byte cap leaves them disabled. Recent groups are MAF atomic message/tool
+groups, **not human turns**. The floor can prevent reduction even above the trigger;
+there is no guarantee the result fits a model context window.
+
+Optional `TargetTokens` must be positive and strictly less than `TriggerTokens`.
+It passes MAF's native target predicate `index.IncludedTokenCount <= TargetTokens`:
+once triggered, MAF selects older groups for summarization until the retained-history
+estimate reaches that target or the preserved-group floor prevents further reduction.
+Omitting it (or setting it to `null`) retains MAF's default inverse-trigger target.
+A lower target can leave more room before the next trigger, instead of summarizing
+only enough history to fall just below it. The target is evaluated **before the new
+summary is added**, so even estimated final history can exceed it; this is not a
+guaranteed exact budget, output-size cap, or a separate hysteresis mechanism.
+
+`TriggerTokens` compares MAF's **estimated included-history tokens** (default content
+bytes / 4 per group). It excludes instructions/tools added outside stored history,
+the new input and reserved output; it is not exact tokenizer usage or a full-prompt budget.
+Set `Logging:LogLevel:SharedServices.MafForegroundHistoryCompactor` to `Debug` to
+inspect the structured `EstimatedHistoryTokens` and `TriggerTokens` diagnostics.
+For offline calibration, a no-op public MAF strategy can observe
+`index.IncludedTokenCount` through its trigger when run via `CompactionProvider.CompactAsync`;
+no internal index factory is needed.
+
+Each host passes a lazy factory to `AddHistoryCompactionProfile` that creates a
+dedicated `ChatCompletionsClient.AsIChatClient(Model)` adapter from its existing
+Azure Inference client. It uses the same `foundry` endpoint/credential registration
+(`Aspire:Azure:AI:Inference` / `ConnectionStrings:foundry`, with the existing
+`DefaultAzureCredential` configuration), but **never** resolves the agent's wrapped
+`IChatClient` or falls back to `AI:ChatModel`. The adapter has no function-invoking,
+agent history, or compaction middleware. MAF receives old tool calls/results as history,
+not as executable tools; its default summary prompt preserves key facts, preferences
+and tool outcomes. Only use a trusted summarization deployment: summary content becomes
+persisted assistant history. DI owns the adapter; a missing/disabled profile creates
+no extra client. Summaries are lossy and require realistic recall testing.
+
+Other keys must be supplied through a normal keyed DI registration.
+`Timeout` optionally accepts a positive TimeSpan for cooperative
 foreground execution or each background enqueue/retrieval call, not a job deadline;
 it does not abandon a plugin task that ignores cancellation.
 

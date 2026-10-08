@@ -177,7 +177,7 @@ public static class SessionPersistenceState
         s_state.SaveState(session, context.WithHistory(history));
     }
 
-    /// <summary>Records or clears a durable job; normal hosting remains responsible for the session checkpoint.</summary>
+    /// <summary>Records or clears an accepted job ticket; normal hosting remains responsible for the session checkpoint.</summary>
     public static void SetPendingCompaction(AgentSession session, PendingHistoryCompaction? pending) =>
         s_state.SaveState(session, GetRequired(session).WithPendingCompaction(pending));
 

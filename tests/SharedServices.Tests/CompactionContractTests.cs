@@ -1,3 +1,6 @@
+#pragma warning disable MAAI001 // Exercise the default interface method on the foreground MAF adapter.
+
+using Microsoft.Agents.AI.Compaction;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Moq;
@@ -294,12 +297,37 @@ public class CompactionContractTests
     }
 
     [Fact]
-    public void BackgroundRequiresRetrievalCapabilityNotJustAnAdvertisedMode()
+    public void BackgroundResolutionUsesOnlyAdvertisedModesOnTheSingleContract()
     {
         var compactor = new Mock<IHistoryCompactor>();
         compactor.SetupGet(value => value.SupportedModes).Returns(new HashSet<HistoryCompactionMode> { HistoryCompactionMode.Background });
         var services = new ServiceCollection();
         services.AddHistoryCompactor("text", _ => compactor.Object);
+        using var provider = services.BuildServiceProvider();
+
+        Assert.Same(compactor.Object,
+            provider.GetHistoryCompactor(Profile() with { Mode = HistoryCompactionMode.Background }));
+    }
+
+    [Fact]
+    public async Task ForegroundCompactorDefaultRetrievalExplicitlyRejectsBackgroundJobs()
+    {
+        IHistoryCompactor compactor = new MafForegroundHistoryCompactor(
+            new SlidingWindowCompactionStrategy(CompactionTriggers.TurnsExceed(2)));
+
+        var exception = await Assert.ThrowsAsync<NotSupportedException>(() =>
+            compactor.GetResultAsync(new("job", "source")));
+
+        Assert.Equal("This history compactor does not implement background result retrieval. Foreground-only compactors cannot retrieve job results.",
+            exception.Message);
+    }
+
+    [Fact]
+    public void ForegroundOnlyCompactorRejectsBackgroundConfiguration()
+    {
+        var services = new ServiceCollection();
+        services.AddHistoryCompactor("text", _ => new MafForegroundHistoryCompactor(
+            new SlidingWindowCompactionStrategy(CompactionTriggers.TurnsExceed(2))));
         using var provider = services.BuildServiceProvider();
 
         Assert.Throws<NotSupportedException>(() =>

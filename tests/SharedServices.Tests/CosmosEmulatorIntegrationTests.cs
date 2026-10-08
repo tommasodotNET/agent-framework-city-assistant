@@ -280,7 +280,7 @@ public sealed class CosmosEmulatorIntegrationTests
     {
         await using var database = await EmulatorDatabase.CreateAsync();
         var repository = new CosmosChatMessageRepository(database.Conversations);
-        var compactor = new Mock<IBackgroundHistoryCompactor>();
+        var compactor = new Mock<IHistoryCompactor>();
         compactor.SetupGet(value => value.SupportedModes).Returns(new HashSet<HistoryCompactionMode> { HistoryCompactionMode.Background });
         HistoryCompactionRequest? job = null;
         var ready = false;
