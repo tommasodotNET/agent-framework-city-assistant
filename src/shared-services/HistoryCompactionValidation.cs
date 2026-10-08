@@ -104,14 +104,20 @@ public static class HistoryCompactionValidation
             Fail(HistoryCompactionFailureReason.SourceBindingMismatch);
         }
 
-        if (Measure(request.Messages) != result.BeforeUtf8Bytes || Measure(result.Messages) != result.AfterUtf8Bytes)
+        var sourceJson = Serialize(request.Messages);
+        if (sourceJson.LongLength != result.BeforeUtf8Bytes)
+        {
+            Fail(HistoryCompactionFailureReason.InvalidDiagnostics);
+        }
+        var resultJson = Serialize(result.Messages);
+        if (resultJson.LongLength != result.AfterUtf8Bytes)
         {
             Fail(HistoryCompactionFailureReason.InvalidDiagnostics);
         }
 
         if (result.Status == HistoryCompactionStatus.Unchanged)
         {
-            if (!Equivalent(request.Messages, result.Messages))
+            if (!Equivalent(sourceJson, resultJson))
             {
                 Fail(HistoryCompactionFailureReason.InvalidUnchangedResult);
             }
@@ -144,8 +150,11 @@ public static class HistoryCompactionValidation
         }
 
         ValidateFallback(candidate, maxHistoryUtf8Bytes);
-        ValidateSourceForCompaction(source);
-        if (Measure(candidate) >= Measure(source) || Equivalent(source, candidate))
+        var sourceTools = GetToolGroups(source);
+        ValidateProcessedApprovals(source, sourceTools);
+        var candidateJson = Serialize(candidate);
+        var sourceJson = Serialize(source);
+        if (candidateJson.LongLength >= sourceJson.LongLength || Equivalent(sourceJson, candidateJson))
         {
             Fail(HistoryCompactionFailureReason.NotReduced);
         }
@@ -158,7 +167,6 @@ public static class HistoryCompactionValidation
         }
 
         ValidateRetainedApprovals(source, candidate);
-        var sourceTools = GetToolGroups(source);
         var candidateTools = GetToolGroups(candidate);
         var sourcePosition = 0;
         foreach (var group in candidateTools)
@@ -204,10 +212,13 @@ public static class HistoryCompactionValidation
         }
     }
 
-    internal static bool Equivalent(IReadOnlyList<ChatMessage> left, IReadOnlyList<ChatMessage> right)
+    internal static bool Equivalent(IReadOnlyList<ChatMessage> left, IReadOnlyList<ChatMessage> right) =>
+        Equivalent(Serialize(left), Serialize(right));
+
+    private static bool Equivalent(byte[] left, byte[] right)
     {
-        using var leftJson = JsonDocument.Parse(Serialize(left));
-        using var rightJson = JsonDocument.Parse(Serialize(right));
+        using var leftJson = JsonDocument.Parse(left);
+        using var rightJson = JsonDocument.Parse(right);
         // JSON objects can have reordered properties after storage or a supported round-trip.
         return JsonElement.DeepEquals(leftJson.RootElement, rightJson.RootElement);
     }
@@ -396,7 +407,7 @@ public static class HistoryCompactionValidation
     // Persisted direct calls can have their earlier informational flag while the provider restores
     // consumed approval flags. Compare execution identity/metadata here; retained full groups and
     // retained approval messages separately require exact equality, including their original flags.
-    private static bool EquivalentCall(FunctionCallContent left, FunctionCallContent right) =>
+    internal static bool EquivalentCall(FunctionCallContent left, FunctionCallContent right) =>
         JsonElement.DeepEquals(
             JsonSerializer.SerializeToElement(new { left.CallId, left.Name, left.Arguments, left.Annotations, left.AdditionalProperties }),
             JsonSerializer.SerializeToElement(new { right.CallId, right.Name, right.Arguments, right.Annotations, right.AdditionalProperties }));

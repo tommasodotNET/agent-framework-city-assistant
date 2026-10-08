@@ -343,6 +343,14 @@ the combined history must fit an explicit byte cap or Save fails without publica
 Target staging, source CAS publication and the normal hosted session checkpoint remain
 separate operations, not a single atomic write.
 
+Each Load prepares one model-history view. Approval-only messages are omitted only
+when a matching, completed function call/result proves they are consumed. Pending,
+denied, mixed-content and ambiguous approval messages remain. Actual tool calls and
+results remain too; no source documents are deleted or rewritten. The compactor
+receives a detached copy of this same view, not a separately filtered transcript.
+Background tickets still count the original stored prefix, including its audit records.
+Completed background results are validated against the corresponding filtered prefix.
+
 **The supplied `MafForegroundHistoryCompactor` supports only `Foreground`.**
 To use `Background`, register an `IHistoryCompactor` advertising that mode in
 `SupportedModes` and implementing `GetResultAsync`. There is only one DI contract;
@@ -413,6 +421,16 @@ profile using the public MAF `SummarizationCompactionStrategy` through
 }
 ```
 
+The dedicated summary client retains MAF's system prompt and appends a final
+instruction to summarize the preceding transcript rather than answer its historical
+requests. That instruction exists only in the summarizer request, never in persisted
+conversation history. This improves task framing; it does not guarantee semantic
+fidelity, which still needs workload-specific evaluation.
+
+If an agent response finishes without any non-whitespace text, the chat UI reports
+`empty_response` instead of silently returning to idle. It does not retry the request:
+tools may already have executed. Empty intermediate streaming events remain valid.
+
 These are explicit example/calibration values, not production defaults or a model-window
 limit. Measure the actual tool-heavy workload before selecting a threshold and preservation
 floor. Nothing is enabled in checked-in appsettings. `Model` (deployment name),
@@ -448,8 +466,8 @@ Azure Inference client. It uses the same `foundry` endpoint/credential registrat
 `DefaultAzureCredential` configuration), but **never** resolves the agent's wrapped
 `IChatClient` or falls back to `AI:ChatModel`. The adapter has no function-invoking,
 agent history, or compaction middleware. MAF receives old tool calls/results as history,
-not as executable tools; its default summary prompt preserves key facts, preferences
-and tool outcomes. Only use a trusted summarization deployment: summary content becomes
+not as executable tools; the native system prompt and the final task instruction ask
+for key facts, preferences and tool outcomes to be preserved. Only use a trusted summarization deployment: summary content becomes
 persisted assistant history. DI owns the adapter; a missing/disabled profile creates
 no extra client. Summaries are lossy and require realistic recall testing.
 

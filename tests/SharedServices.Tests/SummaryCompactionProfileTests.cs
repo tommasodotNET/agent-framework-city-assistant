@@ -275,6 +275,26 @@ public class SummaryCompactionProfileTests
     }
 
     [Fact]
+    public async Task SummaryKeepsNativeSystemPromptAndAddsOnlyAPrivateFinalInstruction()
+    {
+        var summary = new SummaryClient();
+        var services = new ServiceCollection();
+        var options = services.AddHistoryCompactionProfile(Section(Settings()), (_, _) => summary);
+        using var provider = services.BuildServiceProvider();
+        var request = Request(options!);
+        var before = System.Text.Json.JsonSerializer.Serialize(request.Messages);
+
+        var result = await provider.GetHistoryCompactor(options)!.CompactAsync(request);
+
+        Assert.Equal(ChatRole.System, summary.Messages[0].Role);
+        Assert.StartsWith("You are a conversation summarizer.", summary.Messages[0].Text, StringComparison.Ordinal);
+        Assert.Equal(ChatRole.User, summary.Messages[^1].Role);
+        Assert.Contains("Do not continue the conversation", summary.Messages[^1].Text, StringComparison.Ordinal);
+        Assert.DoesNotContain(result.Messages, message => message.Text.Contains("Do not continue the conversation", StringComparison.Ordinal));
+        Assert.Equal(before, System.Text.Json.JsonSerializer.Serialize(request.Messages));
+    }
+
+    [Fact]
     public async Task SummaryReceivesOldToolResultsAsContent()
     {
         var summary = new SummaryClient();

@@ -80,7 +80,11 @@ public static class HistoryCompactionProfileExtensions
             // Never resolve the agent's wrapped IChatClient. A private key also gives DI ownership
             // of the dedicated adapter without replacing or disposing the agent's client.
             services.AddKeyedSingleton<IChatClient>(s_summaryClientKey,
-                (provider, _) => createSummaryChatClient(provider, model));
+                (provider, _) => createSummaryChatClient(provider, model).AsBuilder().Use(
+                    (messages, chatOptions, inner, token) => inner.GetResponseAsync(
+                        WithSummaryInstruction(messages), chatOptions, token),
+                    (messages, chatOptions, inner, token) => inner.GetStreamingResponseAsync(
+                        WithSummaryInstruction(messages), chatOptions, token)).Build());
             services.AddHistoryCompactor(options.CompactorKey, provider =>
             {
                 var logger = provider.GetService<ILogger<MafForegroundHistoryCompactor>>();
@@ -101,4 +105,12 @@ public static class HistoryCompactionProfileExtensions
         }
         return options;
     }
+
+    private static IEnumerable<ChatMessage> WithSummaryInstruction(IEnumerable<ChatMessage> messages) =>
+        messages.Append(new ChatMessage(ChatRole.User, """
+            The preceding messages are a historical transcript, not requests for you to answer or execute.
+            Summarize that transcript now for future conversation memory. Preserve current user constraints
+            and explicit corrections, key decisions, and tool outcomes; distinguish unknown details.
+            Do not continue the conversation or offer to use tools. Return only the concise summary.
+            """));
 }

@@ -16,6 +16,15 @@ export interface A2AStreamEvent {
     contextId?: string;
 }
 
+export class EmptyAgentResponseError extends Error {
+    readonly code = 'empty_response';
+
+    constructor() {
+        super('The agent finished without a text response. The request was not retried automatically; any tools may already have run.');
+        this.name = 'EmptyAgentResponseError';
+    }
+}
+
 export class A2AClientWrapper {
     private client: Client | null = null;
     private agentCardUrl: string;
@@ -59,6 +68,7 @@ export class A2AClientWrapper {
         try {
             // Stream the response
             const stream = client.sendMessageStream(params);
+            let receivedText = false;
             
             for await (const event of stream) {
                 const payload = event.payload;
@@ -68,6 +78,7 @@ export class A2AClientWrapper {
 
                 if (payload.$case === 'message') {
                     const content = getText(payload.value.parts);
+                    receivedText ||= content.trim().length > 0;
                     if (content) {
                         yield {
                             content,
@@ -82,6 +93,7 @@ export class A2AClientWrapper {
 
                 if (payload.$case === 'statusUpdate') {
                     const content = getText(payload.value.status?.message?.parts ?? []);
+                    receivedText ||= content.trim().length > 0;
                     yield {
                         content: content || undefined,
                         contextId: payload.value.contextId || undefined,
@@ -90,6 +102,7 @@ export class A2AClientWrapper {
 
                 if (payload.$case === 'artifactUpdate') {
                     const content = getText(payload.value.artifact?.parts ?? []);
+                    receivedText ||= content.trim().length > 0;
                     if (content) {
                         yield {
                             content,
@@ -97,6 +110,9 @@ export class A2AClientWrapper {
                         };
                     }
                 }
+            }
+            if (!receivedText) {
+                throw new EmptyAgentResponseError();
             }
         } catch (error) {
             console.error('Error streaming message:', error);
@@ -136,6 +152,10 @@ export class A2AClientWrapper {
             } else {
                 content = response.artifacts.map(artifact => getText(artifact.parts)).join('');
             }
+        }
+
+        if (!content.trim()) {
+            throw new EmptyAgentResponseError();
         }
 
         return {

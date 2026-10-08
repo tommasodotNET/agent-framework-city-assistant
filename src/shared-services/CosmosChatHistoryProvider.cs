@@ -141,8 +141,7 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
             reference = target;
             recoveredRotation = true;
         }
-        var messages = result.Messages;
-        RestoreProcessedApprovals(messages);
+        var messages = PrepareModelHistory(result.Messages);
         if (recoveredRotation)
         {
             if (_compactionOptions is not null)
@@ -154,10 +153,11 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
         if (_compactionOptions is null)
             return messages;
 
+        var modelHistory = result with { Messages = messages };
         return _compactionOptions.Mode switch
         {
-            HistoryCompactionMode.Foreground => await CompactForegroundAsync(session, result, cancellationToken).ConfigureAwait(false),
-            HistoryCompactionMode.Background => await StartBackgroundAsync(session, result, cancellationToken).ConfigureAwait(false),
+            HistoryCompactionMode.Foreground => await CompactForegroundAsync(session, modelHistory, cancellationToken).ConfigureAwait(false),
+            HistoryCompactionMode.Background => await StartBackgroundAsync(session, modelHistory, cancellationToken).ConfigureAwait(false),
             _ => throw new NotSupportedException(CompactionErrors.Get("UnsupportedMode"))
         };
     }
@@ -258,7 +258,7 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
                 throw new HistoryCompactionValidationException(HistoryCompactionFailureReason.InvalidLifecycle);
 
             var pending = new PendingHistoryCompaction(options.CompactorKey, ticket, history.Reference,
-                history.Messages.Count, history.LastSequence, operationId);
+                history.MessageSequences.Count, history.LastSequence, operationId);
             cancellationToken.ThrowIfCancellationRequested();
             SessionPersistenceState.SetPendingCompaction(session, pending);
             return history.Messages;
@@ -298,9 +298,9 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
         cancellationToken.ThrowIfCancellationRequested();
         HistoryCompactionValidation.ValidateFallback(baseline, options.MaxHistoryUtf8Bytes);
         var reread = await _repository.ReadAsync(reference, cancellationToken: cancellationToken).ConfigureAwait(false);
-        RestoreProcessedApprovals(reread.Messages);
-        HistoryCompactionValidation.ValidateFallback(reread.Messages, options.MaxHistoryUtf8Bytes);
-        if (!HistoryCompactionValidation.Equivalent(baseline, reread.Messages))
+        var rereadView = PrepareModelHistory(reread.Messages);
+        HistoryCompactionValidation.ValidateFallback(rereadView, options.MaxHistoryUtf8Bytes);
+        if (!HistoryCompactionValidation.Equivalent(baseline, rereadView))
             throw new HistoryConcurrencyException();
         return baseline;
     }
@@ -333,11 +333,12 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
             DiscardPendingCompaction(session, "SourceExpiredOrReplaced");
             return false;
         }
-        RestoreProcessedApprovals(history.Messages);
+        RestoreProcessedApprovals(history.Messages.SelectMany(message => message.Contents));
 
         try
         {
-            var original = history.Messages.Take(pending.SourceMessageCount).ToArray();
+            // The ticket counts stored messages; the job received the filtered model view.
+            var original = PrepareModelHistory(history.Messages.Take(pending.SourceMessageCount).ToArray());
             var request = new HistoryCompactionRequest(SessionPersistenceState.GetRequired(session).AgentId,
                 pending.Ticket.SourceBinding, original, options);
             HistoryCompactionValidation.ValidateResult(request, result);
@@ -416,8 +417,8 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
         var source = storedMessages.Concat(currentTurn).ToArray();
         var suffix = storedMessages.Skip(originalCount);
         var merged = compactedPrefix.Concat(suffix).Concat(currentTurn).ToArray();
-        RestoreProcessedApprovals(source);
-        RestoreProcessedApprovals(merged);
+        RestoreProcessedApprovals(source.SelectMany(message => message.Contents));
+        RestoreProcessedApprovals(merged.SelectMany(message => message.Contents));
         HistoryCompactionValidation.ValidateCandidate(source, merged, maxHistoryUtf8Bytes);
         return merged;
     }
@@ -480,15 +481,45 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
         exception is HistoryCompactionValidationException validation
             ? $"{validation.Reason}/{exception.GetType().Name}" : exception.GetType().Name;
 
-    private static void RestoreProcessedApprovals(IReadOnlyList<ChatMessage> messages)
+    private static IReadOnlyList<ChatMessage> PrepareModelHistory(IReadOnlyList<ChatMessage> messages)
+    {
+        var contents = messages.SelectMany(message => message.Contents).ToArray();
+        RestoreProcessedApprovals(contents);
+        var calls = contents.OfType<FunctionCallContent>().GroupBy(call => call.CallId)
+            .Where(group => group.Count() == 1).ToDictionary(group => group.Key, group => group.Single());
+        var completed = contents.OfType<FunctionResultContent>().GroupBy(result => result.CallId)
+            .Where(group => group.Count() == 1).Select(group => group.Key).ToHashSet(StringComparer.Ordinal);
+        var denied = contents.OfType<ToolApprovalResponseContent>().Where(response => !response.Approved)
+            .Select(response => response.ToolCall).OfType<FunctionCallContent>().Select(call => call.CallId)
+            .ToHashSet(StringComparer.Ordinal);
+
+        bool IsConsumedApproval(ChatMessage message, AIContent content)
+        {
+            var call = content switch
+            {
+                ToolApprovalRequestContent request when message.Role == ChatRole.Assistant => request.ToolCall as FunctionCallContent,
+                ToolApprovalResponseContent response when message.Role == ChatRole.User => response.ToolCall as FunctionCallContent,
+                _ => null
+            };
+            return call is { InformationalOnly: true } && completed.Contains(call.CallId)
+                && !denied.Contains(call.CallId) && calls.TryGetValue(call.CallId, out var executed)
+                && HistoryCompactionValidation.EquivalentCall(call, executed);
+        }
+
+        // Filter the repository's private view, not storage or the current user input.
+        // Mixed messages and anything without a proven completed exchange stay intact.
+        return messages.Where(message => message.Contents.Count == 0
+            || !message.Contents.All(content => IsConsumedApproval(message, content))).ToArray();
+    }
+
+    private static void RestoreProcessedApprovals(IEnumerable<AIContent> contents)
     {
         // The framework mutates old approval objects after execution. Append-only storage retains
         // their earlier state; a persisted result proves the call is no longer pending.
-        var completedCalls = messages.SelectMany(message => message.Contents)
-            .OfType<FunctionResultContent>()
+        var completedCalls = contents.OfType<FunctionResultContent>()
             .Select(result => result.CallId)
             .ToHashSet(StringComparer.Ordinal);
-        foreach (var content in messages.SelectMany(message => message.Contents))
+        foreach (var content in contents)
         {
             var call = content switch
             {

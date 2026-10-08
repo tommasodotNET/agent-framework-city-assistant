@@ -38,10 +38,7 @@ public sealed class CosmosSessionRepository
         }
         response.EnsureSuccessStatusCode();
         var etag = RequireETag(response);
-        using var bytes = new MemoryStream();
-        await response.Content.CopyToAsync(bytes, cancellationToken).ConfigureAwait(false);
-        bytes.Position = 0;
-        using var json = await JsonDocument.ParseAsync(bytes, cancellationToken: cancellationToken).ConfigureAwait(false);
+        using var json = await JsonDocument.ParseAsync(response.Content, cancellationToken: cancellationToken).ConfigureAwait(false);
         var root = json.RootElement;
         foreach (var name in new[] { "schemaVersion", "id", "agentId", "scopeKey", "sessionId", "serializedSession", "lastUpdated", "ttl" })
         {

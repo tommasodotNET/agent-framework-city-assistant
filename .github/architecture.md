@@ -241,6 +241,16 @@ Profile/options changes cannot apply an old preparation. A model failure skips S
 entirely and therefore leaves C1 untouched (apart from independent concurrent writers
 or TTL expiry).
 
+Before inference or compaction, one private model view omits consumed approval-only
+messages whose call identity/arguments and completed result match. System/developer,
+mixed-content, denied, pending and ambiguous records are not removed. This prevents
+the inference adapter from projecting old approval audit records as empty assistant
+messages. Source storage remains unchanged. It is not a generic empty-text filter:
+real function calls/results and even unrelated empty messages are preserved.
+Foreground receives a clone of this view. A background ticket records the raw stored
+message count/sequence, and its result is checked against the same normalized view of
+that raw prefix; filtering must not move the suffix boundary.
+
 Tool/approval middleware can call Save with an incomplete new exchange. The foreground
 prefix has already passed full compaction validation, including complete tool groups;
 the appended suffix is copied unchanged, not reduced. This allows a native approval
@@ -409,6 +419,11 @@ storage conflicts, Save validation/publication failures and an unusable context 
 a successful empty or truncated history.
 
 #### Scope and measurement
+
+Shared repositories and compactor APIs use `Task`/`Task<T>` for asynchronous I/O.
+MAF overrides retain the framework's `ValueTask`/`ValueTask<T>` signatures.
+Do not convert the other APIs solely to avoid allocations: use `ValueTask` only
+when profiling demonstrates a benefit, and consume each instance once.
 
 This delivery covers **text only**. Voice keeps its existing load/replay/save
 flow and separate transcript. Live audio compaction, ACS adapters, independent

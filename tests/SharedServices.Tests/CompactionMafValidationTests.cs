@@ -100,6 +100,25 @@ public class CompactionMafValidationTests
     }
 
     [Fact]
+    public void ShorterJsonSpellingOfTheSameValueIsNotCompaction()
+    {
+        IReadOnlyList<ChatMessage> source =
+        [
+            new(ChatRole.User, "unchanged") { AdditionalProperties = new() { ["number"] = JsonSerializer.Deserialize<JsonElement>("1.0000") } }
+        ];
+        IReadOnlyList<ChatMessage> candidate =
+        [
+            new(ChatRole.User, "unchanged") { AdditionalProperties = new() { ["number"] = JsonSerializer.Deserialize<JsonElement>("1") } }
+        ];
+        Assert.True(HistoryCompactionValidation.Measure(candidate) < HistoryCompactionValidation.Measure(source));
+
+        var error = Assert.Throws<HistoryCompactionValidationException>(() =>
+            HistoryCompactionValidation.ValidateCandidate(source, candidate, null));
+
+        Assert.Equal(HistoryCompactionFailureReason.NotReduced, error.Reason);
+    }
+
+    [Fact]
     public void ExplicitCapAllowsExactlyTheMeasuredSizeButNotOneByteLess()
     {
         var source = Source();
