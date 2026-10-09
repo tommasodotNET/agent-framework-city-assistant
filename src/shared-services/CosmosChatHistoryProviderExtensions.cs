@@ -59,7 +59,7 @@ public static class CosmosChatHistoryProviderExtensions
     }
 
     // ────────────────────────────────────────────────────────────
-    //  Aspire / DI registration
+    //  Standard DI registration (also usable with Aspire)
     // ────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -104,7 +104,7 @@ public static class CosmosChatHistoryProviderExtensions
     }
 
     // ────────────────────────────────────────────────────────────
-    //  Aspire / DI consumption
+    //  Standard DI consumption (also usable with Aspire)
     // ────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -123,14 +123,63 @@ public static class CosmosChatHistoryProviderExtensions
 
         var registration = serviceProvider.GetRequiredService<CosmosChatHistoryProviderRegistration>();
         var container = serviceProvider.GetRequiredKeyedService<Container>(registration.ContainerServiceKey);
-        var logger = serviceProvider.GetService<ILogger<CosmosChatHistoryProvider>>();
         var providerOptions = ResolveOptions(registration.Options, configure);
-        var compactor = serviceProvider.GetHistoryCompactor(providerOptions.Compaction);
 
+        return ConfigureFromContainer(options, serviceProvider, container, providerOptions);
+    }
+
+    /// <summary>Configures this agent's history using an existing container and standard DI services.</summary>
+    /// <remarks>
+    /// No global history registration or Aspire is required. Settings are local to this agent;
+    /// the logger and optional keyed compactor are resolved once during composition.
+    /// The provider does not own or dispose the container's Cosmos client.
+    /// </remarks>
+    [RequiresUnreferencedCode("The CosmosChatHistoryProvider uses JSON serialization which is incompatible with trimming.")]
+    [RequiresDynamicCode("The CosmosChatHistoryProvider uses JSON serialization which is incompatible with NativeAOT.")]
+    public static ChatClientAgentOptions WithCosmosChatHistoryProvider(
+        this ChatClientAgentOptions options,
+        Container container,
+        IServiceProvider serviceProvider,
+        Action<CosmosChatHistoryProviderOptions>? configure = null)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(serviceProvider);
+        ArgumentNullException.ThrowIfNull(container);
+
+        return ConfigureFromContainer(options, serviceProvider, container, ResolveOptions(null, configure));
+    }
+
+    /// <summary>Selects this agent's history container through a factory evaluated once during composition.</summary>
+    /// <remarks>
+    /// The factory can resolve ordinary or keyed services without a global history registration.
+    /// Options, compactor resolution and Cosmos client ownership match the direct-container overload.
+    /// </remarks>
+    [RequiresUnreferencedCode("The CosmosChatHistoryProvider uses JSON serialization which is incompatible with trimming.")]
+    [RequiresDynamicCode("The CosmosChatHistoryProvider uses JSON serialization which is incompatible with NativeAOT.")]
+    public static ChatClientAgentOptions WithCosmosChatHistoryProvider(
+        this ChatClientAgentOptions options,
+        Func<IServiceProvider, Container> createContainer,
+        IServiceProvider serviceProvider,
+        Action<CosmosChatHistoryProviderOptions>? configure = null)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(serviceProvider);
+        ArgumentNullException.ThrowIfNull(createContainer);
+
+        var container = createContainer(serviceProvider);
+        ArgumentNullException.ThrowIfNull(container);
+        return options.WithCosmosChatHistoryProvider(container, serviceProvider, configure);
+    }
+
+    private static ChatClientAgentOptions ConfigureFromContainer(
+        ChatClientAgentOptions options, IServiceProvider serviceProvider,
+        Container container, CosmosChatHistoryProviderOptions providerOptions)
+    {
         options.ChatHistoryProvider = BuildProvider(
             container.Database.Client, container.Database.Id, container.Id,
-            providerOptions, logger: logger, compactor: compactor);
-
+            providerOptions,
+            logger: serviceProvider.GetService<ILogger<CosmosChatHistoryProvider>>(),
+            compactor: serviceProvider.GetHistoryCompactor(providerOptions.Compaction));
         return options;
     }
 

@@ -183,6 +183,28 @@ options remain intact, and actual model parameters are preserved. Otherwise the
 Azure AI Inference adapter forwards that metadata as an unsupported model
 parameter.
 
+### Persistence composition without Aspire
+
+Aspire is only one source of Cosmos clients/containers; `SharedServices` depends on
+MAF hosting, standard DI and the Cosmos SDK, not Aspire. Existing host-wide keyed
+registrations remain supported. `IHostedAgentBuilder.WithCosmosSessionStore` can also
+attach an existing store or an `(IServiceProvider, agentName)` store factory directly,
+allowing per-agent containers and snapshot retention without global store registration.
+The factory uses MAF's singleton store lifetime and the same strict authenticated
+isolation/anonymous-warning policy as the original overload.
+
+External message history remains part of `ChatClientAgentOptions`, not a mutation of
+an arbitrary hosted `AIAgent`. Its direct-container/factory overloads resolve logging
+and keyed compaction during agent construction and reuse the common provider factory.
+Their options are agent-local and do not inherit another global profile. Existing
+direct-client, connection-string and credential overloads remain available.
+Supplied clients are never disposed by per-agent helpers.
+
+Hosted protocols own their normal session load/save lifecycle. A direct `RunAsync`
+caller must explicitly get/create the session and save it using the store, or initialize
+the required persistence context when operating without a store. Registration alone
+does not persist arbitrary direct runs.
+
 ### Retention and history compaction
 
 Both containers have `DefaultTimeToLive = -1`: per-document TTL is enabled without a container-wide expiration.

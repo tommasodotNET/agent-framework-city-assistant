@@ -6,6 +6,7 @@ using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Moq;
+using Moq.Protected;
 
 namespace SharedServices.Tests;
 
@@ -181,6 +182,163 @@ public class CompactionProviderCompositionTests
         Assert.Equal(Options(), plugin.LastOptions);
     }
 
+    [Fact]
+    public async Task DirectContainerCompositionResolvesCompactorAndSnapshotsAgentOptions()
+    {
+        var services = Services();
+        var plugin = new TrackingCompactor();
+        services.AddHistoryCompactor("test", _ => plugin);
+        using var serviceProvider = services.BuildServiceProvider();
+        var container = serviceProvider.GetRequiredKeyedService<Container>("history");
+        CosmosChatHistoryProviderOptions? retained = null;
+        var agentOptions = new ChatClientAgentOptions();
+        var returned = agentOptions.WithCosmosChatHistoryProvider(container, serviceProvider, options =>
+        {
+            options.Compaction = Options();
+            options.MessageTtlSeconds = 604800;
+            options.MaxItemCount = 7;
+            options.MaxBatchSize = 5;
+            retained = options;
+        });
+        using var provider = Assert.IsType<CosmosChatHistoryProvider>(agentOptions.ChatHistoryProvider);
+        Assert.NotNull(retained);
+        retained.Compaction = null;
+        retained.MessageTtlSeconds = 1;
+
+        await LoadAsync(provider);
+
+        Assert.Same(agentOptions, returned);
+        Assert.Null(serviceProvider.GetService<CosmosChatHistoryProviderRegistration>());
+        Assert.Equal((604800, 7, 5, Options()),
+            (provider.MessageTtlSeconds, provider.MaxItemCount, provider.MaxBatchSize, plugin.LastOptions));
+    }
+
+    [Fact]
+    public async Task ContainerFactoryIsEvaluatedOnceDuringCompositionNotOnEachLoad()
+    {
+        var services = Services();
+        services.AddHistoryCompactor<TrackingCompactor>("unused", _ => throw new InvalidOperationException());
+        using var serviceProvider = services.BuildServiceProvider();
+        var calls = 0;
+        var agentOptions = new ChatClientAgentOptions().WithCosmosChatHistoryProvider(sp =>
+        {
+            Assert.Same(serviceProvider, sp);
+            calls++;
+            return sp.GetRequiredKeyedService<Container>("history");
+        }, serviceProvider);
+        using var provider = Assert.IsType<CosmosChatHistoryProvider>(agentOptions.ChatHistoryProvider);
+
+        await LoadAsync(provider);
+        await LoadAsync(provider);
+
+        Assert.Equal(1, calls);
+        Assert.Equal(86400, provider.MessageTtlSeconds);
+        Assert.Null(provider.MaxMessagesToRetrieve);
+    }
+
+    [Fact]
+    public void DirectCompositionDoesNotModifyOrInheritAnotherRegistration()
+    {
+        var services = Services();
+        services.AddCosmosChatHistoryProvider("history", options => options.MessageTtlSeconds = 604800);
+        using var serviceProvider = services.BuildServiceProvider();
+        using var direct = Assert.IsType<CosmosChatHistoryProvider>(new ChatClientAgentOptions()
+            .WithCosmosChatHistoryProvider(serviceProvider.GetRequiredKeyedService<Container>("history"),
+                serviceProvider, options => options.MaxMessagesToRetrieve = 3).ChatHistoryProvider);
+        using var original = Compose(serviceProvider);
+        using var legacyNullConfigure = Assert.IsType<CosmosChatHistoryProvider>(new ChatClientAgentOptions()
+            .WithCosmosChatHistoryProvider(serviceProvider, null).ChatHistoryProvider);
+
+        Assert.Equal((86400, 3, 604800, 604800),
+            (direct.MessageTtlSeconds, direct.MaxMessagesToRetrieve, original.MessageTtlSeconds,
+                legacyNullConfigure.MessageTtlSeconds));
+    }
+
+    [Fact]
+    public async Task PerAgentContainerCompositionKeepsMessagesAndRetentionSeparate()
+    {
+        var first = new HistoryCosmosFixture();
+        var second = new HistoryCosmosFixture();
+        var services = Services(first);
+        var other = ConfigureContainer(second);
+        services.AddSingleton(other);
+        using var serviceProvider = services.BuildServiceProvider();
+        using var firstProvider = Assert.IsType<CosmosChatHistoryProvider>(new ChatClientAgentOptions()
+            .WithCosmosChatHistoryProvider(serviceProvider.GetRequiredKeyedService<Container>("history"),
+                serviceProvider, options => options.MessageTtlSeconds = 86400).ChatHistoryProvider);
+        using var secondProvider = Assert.IsType<CosmosChatHistoryProvider>(new ChatClientAgentOptions()
+            .WithCosmosChatHistoryProvider(sp => sp.GetRequiredService<Container>(),
+                serviceProvider, options => options.MessageTtlSeconds = 604800).ChatHistoryProvider);
+        var firstSession = new TestAgentSession();
+        var secondSession = new TestAgentSession();
+        SessionPersistenceState.Initialize(firstSession, SessionStorageAddress.Create("first", "same-context"));
+        SessionPersistenceState.Initialize(secondSession, SessionStorageAddress.Create("second", "same-context"));
+        var agent = new Mock<AIAgent>().Object;
+
+        await firstProvider.InvokedAsync(new(agent, firstSession, [new(ChatRole.User, "first message")], []));
+        await secondProvider.InvokedAsync(new(agent, secondSession, [new(ChatRole.User, "second message")], []));
+
+        Assert.Equal("first message", Assert.Single((await first.CreateRepository()
+            .ReadAsync(SessionPersistenceState.GetRequired(firstSession).ActiveHistory)).Messages).Text);
+        Assert.Equal("second message", Assert.Single((await second.CreateRepository()
+            .ReadAsync(SessionPersistenceState.GetRequired(secondSession).ActiveHistory)).Messages).Text);
+        Assert.Equal(86400, Assert.Single(first.Documents, document =>
+            document.GetProperty("type").GetString() == "ChatMessage").GetProperty("ttl").GetInt32());
+        Assert.Equal(604800, Assert.Single(second.Documents, document =>
+            document.GetProperty("type").GetString() == "ChatMessage").GetProperty("ttl").GetInt32());
+    }
+
+    [Fact]
+    public void DirectContainerProviderDoesNotDisposeTheSharedCosmosClient()
+    {
+        var fixture = new HistoryCosmosFixture();
+        var client = Client(fixture);
+        var database = new Mock<Database>();
+        database.SetupGet(value => value.Id).Returns("database");
+        database.SetupGet(value => value.Client).Returns(client.Object);
+        fixture.Container.SetupGet(value => value.Database).Returns(database.Object);
+        fixture.Container.SetupGet(value => value.Id).Returns("conversations");
+        using var serviceProvider = new ServiceCollection().BuildServiceProvider();
+        var provider = Assert.IsType<CosmosChatHistoryProvider>(new ChatClientAgentOptions()
+            .WithCosmosChatHistoryProvider(fixture.Container.Object, serviceProvider).ChatHistoryProvider);
+
+        provider.Dispose();
+
+        client.Protected().Verify("Dispose", Times.Never(), ItExpr.IsAny<bool>());
+        client.Object.Dispose();
+        client.Protected().Verify("Dispose", Times.Once(), ItExpr.IsAny<bool>());
+    }
+
+    [Fact]
+    public void NewHistoryOverloadsRejectNullArgumentsAndNullFactoryResults()
+    {
+        using var serviceProvider = new ServiceCollection().BuildServiceProvider();
+        Assert.Throws<ArgumentNullException>(() =>
+            new ChatClientAgentOptions().WithCosmosChatHistoryProvider((Container)null!, serviceProvider));
+        Assert.Throws<ArgumentNullException>(() => new ChatClientAgentOptions()
+            .WithCosmosChatHistoryProvider((Func<IServiceProvider, Container>)null!, serviceProvider));
+        Assert.Throws<ArgumentNullException>(() => new ChatClientAgentOptions()
+            .WithCosmosChatHistoryProvider(_ => null!, serviceProvider));
+        Assert.Throws<ArgumentNullException>(() => new ChatClientAgentOptions()
+            .WithCosmosChatHistoryProvider(_ => throw new InvalidOperationException(), null!));
+    }
+
+    [Fact]
+    public void DirectCompositionKeepsPartialHistoryAndCompactionValidation()
+    {
+        var services = Services();
+        services.AddHistoryCompactor("test", _ => new TrackingCompactor());
+        using var serviceProvider = services.BuildServiceProvider();
+
+        Assert.Throws<ArgumentException>(() => new ChatClientAgentOptions()
+            .WithCosmosChatHistoryProvider(serviceProvider.GetRequiredKeyedService<Container>("history"),
+                serviceProvider, options =>
+                {
+                    options.Compaction = Options();
+                    options.MaxMessagesToRetrieve = 2;
+                }));
+    }
+
     [Theory]
     [InlineData(null)]
     [InlineData("false")]
@@ -322,16 +480,21 @@ public class CompactionProviderCompositionTests
     private static CosmosChatHistoryProvider Compose(IServiceProvider services) =>
         Assert.IsType<CosmosChatHistoryProvider>(new ChatClientAgentOptions().WithCosmosChatHistoryProvider(services).ChatHistoryProvider);
 
-    private static IServiceCollection Services()
+    private static IServiceCollection Services(HistoryCosmosFixture? fixture = null)
     {
-        var fixture = new HistoryCosmosFixture();
+        fixture ??= new HistoryCosmosFixture();
+        return new ServiceCollection().AddKeyedSingleton("history", ConfigureContainer(fixture));
+    }
+
+    private static Container ConfigureContainer(HistoryCosmosFixture fixture)
+    {
         var client = Client(fixture);
         var database = new Mock<Database>();
         database.SetupGet(value => value.Id).Returns("database");
         database.SetupGet(value => value.Client).Returns(client.Object);
         fixture.Container.SetupGet(value => value.Database).Returns(database.Object);
         fixture.Container.SetupGet(value => value.Id).Returns("conversations");
-        return new ServiceCollection().AddKeyedSingleton("history", fixture.Container.Object);
+        return fixture.Container.Object;
     }
 
     private static Mock<CosmosClient> Client(HistoryCosmosFixture fixture)

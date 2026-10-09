@@ -256,6 +256,82 @@ cd src/orchestrator-agent && dotnet build
 cd src/a2a-orchestrator-agent && dotnet build
 ```
 
+### Persistence with standard MAF hosting (no Aspire)
+
+`SharedServices` does not require Aspire. A keyed Cosmos `Container` can come from
+ordinary DI or Aspire; existing keyed registrations remain supported. For per-agent
+composition, attach an existing `CosmosAgentSessionStore` or a store factory directly
+to `IHostedAgentBuilder`, and configure history on `ChatClientAgentOptions` using a
+`Container` or a DI container factory.
+
+For example, with an `IChatClient` already registered for the selected model:
+
+```csharp
+using Microsoft.Agents.AI;
+using Microsoft.Agents.AI.Hosting;
+using Microsoft.Azure.Cosmos;
+using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using SharedServices;
+
+var builder = Host.CreateApplicationBuilder(args);
+// Register the application's IChatClient before resolving the agent.
+builder.Services.AddSingleton<CosmosClient>(_ => new CosmosClient(
+    builder.Configuration.GetConnectionString("cosmos")
+        ?? throw new InvalidOperationException("Configure ConnectionStrings:cosmos.")));
+
+builder.Services.AddAIAgent("city-agent", (sp, name) =>
+{
+    var options = new ChatClientAgentOptions { Id = name, Name = name }
+        .WithCosmosChatHistoryProvider(
+            services => services.GetRequiredService<CosmosClient>()
+                .GetContainer("city", "conversations"),
+            sp,
+            history => history.MessageTtlSeconds = 86400 * 7);
+    return sp.GetRequiredService<IChatClient>().AsAIAgent(options, services: sp);
+}).WithCosmosSessionStore((sp, name) => new CosmosAgentSessionStore(
+    sp.GetRequiredService<CosmosClient>().GetContainer("city", "sessions"),
+    sp.GetRequiredService<ILogger<CosmosAgentSessionStore>>(),
+    ttl: 86400 * 7));
+```
+
+Keep credentials in application configuration/secret management, not source. Alternatively, construct
+the singleton client with the account endpoint and the application's `TokenCredential`.
+Containers must already have the documented schema and TTL settings; these helpers
+do not provision or migrate storage.
+
+The hosted store factory receives the registered agent name, runs lazily once per
+agent (singleton), and can select a different container/TTL for each agent. The
+instance overload is `.WithCosmosSessionStore(existingStore)`. Both preserve the
+existing anonymous warning and strict isolation when an `AgentIsolationKeyProvider`
+is registered. The history factory runs once when constructing that agent's options;
+it resolves the optional keyed compactor and logger through the supplied service
+provider. Direct history options do not inherit a separate global history registration.
+Shared clients/containers are never owned or disposed by these per-agent helpers.
+DI owns clients created by its singleton factory; externally supplied clients remain
+the caller's responsibility.
+
+`WithSessionStore` configures a hosting service, not an automatic wrapper around
+arbitrary direct calls to `agent.RunAsync`. A non-HTTP application can explicitly
+use the registered hosted store:
+
+```csharp
+using var host = builder.Build();
+var agent = host.Services.GetRequiredKeyedService<AIAgent>("city-agent");
+var store = host.Services.GetRequiredKeyedService<AgentSessionStore>("city-agent");
+var key = new AgentSessionStoreKey("conversation-1");
+var session = await store.GetOrCreateSessionAsync(agent, key);
+await agent.RunAsync("Find a restaurant in Agentburg.", session);
+await store.SaveSessionAsync(agent, key, session);
+```
+
+A2A/Responses hosting integrations perform their own load/save lifecycle. A completely
+standalone agent without a session store must instead initialize
+`SessionPersistenceState` explicitly before using external history.
+
 ### Optional history compaction
 
 Text history compaction is **disabled by default**. Register an
