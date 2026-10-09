@@ -9,7 +9,7 @@
   <data name="InvalidDiagnostics" xml:space="preserve"><value>Compaction byte diagnostics do not match the independently measured history.</value></data>
   <data name="InvalidUnchangedResult" xml:space="preserve"><value>An unchanged compaction result contains modified history.</value></data>
   <data name="NotReduced" xml:space="preserve"><value>The compaction candidate does not reduce the complete serialized history.</value></data>
-  <data name="ProtectedMessagesChanged" xml:space="preserve"><value>Compaction changed protected instructions or invented, reordered or tampered with retained tool approval records.</value></data>
+  <data name="ProtectedMessagesChanged" xml:space="preserve"><value>Compaction changed or moved the protected instruction prefix, encountered interleaved system/developer instructions, or invented, reordered or tampered with retained tool approval records.</value></data>
   <data name="UnsafeToolHistory" xml:space="preserve"><value>Compaction is deferred or rejected because tool calls or approvals are pending, unsupported, malformed or no longer atomic. Do not replay or approve tools automatically.</value></data>
   <data name="InvalidSummary" xml:space="preserve"><value>Compaction produced a blank, invalid or unavailable summary. It cannot be persisted as useful history.</value></data>
   <data name="NullMessage" xml:space="preserve"><value>History cannot contain null messages.</value></data>

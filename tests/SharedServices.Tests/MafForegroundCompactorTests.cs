@@ -288,6 +288,47 @@ public class MafForegroundCompactorTests
         Assert.Equal(HistoryCompactionFailureReason.ProtectedMessagesChanged, error.Reason);
     }
 
+    [Theory]
+    [InlineData("system")]
+    [InlineData("developer")]
+    public async Task InterleavedInstructionsAreRejectedBeforeStrategyExecution(string role)
+    {
+        var history = History();
+        history.Insert(2, new(new ChatRole(role), "interleaved instruction"));
+        var calls = 0;
+        var strategy = new TestStrategy((_, _) =>
+        {
+            calls++;
+            return ValueTask.FromResult(false);
+        });
+        var original = JsonSerializer.Serialize(history);
+
+        var error = await Assert.ThrowsAsync<HistoryCompactionValidationException>(() =>
+            new MafForegroundHistoryCompactor(strategy).CompactAsync(Request(history)));
+
+        Assert.Equal(HistoryCompactionFailureReason.ProtectedMessagesChanged, error.Reason);
+        Assert.Equal(0, calls);
+        Assert.Equal(original, JsonSerializer.Serialize(history));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SystemPrefixRemainsCompactableWithBuiltInStrategies(bool summarize)
+    {
+        var history = History();
+        using var client = new SummaryClient(_ => Task.FromResult(
+            new ChatResponse(new ChatMessage(ChatRole.Assistant, "Old conversation summary."))));
+        CompactionStrategy strategy = summarize
+            ? new SummarizationCompactionStrategy(client, CompactionTriggers.Always, minimumPreservedGroups: 2)
+            : new TruncationCompactionStrategy(CompactionTriggers.Always, minimumPreservedGroups: 2);
+
+        var result = await new MafForegroundHistoryCompactor(strategy).CompactAsync(Request(history));
+
+        Assert.Equal(HistoryCompactionStatus.Completed, result.Status);
+        Assert.True(HistoryCompactionValidation.Equivalent(history.Take(1).ToArray(), result.Messages.Take(1).ToArray()));
+    }
+
     [Fact]
     public async Task BuiltInToolResultStrategyCollapsesWholeCompletedExchange()
     {

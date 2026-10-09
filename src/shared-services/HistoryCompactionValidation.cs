@@ -22,7 +22,7 @@ public enum HistoryCompactionFailureReason
     InvalidUnchangedResult,
     /// <summary>A changed candidate does not reduce serialized history size.</summary>
     NotReduced,
-    /// <summary>A protected instruction changed or a retained approval was invented, reordered or tampered with.</summary>
+    /// <summary>Protected instructions moved/changed or are interleaved, or a retained approval was tampered with.</summary>
     ProtectedMessagesChanged,
     /// <summary>Tools are pending, unsupported, malformed, or no longer atomic.</summary>
     UnsafeToolHistory,
@@ -121,7 +121,8 @@ public static class HistoryCompactionValidation
     }
 
     /// <summary>
-    /// Checks a nonempty, genuinely smaller replacement, protected messages, and complete tool groups.
+    /// Checks a nonempty, genuinely smaller replacement, an unchanged protected instruction prefix,
+    /// and complete tool groups. Interleaved system/developer instructions are not compactable.
     /// Retained tool groups must
     /// be byte-semantically identical; entire completed groups may be removed or summarized.
     /// Consumed approvals may be removed, but retained approval messages must be an unchanged
@@ -149,8 +150,8 @@ public static class HistoryCompactionValidation
             Fail(HistoryCompactionFailureReason.NotReduced);
         }
 
-        var protectedSource = source.Where(IsProtected).ToArray();
-        var protectedCandidate = candidate.Where(IsProtected).ToArray();
+        var protectedSource = GetProtectedPrefix(source);
+        var protectedCandidate = GetProtectedPrefix(candidate);
         if (!Equivalent(protectedSource, protectedCandidate))
         {
             Fail(HistoryCompactionFailureReason.ProtectedMessagesChanged);
@@ -215,7 +216,17 @@ public static class HistoryCompactionValidation
 
     internal static void ValidateSourceForCompaction(IReadOnlyList<ChatMessage> source)
     {
+        _ = GetProtectedPrefix(source);
         ValidateProcessedApprovals(source, GetToolGroups(source));
+    }
+
+    private static ChatMessage[] GetProtectedPrefix(IReadOnlyList<ChatMessage> messages)
+    {
+        ValidateMessages(messages);
+        var prefix = messages.TakeWhile(IsProtected).ToArray();
+        if (messages.Skip(prefix.Length).Any(IsProtected))
+            Fail(HistoryCompactionFailureReason.ProtectedMessagesChanged);
+        return prefix;
     }
 
     private static List<IReadOnlyList<ChatMessage>> GetToolGroups(IReadOnlyList<ChatMessage> messages)

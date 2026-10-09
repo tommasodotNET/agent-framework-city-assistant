@@ -170,6 +170,82 @@ public class CompactionMafValidationTests
         Assert.Equal(HistoryCompactionFailureReason.ProtectedMessagesChanged, error.Reason);
     }
 
+    [Theory]
+    [InlineData("system", 1)]
+    [InlineData("system", 2)]
+    [InlineData("developer", 1)]
+    [InlineData("developer", 2)]
+    public void ProtectedInstructionCannotMoveAfterConversationContent(string role, int position)
+    {
+        var source = Source();
+        source[0].Role = new ChatRole(role);
+        var candidate = Candidate();
+        candidate.RemoveAt(0);
+        candidate.Insert(position, source[0]);
+        var request = Request(source);
+
+        var error = Assert.Throws<HistoryCompactionValidationException>(() =>
+            HistoryCompactionValidation.ValidateResult(request, Completed(request, candidate)));
+
+        Assert.Equal(HistoryCompactionFailureReason.ProtectedMessagesChanged, error.Reason);
+    }
+
+    [Theory]
+    [InlineData("system")]
+    [InlineData("developer")]
+    public void InterleavedInstructionsRejectCompactionEvenIfCandidatePreservesThem(string role)
+    {
+        var source = Source();
+        source.Insert(2, new(new ChatRole(role), "interleaved instruction"));
+        var candidate = source.Where((_, index) => index != 1).ToArray();
+
+        var error = Assert.Throws<HistoryCompactionValidationException>(() =>
+            HistoryCompactionValidation.ValidateCandidate(source, candidate));
+
+        Assert.Equal(HistoryCompactionFailureReason.ProtectedMessagesChanged, error.Reason);
+    }
+
+    [Theory]
+    [InlineData("system")]
+    [InlineData("developer")]
+    public void InterleavedInstructionsAllowOriginalFallbackAndUnchangedResult(string role)
+    {
+        var source = Source();
+        source.Insert(2, new(new ChatRole(role), "interleaved instruction"));
+        var request = Request(source);
+        var size = HistoryCompactionValidation.Measure(source);
+        var unchanged = new HistoryCompactionResult(
+            HistoryCompactionStatus.Unchanged, request.SourceBinding, source, size, size);
+
+        HistoryCompactionValidation.ValidateFallback(source);
+        HistoryCompactionValidation.ValidateResult(request, unchanged);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MultipleProtectedInstructionsKeepExactPrefix(bool reversePrefix)
+    {
+        var source = Source();
+        source.Insert(1, new(new ChatRole("developer"), "developer instruction"));
+        var prefix = source.Take(2).ToArray();
+        var candidate = (reversePrefix ? prefix.Reverse() : prefix)
+            .Concat(source.TakeLast(2)).ToArray();
+        var request = Request(source);
+        var result = Completed(request, candidate);
+
+        if (reversePrefix)
+        {
+            var error = Assert.Throws<HistoryCompactionValidationException>(() =>
+                HistoryCompactionValidation.ValidateResult(request, result));
+            Assert.Equal(HistoryCompactionFailureReason.ProtectedMessagesChanged, error.Reason);
+        }
+        else
+        {
+            HistoryCompactionValidation.ValidateResult(request, result);
+        }
+    }
+
     [Fact]
     public void CompletedPluginResultCannotDropPendingApproval()
     {

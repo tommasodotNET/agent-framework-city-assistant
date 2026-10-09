@@ -303,6 +303,15 @@ size without changing the message count. System messages, unresolved approvals
 and tool-call/result relationships must not be silently lost. Compaction never
 grants approval to a pending tool.
 
+Protected system/developer messages must form a contiguous prefix in both the
+source and candidate, with identical payloads and ordering. The candidate cannot
+insert conversation content before or between these instructions. A source with
+interleaved protected instructions is deliberately not compacted: Load logs the
+reason before starting any worker/strategy and uses the validated original history.
+Normal appends and unchanged fallback remain valid. This conservative rule avoids
+reconstructing instruction positions across summarized or removed conversation content;
+instructions outside stored history are not part of this check.
+
 The summarizer, if used, is a separate `IChatClient` dependency without the main
 agent's tools/history/compaction pipeline. Otherwise summarization could recurse
 or execute application tools. Strategies use per-invocation copies and indexes;

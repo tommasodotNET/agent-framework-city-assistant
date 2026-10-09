@@ -373,6 +373,12 @@ Full-history UTF-8 JSON sizes (including roles, contents and metadata) are retai
 as diagnostics and to verify a genuine reduction, not as a tokenizer count or a
 model-window guarantee. Compaction triggers/targets remain owned by the MAF strategy.
 
+System/developer messages stored in history are compactable only when they form
+an initial contiguous prefix. That exact prefix must stay unchanged at the start
+of the candidate. Interleaved instructions skip compaction with a diagnostic;
+the original history remains usable and new turns are appended normally. Agent
+instructions configured outside stored history are unaffected.
+
 Any supported MAF `CompactionStrategy`, including a pipeline or a summarization
 strategy with a separately injected chat client, can be supplied. The foreground
 adapter uses the public ad-hoc MAF API and its default token estimate; it does

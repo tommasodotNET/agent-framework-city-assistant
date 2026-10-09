@@ -139,6 +139,70 @@ public class CompactionProviderTests
         Assert.Equal(new[] { "protected", Original }, messages.Select(message => message.Text));
     }
 
+    [Theory]
+    [InlineData("system", HistoryCompactionMode.Foreground)]
+    [InlineData("developer", HistoryCompactionMode.Foreground)]
+    [InlineData("system", HistoryCompactionMode.Background)]
+    [InlineData("developer", HistoryCompactionMode.Background)]
+    public async Task InterleavedInstructionsSkipCompactorLogAndStillSaveTurn(string role, HistoryCompactionMode mode)
+    {
+        var fixture = new HistoryCosmosFixture();
+        var logger = new RecordingLogger();
+        var plugin = new Plugin((_, _) => throw new InvalidOperationException("must not execute"))
+        {
+            SupportedModes = new HashSet<HistoryCompactionMode> { mode }
+        };
+        using var provider = new CosmosChatHistoryProvider(fixture.CreateRepository(),
+            compactor: plugin, compactionOptions: Options() with { Mode = mode }, logger: logger);
+        var session = NewSession();
+        ChatMessage[] original =
+        [
+            new(ChatRole.User, Original),
+            new(new ChatRole(role), "interleaved instruction"),
+            new(ChatRole.Assistant, "original reply")
+        ];
+        await provider.InvokedAsync(new(Agent(), session, original, []));
+        var source = SessionPersistenceState.GetRequired(session).ActiveHistory;
+        var sourceDocuments = fixture.Documents.Where(document =>
+            document.GetProperty("type").GetString() == "ChatMessage")
+            .Select(document => document.GetRawText()).ToArray();
+
+        var loaded = (await provider.InvokingAsync(new(Agent(), session, []))).ToArray();
+        await provider.InvokedAsync(new(Agent(), session, [new(ChatRole.User, "current")],
+            [new(ChatRole.Assistant, "current reply")]));
+
+        Assert.Equal(original.Select(message => (message.Role, message.Text)),
+            loaded.Select(message => (message.Role, message.Text)));
+        Assert.Equal(0, plugin.Invocations);
+        Assert.Contains(logger.Messages, message => message.Contains("ProtectedMessagesChanged", StringComparison.Ordinal));
+        var reference = SessionPersistenceState.GetRequired(session).ActiveHistory;
+        Assert.Equal(source.ConversationId, reference.ConversationId);
+        Assert.Equal(new[] { Original, "interleaved instruction", "original reply", "current", "current reply" },
+            (await fixture.CreateRepository().ReadAsync(reference)).Messages.Select(message => message.Text));
+        Assert.Equal(sourceDocuments, fixture.Documents.Where(document =>
+            document.GetProperty("type").GetString() == "ChatMessage").Take(original.Length)
+            .Select(document => document.GetRawText()));
+    }
+
+    [Theory]
+    [InlineData("system")]
+    [InlineData("developer")]
+    public async Task MovedProtectedPrefixFallsBackWithoutPublication(string role)
+    {
+        var instruction = new ChatMessage(new ChatRole(role), "protected instruction");
+        var plugin = new Plugin((request, _) => Task.FromResult(Completed(request,
+            [new(ChatRole.User, "short"), request.Messages[0]])));
+        using var scenario = await SetupAsync(plugin, messages:
+            [instruction, new(ChatRole.User, Original)]);
+
+        var loaded = await scenario.LoadAsync();
+        await scenario.SaveAsync();
+
+        Assert.Equal(new[] { "protected instruction", Original }, loaded.Select(message => message.Text));
+        Assert.Equal(scenario.Source, scenario.Active);
+        Assert.Single(scenario.Fixture.Batches);
+    }
+
     [Fact]
     public async Task FailureLoggingContainsTypeButNoPluginPayloadOrSourceBinding()
     {
