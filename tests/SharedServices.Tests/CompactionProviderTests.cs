@@ -177,6 +177,55 @@ public class CompactionProviderTests
     }
 
     [Fact]
+    public async Task BlankUnflaggedGeneratedOutputFallsBackAndStillPersistsCurrentTurn()
+    {
+        using var scenario = await SetupAsync(new Plugin((request, _) =>
+            Task.FromResult(Completed(request,
+                [new(ChatRole.Assistant, "   "), request.Messages[^2], request.Messages[^1]]))),
+            messages: [new(ChatRole.User, Original), new(ChatRole.User, "recent"),
+                new(ChatRole.Assistant, "recent reply")]);
+
+        var loaded = await scenario.LoadAsync();
+        await scenario.Provider.InvokedAsync(new(Agent(), scenario.Session,
+            [new(ChatRole.User, "current")], [new(ChatRole.Assistant, "reply")]));
+
+        Assert.Equal(new[] { Original, "recent", "recent reply" }, loaded.Select(message => message.Text));
+        Assert.Equal(scenario.Source.ConversationId, scenario.Active.ConversationId);
+        Assert.Equal(5, (await scenario.Fixture.CreateRepository().ReadAsync(scenario.Active)).Messages.Count);
+    }
+
+    [Fact]
+    public async Task AlreadyInformationalDenialSkipsCompactorAndPreservesStoredDecision()
+    {
+        var plugin = new Plugin((_, _) => throw new InvalidOperationException("must not run"));
+        var fixture = new HistoryCosmosFixture();
+        var logger = new RecordingLogger();
+        using var provider = new CosmosChatHistoryProvider(fixture.CreateRepository(),
+            compactor: plugin, compactionOptions: Options(), logger: logger);
+        var session = NewSession();
+        var call = new FunctionCallContent("denied-call", "lookup", null) { InformationalOnly = true };
+        await provider.InvokedAsync(new(Agent(), session,
+            [new(ChatRole.User, Original), new(ChatRole.Assistant, [new ToolApprovalRequestContent("approval", call)]),
+                new(ChatRole.User, [new ToolApprovalResponseContent("approval", false, call)]),
+                new(ChatRole.Assistant, [new FunctionCallContent("denied-call", "lookup", null)]),
+                new(ChatRole.Tool, [new FunctionResultContent("denied-call", "result")])], []));
+        var source = SessionPersistenceState.GetRequired(session).ActiveHistory;
+
+        var loaded = (await provider.InvokingAsync(new(Agent(), session, []))).ToArray();
+        await provider.InvokedAsync(new(Agent(), session, [new(ChatRole.User, "current")], []));
+
+        Assert.Equal(0, plugin.Invocations);
+        Assert.False(Assert.Single(loaded.SelectMany(message => message.Contents)
+            .OfType<ToolApprovalResponseContent>()).Approved);
+        Assert.Contains(logger.Messages, message => message.Contains("UnsafeToolHistory", StringComparison.Ordinal));
+        var final = SessionPersistenceState.GetRequired(session).ActiveHistory;
+        Assert.Equal(source.ConversationId, final.ConversationId);
+        var stored = await fixture.CreateRepository().ReadAsync(final);
+        Assert.False(Assert.Single(stored.Messages.SelectMany(message => message.Contents)
+            .OfType<ToolApprovalResponseContent>()).Approved);
+    }
+
+    [Fact]
     public async Task EnabledUnchangedDoesNotAddARevisionReread()
     {
         using var scenario = await SetupAsync(new Plugin((request, _) => Task.FromResult(Unchanged(request))));

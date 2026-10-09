@@ -88,7 +88,8 @@ public sealed class LocalBackgroundHistoryCompactor : IHistoryCompactor
         }
         finally
         {
-            _jobs.TryRemove(ticket.JobId, out _);
+            if (_jobs.TryRemove(new KeyValuePair<string, Job>(ticket.JobId, job)))
+                job.ReleaseResult();
         }
     }
 
@@ -104,6 +105,7 @@ public sealed class LocalBackgroundHistoryCompactor : IHistoryCompactor
 
         if (!_jobs.TryRemove(new KeyValuePair<string, Job>(ticket.JobId, job)))
             return Task.CompletedTask;
+        job.ReleaseResult();
         return job.CancelAsync();
     }
 
@@ -123,17 +125,27 @@ public sealed class LocalBackgroundHistoryCompactor : IHistoryCompactor
         }
         finally
         {
-            // Retention covers terminal results, never the execution time of an active worker.
-            if (_jobs.ContainsKey(jobId))
-                await Task.Delay(s_resultRetention, _timeProvider).ConfigureAwait(false);
-            _jobs.TryRemove(jobId, out _);
             try
             {
-                await job.DisposeAsync().ConfigureAwait(false);
+                // Retain only orphan results. Removal signals release even if it races this delay.
+                if (_jobs.ContainsKey(jobId))
+                    await Task.Delay(s_resultRetention, _timeProvider, job.ResultReleased).ConfigureAwait(false);
             }
-            catch (Exception exception)
+            catch (OperationCanceledException) when (job.ResultReleased.IsCancellationRequested)
             {
-                _logger.LogWarning(CompactionErrors.Get("BackgroundLog"), $"Cancellation/{exception.GetType().Name}");
+                // Successful retrieval/cancellation releases retention; this is not a worker failure.
+            }
+            finally
+            {
+                _jobs.TryRemove(new KeyValuePair<string, Job>(jobId, job));
+                try
+                {
+                    await job.DisposeAsync().ConfigureAwait(false);
+                }
+                catch (Exception exception)
+                {
+                    _logger.LogWarning(CompactionErrors.Get("BackgroundLog"), $"Cancellation/{exception.GetType().Name}");
+                }
             }
         }
     }
@@ -142,12 +154,14 @@ public sealed class LocalBackgroundHistoryCompactor : IHistoryCompactor
     {
         private readonly object _gate = new();
         private readonly CancellationTokenSource _cancellation = new();
+        private readonly CancellationTokenSource _resultReleased = new();
         private Task? _cancellationRequest;
         private bool _disposed;
 
         internal Job(string sourceBinding, Func<CancellationToken, Task<HistoryCompactionResult>> execute)
         {
             SourceBinding = sourceBinding;
+            ResultReleased = _resultReleased.Token;
             var token = _cancellation.Token;
             Task = System.Threading.Tasks.Task.Run(() => execute(token));
         }
@@ -155,6 +169,16 @@ public sealed class LocalBackgroundHistoryCompactor : IHistoryCompactor
         internal string SourceBinding { get; }
         internal Task<HistoryCompactionResult> Task { get; }
         internal bool IsCancellationRequested => _cancellation.IsCancellationRequested;
+        internal CancellationToken ResultReleased { get; }
+
+        internal void ReleaseResult()
+        {
+            lock (_gate)
+            {
+                if (!_disposed)
+                    _resultReleased.Cancel();
+            }
+        }
 
         internal Task CancelAsync()
         {
@@ -179,6 +203,7 @@ public sealed class LocalBackgroundHistoryCompactor : IHistoryCompactor
             finally
             {
                 _cancellation.Dispose();
+                _resultReleased.Dispose();
             }
         }
     }

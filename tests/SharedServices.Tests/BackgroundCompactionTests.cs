@@ -468,14 +468,99 @@ public class BackgroundCompactionTests
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RetrievalOrCancellationImmediatelyReleasesCompletedRetention(bool cancel)
+    {
+        var clock = new RetentionClock();
+        var compactor = new LocalBackgroundHistoryCompactor(
+            Foreground((request, _) => Task.FromResult(Completed(request))), null, clock);
+        var pending = await compactor.CompactAsync(new("agent", "binding", Original, Options()));
+        var timer = await clock.Created.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(timer.Disposed.Task.IsCompleted);
+
+        if (cancel)
+            await compactor.CancelAsync(pending.Ticket!);
+        else
+            Assert.Equal(HistoryCompactionStatus.Completed,
+                (await compactor.GetResultAsync(pending.Ticket!)).Status);
+
+        await timer.Disposed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await compactor.CancelAsync(pending.Ticket!);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => compactor.GetResultAsync(pending.Ticket!));
+    }
+
+    [Fact]
+    public async Task FailedResultRetrievalAlsoReleasesRetention()
+    {
+        var clock = new RetentionClock();
+        var compactor = new LocalBackgroundHistoryCompactor(
+            Foreground((_, _) => Task.FromException<HistoryCompactionResult>(new InvalidOperationException())),
+            null, clock);
+        var pending = await compactor.CompactAsync(new("agent", "binding", Original, Options()));
+        var timer = await clock.Created.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => compactor.GetResultAsync(pending.Ticket!));
+
+        await timer.Disposed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
+    public async Task RemovingJobDuringDelayCreationDoesNotWaitForRetentionExpiry()
+    {
+        var finish = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var clock = new RetentionClock();
+        var compactor = new LocalBackgroundHistoryCompactor(Foreground(async (request, _) =>
+        {
+            await finish.Task;
+            return Completed(request);
+        }), null, clock);
+        var pending = await compactor.CompactAsync(new("agent", "binding", Original, Options()));
+        Task<HistoryCompactionResult>? retrieval = null;
+        clock.OnCreate = () => retrieval = compactor.GetResultAsync(pending.Ticket!);
+
+        finish.SetResult();
+        var timer = await clock.Created.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await timer.Disposed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.NotNull(retrieval);
+        Assert.Equal(HistoryCompactionStatus.Completed, (await retrieval).Status);
+    }
+
+    [Fact]
+    public async Task OrphanResultStillExpiresAtRetentionDeadline()
+    {
+        var clock = new RetentionClock();
+        var compactor = new LocalBackgroundHistoryCompactor(
+            Foreground((request, _) => Task.FromResult(Completed(request))), null, clock);
+        var pending = await compactor.CompactAsync(new("agent", "binding", Original, Options()));
+        var timer = await clock.Created.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(timer.Disposed.Task.IsCompleted);
+        Assert.Equal(TimeSpan.FromMinutes(5), timer.DueTime);
+        var jobs = Assert.IsAssignableFrom<System.Collections.ICollection>(
+            typeof(LocalBackgroundHistoryCompactor).GetField("_jobs",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(compactor));
+
+        timer.Fire();
+        await timer.Disposed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        // Disposal of the timer precedes the continuation that removes the registry entry.
+        for (var attempt = 0; attempt < 100 && jobs.Count > 0; attempt++)
+            await Task.Delay(10);
+        Assert.Empty(jobs);
+        await Assert.ThrowsAsync<InvalidOperationException>(() => compactor.GetResultAsync(pending.Ticket!));
+    }
+
     private sealed class RetentionClock : TimeProvider
     {
+        internal Action? OnCreate { get; set; }
         internal TaskCompletionSource<RetentionTimer> Created { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
 
         public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
         {
             var timer = new RetentionTimer(callback, state, dueTime);
+            OnCreate?.Invoke();
             Created.TrySetResult(timer);
             return timer;
         }
@@ -483,11 +568,16 @@ public class BackgroundCompactionTests
 
     private sealed class RetentionTimer(TimerCallback callback, object? state, TimeSpan dueTime) : ITimer
     {
+        internal TaskCompletionSource Disposed { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
         internal TimeSpan DueTime { get; } = dueTime;
         internal void Fire() => callback(state);
         public bool Change(TimeSpan dueTime, TimeSpan period) => false;
-        public void Dispose() { }
-        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+        public void Dispose() => Disposed.TrySetResult();
+        public ValueTask DisposeAsync()
+        {
+            Dispose();
+            return ValueTask.CompletedTask;
+        }
     }
 
     private static IHistoryCompactor Foreground(

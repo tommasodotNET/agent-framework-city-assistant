@@ -313,6 +313,8 @@ provider. Direct history options do not inherit a separate global history regist
 Shared clients/containers are never owned or disposed by these per-agent helpers.
 DI owns clients created by its singleton factory; externally supplied clients remain
 the caller's responsibility.
+Standalone extension overloads that create their own Cosmos client also dispose it
+if provider construction or configuration fails, without swallowing the original error.
 
 `WithSessionStore` configures a hosting service, not an automatic wrapper around
 arbitrary direct calls to `agent.RunAsync`. A non-HTTP application can explicitly
@@ -375,9 +377,10 @@ model-window guarantee. Compaction triggers/targets remain owned by the MAF stra
 
 Normal history and current-turn replies are recognized as summaries only through
 explicit MAF summary metadata. Literal assistant text such as `[Summary]` or
-`[Summary unavailable]` is not itself a generated summary. For new compactor output,
-the unavailable/blank-summary guard still applies even when metadata is missing;
-unchanged messages retained from the source are excluded from that text heuristic.
+`[Summary unavailable]` is not itself a generated summary. Every new assistant
+text-only message from the compactor must be nonblank and free of the unavailable
+summary sentinel, even without metadata or a summary prefix. Unchanged source messages,
+ordinary current-turn replies, and nontext tool/reasoning content are not new textual summaries.
 
 System/developer messages stored in history are compactable only when they form
 an initial contiguous prefix. That exact prefix must stay unchanged at the start
@@ -437,7 +440,9 @@ when a matching, complete contiguous function call/result exchange proves they a
 consumed. Proof uses the same exchange validator as compaction, including roles,
 unique call ids and complete parallel results; a matching result id alone is insufficient.
 Partial/malformed exchanges keep all existing approval records and flags unchanged,
-with an explicit diagnostic. Denied or nonmatching calls are not marked consumed. Pending,
+with an explicit diagnostic. Denied or nonmatching calls are not marked consumed.
+Compaction rejects denied approvals even if their nested call already carries an
+informational flag and a matching execution exists. Pending,
 denied, mixed-content and ambiguous approval messages remain. Actual tool calls and
 results remain too; no source documents are deleted or rewritten. The compactor
 receives a detached copy of this same view, not a separately filtered transcript.
@@ -458,6 +463,8 @@ its deadline. New Load, Clear, and caller cancellation during Save also abandon 
 
 The local worker's five-minute cleanup window starts only after the task terminates,
 not at enqueue. It covers orphan results, not running jobs or Save's two-second wait.
+Retrieval or cancellation immediately signals release and stops that retention delay,
+including removal that races its creation; consumed results are not kept for five minutes.
 Cancellation is cooperative; stopping the local request does not guarantee that
 the remote model service stops processing immediately.
 

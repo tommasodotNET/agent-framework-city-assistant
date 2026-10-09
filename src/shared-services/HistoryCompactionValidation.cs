@@ -393,6 +393,9 @@ public static class HistoryCompactionValidation
             .ToDictionary(call => call.CallId, StringComparer.Ordinal);
         foreach (var content in messages.SelectMany(message => message.Contents))
         {
+            if (content is ToolApprovalResponseContent { Approved: false })
+                Fail(HistoryCompactionFailureReason.UnsafeToolHistory);
+
             var approvalCall = content switch
             {
                 ToolApprovalRequestContent request => request.ToolCall,
@@ -431,10 +434,11 @@ public static class HistoryCompactionValidation
             var text = message.Text.Trim();
             var isSummary = message.AdditionalProperties?.TryGetValue(CompactionMessageGroup.SummaryPropertyKey, out var value) == true
                 && (value is true || value is JsonElement { ValueKind: JsonValueKind.True });
-            if (!isSummary && (original is null || message.Role != ChatRole.Assistant
-                || (!text.StartsWith("[Summary]", StringComparison.Ordinal)
-                    && !string.Equals(text, "[Summary unavailable]", StringComparison.Ordinal))
-                || original.Any(source => Equivalent([source], [message]))))
+            var candidateText = original is not null && message.Role == ChatRole.Assistant
+                && (message.Contents.All(content => content is TextContent)
+                    || text.StartsWith("[Summary]", StringComparison.Ordinal)
+                    || string.Equals(text, "[Summary unavailable]", StringComparison.Ordinal));
+            if (!isSummary && !candidateText)
             {
                 continue;
             }
@@ -444,10 +448,12 @@ public static class HistoryCompactionValidation
                 text = text["[Summary]".Length..].Trim();
             }
 
-            // Guard new compactor output even when it drops summary metadata. An unchanged source
-            // message or current-turn reply is not a generated summary merely because of its text.
-            if (message.Role != ChatRole.Assistant || string.IsNullOrWhiteSpace(text)
-                || text.Contains("[Summary unavailable]", StringComparison.Ordinal))
+            // All new assistant text must be useful, even without summary markers. Retained/current
+            // messages and tool-only or reasoning-only output are not new textual summaries.
+            var invalid = message.Role != ChatRole.Assistant || string.IsNullOrWhiteSpace(text)
+                || text.Contains("[Summary unavailable]", StringComparison.Ordinal);
+            if (invalid && (isSummary || original is not null
+                && !original.Any(source => Equivalent([source], [message]))))
             {
                 Fail(HistoryCompactionFailureReason.InvalidSummary);
             }

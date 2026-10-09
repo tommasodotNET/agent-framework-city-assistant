@@ -198,7 +198,9 @@ an arbitrary hosted `AIAgent`. Its direct-container/factory overloads resolve lo
 and keyed compaction during agent construction and reuse the common provider factory.
 Their options are agent-local and do not inherit another global profile. Existing
 direct-client, connection-string and credential overloads remain available.
-Supplied clients are never disposed by per-agent helpers.
+Supplied clients are never disposed by per-agent helpers. The standalone extension
+factory disposes a client it owns if any construction/configuration step fails,
+then rethrows the original failure.
 
 Hosted protocols own their normal session load/save lifecycle. A direct `RunAsync`
 caller must explicitly get/create the session and save it using the store, or initialize
@@ -262,7 +264,9 @@ messages whose call identity/arguments and completed result match. Consumption
 proof reuses the contiguous function-exchange validator, not a scan of result ids.
 Roles, call uniqueness, ordering and complete parallel results must be valid before
 restoring informational flags; nested approval calls must match the direct execution
-and denied decisions never supply consumption proof. With incomplete/malformed exchanges,
+and denied decisions never supply consumption proof. Compaction's validator also rejects
+`Approved=false` explicitly, regardless of an existing informational flag or matching exchange.
+With incomplete/malformed exchanges,
 the provider logs the reason and leaves all existing approval flags/records unchanged.
 The same proof applies to background merges, with caller messages copied before mutation.
 System/developer,
@@ -292,6 +296,9 @@ their original compactor. Cleanup failure is logged without masking the normal
 turn save or its original error. The local worker owns a `CancellationTokenSource`
 per ticket, forwards its token to the strategy/client, and retains orphan terminal
 results for five minutes after completion, never counting execution time as retention.
+Retrieval and cancellation signal a separate result-release token when removing the
+job, interrupting retention and releasing completed worker/results promptly even if
+removal races delay creation. Running workers retain their own cooperative cancellation.
 A later Load starts a fresh job; restart recovery and cross-turn suffix merging are intentionally
 out of scope. External cancellation and uncertain storage publication still propagate.
 
@@ -321,9 +328,10 @@ instructions outside stored history are not part of this check.
 
 Summary validation distinguishes provenance: explicit summary metadata is required
 for canonical/fallback history, unchanged results and newly appended conversation
-messages. A new compactor-produced message also receives the textual sentinel guard
-when metadata is missing. Source messages retained unchanged are not classified as
-new summaries from their literal text. Flagged summaries remain validated in all paths.
+messages. Every new compactor-produced assistant text-only message must be useful:
+blank text or the unavailable-summary sentinel is rejected even with no metadata/prefix.
+Source messages retained unchanged are not new output; nontext tool/reasoning contents
+do not require summary text. Flagged summaries remain validated in all paths.
 
 The summarizer, if used, is a separate `IChatClient` dependency without the main
 agent's tools/history/compaction pipeline. Otherwise summarization could recurse

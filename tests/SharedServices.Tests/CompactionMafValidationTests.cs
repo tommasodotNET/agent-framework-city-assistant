@@ -275,20 +275,44 @@ public class CompactionMafValidationTests
     }
 
     [Fact]
-    public void CompletedPluginCannotRewriteConsumedApprovalDecision()
+    public void CompletedPluginCannotRewriteConsumedApprovalAsDenial()
     {
         var source = ExchangeSource();
         var call = new FunctionCallContent("first", "lookup", null) { InformationalOnly = true };
         source.Insert(2, new(ChatRole.Assistant, [new ToolApprovalRequestContent("approval", call)]));
-        source.Insert(3, new(ChatRole.User, [new ToolApprovalResponseContent("approval", false, call)]));
+        source.Insert(3, new(ChatRole.User, [new ToolApprovalResponseContent("approval", true, call)]));
         var request = Request(source);
         var candidate = source.Where((_, index) => index != 1).ToList();
-        candidate[2] = new(ChatRole.User, [new ToolApprovalResponseContent("approval", true, call)]);
+        candidate[2] = new(ChatRole.User, [new ToolApprovalResponseContent("approval", false, call)]);
         var result = Completed(request, candidate);
 
         var error = Assert.Throws<HistoryCompactionValidationException>(() => HistoryCompactionValidation.ValidateResult(request, result));
 
         Assert.Equal(HistoryCompactionFailureReason.ProtectedMessagesChanged, error.Reason);
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void DeniedApprovalsCannotBeCompactedDespiteMatchingCompletedExchange(
+        bool informational, bool retainDenial)
+    {
+        var source = ExchangeSource();
+        var call = new FunctionCallContent("first", "lookup", null) { InformationalOnly = informational };
+        source.Insert(2, new(ChatRole.Assistant, [new ToolApprovalRequestContent("approval", call)]));
+        source.Insert(3, new(ChatRole.User, [new ToolApprovalResponseContent("approval", false, call)]));
+        var candidate = source.Where((_, index) => index != 1
+            && (retainDenial || index is not (2 or 3))).ToArray();
+
+        var error = Assert.Throws<HistoryCompactionValidationException>(() =>
+            HistoryCompactionValidation.ValidateCandidate(source, candidate));
+
+        Assert.Equal(HistoryCompactionFailureReason.UnsafeToolHistory, error.Reason);
+        Assert.False(Assert.IsType<ToolApprovalResponseContent>(source[3].Contents[0]).Approved);
+        Assert.Equal(informational, call.InformationalOnly);
+        HistoryCompactionValidation.ValidateFallback(source);
     }
 
     [Theory]
@@ -397,6 +421,48 @@ public class CompactionMafValidationTests
         var error = Assert.Throws<HistoryCompactionValidationException>(() => HistoryCompactionValidation.ValidateResult(request, result));
 
         Assert.Equal(HistoryCompactionFailureReason.InvalidSummary, error.Reason);
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData("\r\n")]
+    [InlineData("The summary service reported [Summary unavailable].")]
+    public void NewUnflaggedAssistantTextMustBeUsefulEvenWithValidRetainedMessages(string text)
+    {
+        var request = Request();
+        var candidate = Candidate();
+        candidate.Insert(1, new(ChatRole.Assistant, text));
+
+        var error = Assert.Throws<HistoryCompactionValidationException>(() =>
+            HistoryCompactionValidation.ValidateResult(request, Completed(request, candidate)));
+
+        Assert.Equal(HistoryCompactionFailureReason.InvalidSummary, error.Reason);
+    }
+
+    [Fact]
+    public void RetainedEmptyAssistantTextIsNotGeneratedSummary()
+    {
+        var source = Source();
+        source.Insert(4, new(ChatRole.Assistant, "   ") { MessageId = "old-empty-response" });
+        var candidate = new[] { source[0], source[3], source[4], source[5] };
+
+        HistoryCompactionValidation.ValidateCandidate(source, candidate);
+        HistoryCompactionValidation.ValidateFallback(candidate);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void NontextAssistantContentDoesNotRequireTextSummary(bool reasoning)
+    {
+        var source = Source();
+        var candidate = Candidate();
+        candidate.Insert(1, new(ChatRole.Assistant, reasoning
+            ? [new TextReasoningContent("reasoning")]
+            : [new DataContent(new byte[] { 1 }, "image/png")]));
+
+        HistoryCompactionValidation.ValidateCandidate(source, candidate);
     }
 
     [Theory]

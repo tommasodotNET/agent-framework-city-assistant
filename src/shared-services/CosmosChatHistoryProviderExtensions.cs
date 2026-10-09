@@ -28,22 +28,31 @@ public static class CosmosChatHistoryProviderExtensions
         ILogger<CosmosChatHistoryProvider>? logger = null,
         IHistoryCompactor? compactor = null)
     {
-        options.Compaction?.Validate();
-        if (options.Compaction is not null && options.MaxMessagesToRetrieve.HasValue)
-            throw new ArgumentException(HistoryProviderErrors.Get("PartialHistoryConflict"), nameof(options.MaxMessagesToRetrieve));
-        var provider = new CosmosChatHistoryProvider(
-            cosmosClient, databaseId, containerId,
-            ownsClient,
-            options.ProvideOutputMessageFilter, options.StoreInputMessageFilter, logger,
-            compactor, options.Compaction);
+        try
+        {
+            options.Compaction?.Validate();
+            if (options.Compaction is not null && options.MaxMessagesToRetrieve.HasValue)
+                throw new ArgumentException(HistoryProviderErrors.Get("PartialHistoryConflict"), nameof(options.MaxMessagesToRetrieve));
+            var provider = new CosmosChatHistoryProvider(
+                cosmosClient, databaseId, containerId,
+                ownsClient,
+                options.ProvideOutputMessageFilter, options.StoreInputMessageFilter, logger,
+                compactor, options.Compaction);
 
-        if (options.MaxItemCount.HasValue) provider.MaxItemCount = options.MaxItemCount.Value;
-        if (options.MaxBatchSize.HasValue) provider.MaxBatchSize = options.MaxBatchSize.Value;
-        if (options.MaxMessagesToRetrieve.HasValue) provider.MaxMessagesToRetrieve = options.MaxMessagesToRetrieve;
-        provider.MessageTtlSeconds = options.MessageTtlSeconds;
-        options.ConfigureProvider?.Invoke(provider);
+            if (options.MaxItemCount.HasValue) provider.MaxItemCount = options.MaxItemCount.Value;
+            if (options.MaxBatchSize.HasValue) provider.MaxBatchSize = options.MaxBatchSize.Value;
+            if (options.MaxMessagesToRetrieve.HasValue) provider.MaxMessagesToRetrieve = options.MaxMessagesToRetrieve;
+            provider.MessageTtlSeconds = options.MessageTtlSeconds;
+            options.ConfigureProvider?.Invoke(provider);
 
-        return provider;
+            return provider;
+        }
+        catch
+        {
+            if (ownsClient)
+                cosmosClient.Dispose();
+            throw;
+        }
     }
 
     /// <summary>

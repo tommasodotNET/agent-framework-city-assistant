@@ -7,11 +7,87 @@ using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.DependencyInjection;
 using Moq;
 using Moq.Protected;
+using System.Reflection;
 
 namespace SharedServices.Tests;
 
 public class CompactionProviderCompositionTests
 {
+    [Theory]
+    [InlineData("profile", true)]
+    [InlineData("profile", false)]
+    [InlineData("capability", true)]
+    [InlineData("capability", false)]
+    [InlineData("pair", true)]
+    [InlineData("pair", false)]
+    [InlineData("partial-window", true)]
+    [InlineData("partial-window", false)]
+    [InlineData("provider-setting", true)]
+    [InlineData("provider-setting", false)]
+    [InlineData("callback", true)]
+    [InlineData("callback", false)]
+    public void FactoryFailureDisposesOnlyOwnedClientAndPreservesOriginalError(string failure, bool ownsClient)
+    {
+        var fixture = new HistoryCosmosFixture();
+        var client = Client(fixture);
+        var options = new CosmosChatHistoryProviderOptions();
+        IHistoryCompactor? compactor = null;
+        var expected = new InvalidOperationException("configuration failed");
+        switch (failure)
+        {
+            case "profile": options.Compaction = new(); break;
+            case "capability":
+                options.Compaction = Options() with { Mode = HistoryCompactionMode.Background };
+                compactor = new TrackingCompactor();
+                break;
+            case "pair": options.Compaction = Options(); break;
+            case "partial-window":
+                options.Compaction = Options();
+                options.MaxMessagesToRetrieve = 1;
+                compactor = new TrackingCompactor();
+                break;
+            case "provider-setting": options.MaxItemCount = 0; break;
+            case "callback": options.ConfigureProvider = _ => throw expected; break;
+        }
+        var factory = typeof(CosmosChatHistoryProviderExtensions)
+            .GetMethod("BuildProvider", BindingFlags.NonPublic | BindingFlags.Static)!;
+
+        var error = Assert.Throws<TargetInvocationException>(() => factory.Invoke(null,
+            [client.Object, "database", "conversations", options, ownsClient, null, compactor]));
+
+        if (failure == "callback")
+            Assert.Same(expected, error.InnerException);
+        else
+        {
+            var expectedType = failure switch
+            {
+                "profile" or "pair" or "partial-window" => typeof(ArgumentException),
+                "capability" => typeof(NotSupportedException),
+                _ => typeof(ArgumentOutOfRangeException)
+            };
+            Assert.IsType(expectedType, error.InnerException);
+        }
+        client.Protected().Verify("Dispose", ownsClient ? Times.Once() : Times.Never(), ItExpr.IsAny<bool>());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void SuccessfulFactoryTransfersOnlyOwnedClientToProvider(bool ownsClient)
+    {
+        var fixture = new HistoryCosmosFixture();
+        var client = Client(fixture);
+        var factory = typeof(CosmosChatHistoryProviderExtensions)
+            .GetMethod("BuildProvider", BindingFlags.NonPublic | BindingFlags.Static)!;
+        var provider = Assert.IsType<CosmosChatHistoryProvider>(factory.Invoke(null,
+            [client.Object, "database", "conversations", new CosmosChatHistoryProviderOptions(), ownsClient, null, null]));
+        client.Protected().Verify("Dispose", Times.Never(), ItExpr.IsAny<bool>());
+
+        provider.Dispose();
+
+        client.Protected().Verify("Dispose", ownsClient ? Times.Once() : Times.Never(), ItExpr.IsAny<bool>());
+    }
+
     [Fact]
     public async Task DisabledProviderDoesNotResolveARegisteredCompactor()
     {
