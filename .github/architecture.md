@@ -332,6 +332,9 @@ messages. Every new compactor-produced assistant text-only message must be usefu
 blank text or the unavailable-summary sentinel is rejected even with no metadata/prefix.
 Source messages retained unchanged are not new output; nontext tool/reasoning contents
 do not require summary text. Flagged summaries remain validated in all paths.
+Retention exemptions consume source occurrences once, using semantic message equality
+and per-validation bookkeeping. One source message cannot excuse multiple invalid
+candidate copies; genuine repeated source messages can retain their original count.
 
 The summarizer, if used, is a separate `IChatClient` dependency without the main
 agent's tools/history/compaction pipeline. Otherwise summarization could recurse

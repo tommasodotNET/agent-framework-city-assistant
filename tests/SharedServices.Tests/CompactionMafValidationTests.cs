@@ -452,6 +452,81 @@ public class CompactionMafValidationTests
     }
 
     [Theory]
+    [InlineData("   ", 1, 1, true)]
+    [InlineData("   ", 1, 2, false)]
+    [InlineData("   ", 1, 5, false)]
+    [InlineData("   ", 2, 1, true)]
+    [InlineData("   ", 2, 2, true)]
+    [InlineData("   ", 2, 3, false)]
+    [InlineData("[Summary unavailable]", 1, 1, true)]
+    [InlineData("[Summary unavailable]", 1, 2, false)]
+    [InlineData("[Summary unavailable]", 1, 5, false)]
+    [InlineData("[Summary unavailable]", 2, 1, true)]
+    [InlineData("[Summary unavailable]", 2, 2, true)]
+    [InlineData("[Summary unavailable]", 2, 3, false)]
+    [InlineData("[Summary]", 1, 2, false)]
+    public void RetentionExemptionCannotReuseSourceOccurrence(
+        string text, int originalCount, int candidateCount, bool accepted)
+    {
+        var source = Source();
+        for (var index = 0; index < originalCount; index++)
+            source.Insert(3, new(ChatRole.Assistant, text));
+        var candidate = Candidate();
+        for (var index = 0; index < candidateCount; index++)
+            candidate.Insert(1, new(ChatRole.Assistant, text));
+        var before = JsonSerializer.Serialize(new { source, candidate });
+        var request = Request(source);
+        var result = Completed(request, candidate);
+
+        if (accepted)
+            HistoryCompactionValidation.ValidateResult(request, result);
+        else
+        {
+            var error = Assert.Throws<HistoryCompactionValidationException>(() =>
+                HistoryCompactionValidation.ValidateResult(request, result));
+            Assert.Equal(HistoryCompactionFailureReason.InvalidSummary, error.Reason);
+        }
+
+        Assert.Equal(before, JsonSerializer.Serialize(new { source, candidate }));
+    }
+
+    [Fact]
+    public void ReorderedMetadataDoesNotCreateAdditionalRetentionAllowance()
+    {
+        var source = Source();
+        source.Insert(3, new(ChatRole.Assistant, "   ")
+        {
+            AdditionalProperties = new() { ["a"] = 1, ["b"] = 2 }
+        });
+        ChatMessage Retained() => new(ChatRole.Assistant, "   ")
+        {
+            AdditionalProperties = new() { ["b"] = 2, ["a"] = 1 }
+        };
+        var candidate = Candidate();
+        candidate.Insert(1, Retained());
+        HistoryCompactionValidation.ValidateCandidate(source, candidate);
+        candidate.Insert(1, Retained());
+
+        var error = Assert.Throws<HistoryCompactionValidationException>(() =>
+            HistoryCompactionValidation.ValidateCandidate(source, candidate));
+
+        Assert.Equal(HistoryCompactionFailureReason.InvalidSummary, error.Reason);
+    }
+
+    [Fact]
+    public void ExactRetentionWithDifferentMessagesUsesSeparateSourceOccurrences()
+    {
+        var source = Source();
+        source.Insert(3, new(ChatRole.Assistant, "   "));
+        source.Insert(4, new(ChatRole.Assistant, "[Summary unavailable]"));
+        var candidate = Candidate();
+        candidate.Insert(1, source[3]);
+        candidate.Insert(2, source[4]);
+
+        HistoryCompactionValidation.ValidateCandidate(source, candidate);
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public void NontextAssistantContentDoesNotRequireTextSummary(bool reasoning)

@@ -194,6 +194,28 @@ public class CompactionProviderTests
         Assert.Equal(5, (await scenario.Fixture.CreateRepository().ReadAsync(scenario.Active)).Messages.Count);
     }
 
+    [Theory]
+    [InlineData("   ")]
+    [InlineData("[Summary unavailable]")]
+    public async Task DuplicatedSourceTextCannotBePublishedAsRetainedHistory(string text)
+    {
+        using var scenario = await SetupAsync(new Plugin((request, _) =>
+            Task.FromResult(Completed(request,
+                [request.Messages[1], request.Messages[1], request.Messages[^1]]))),
+            messages: [new(ChatRole.User, Original), new(ChatRole.Assistant, text),
+                new(ChatRole.User, "recent")]);
+
+        var loaded = await scenario.LoadAsync();
+        await scenario.Provider.InvokedAsync(new(Agent(), scenario.Session,
+            [new(ChatRole.User, "current")], [new(ChatRole.Assistant, "reply")]));
+
+        Assert.Equal(new[] { Original, text, "recent" }, loaded.Select(message => message.Text));
+        Assert.Equal(scenario.Source.ConversationId, scenario.Active.ConversationId);
+        var stored = (await scenario.Fixture.CreateRepository().ReadAsync(scenario.Active)).Messages;
+        Assert.Single(stored, message => message.Role == ChatRole.Assistant && message.Text == text);
+        Assert.Equal(new[] { Original, text, "recent", "current", "reply" }, stored.Select(message => message.Text));
+    }
+
     [Fact]
     public async Task AlreadyInformationalDenialSkipsCompactorAndPreservesStoredDecision()
     {

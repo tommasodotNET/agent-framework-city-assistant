@@ -381,6 +381,8 @@ explicit MAF summary metadata. Literal assistant text such as `[Summary]` or
 text-only message from the compactor must be nonblank and free of the unavailable
 summary sentinel, even without metadata or a summary prefix. Unchanged source messages,
 ordinary current-turn replies, and nontext tool/reasoning content are not new textual summaries.
+Each source occurrence can exempt at most one equal retained candidate message;
+additional blank/unavailable copies are new invalid output, not original history.
 
 System/developer messages stored in history are compactable only when they form
 an initial contiguous prefix. That exact prefix must stay unchanged at the start

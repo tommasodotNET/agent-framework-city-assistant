@@ -429,6 +429,7 @@ public static class HistoryCompactionValidation
     private static void ValidateSummaries(
         IReadOnlyList<ChatMessage> messages, IReadOnlyList<ChatMessage>? original = null)
     {
+        HashSet<int>? retainedSourcePositions = null;
         foreach (var message in messages)
         {
             var text = message.Text.Trim();
@@ -452,11 +453,25 @@ public static class HistoryCompactionValidation
             // messages and tool-only or reasoning-only output are not new textual summaries.
             var invalid = message.Role != ChatRole.Assistant || string.IsNullOrWhiteSpace(text)
                 || text.Contains("[Summary unavailable]", StringComparison.Ordinal);
-            if (invalid && (isSummary || original is not null
-                && !original.Any(source => Equivalent([source], [message]))))
+            if (!invalid)
+                continue;
+
+            var retained = false;
+            if (!isSummary && original is not null)
             {
-                Fail(HistoryCompactionFailureReason.InvalidSummary);
+                retainedSourcePositions ??= [];
+                for (var index = 0; index < original.Count; index++)
+                {
+                    if (!retainedSourcePositions.Contains(index) && Equivalent([original[index]], [message]))
+                    {
+                        retainedSourcePositions.Add(index);
+                        retained = true;
+                        break;
+                    }
+                }
             }
+            if (!retained)
+                Fail(HistoryCompactionFailureReason.InvalidSummary);
         }
     }
 

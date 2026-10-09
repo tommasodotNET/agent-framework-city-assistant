@@ -134,6 +134,34 @@ public class BackgroundCompactionTests
     }
 
     [Theory]
+    [InlineData("   ")]
+    [InlineData("[Summary unavailable]")]
+    public async Task BackgroundDuplicateRetentionFallsBackAndSavesCurrentTurn(string text)
+    {
+        using var scenario = await SetupAsync();
+        await scenario.Provider.InvokedAsync(new(Agent(), scenario.Session,
+            [new(ChatRole.User, "recent")], [new(ChatRole.Assistant, text)]));
+        await LoadAsync(scenario.Provider, scenario.Session);
+        scenario.Backend.OnPoll = (ticket, _) =>
+        {
+            var request = scenario.Backend.Request!;
+            ChatMessage[] candidate = [request.Messages[^1], request.Messages[^1], new(ChatRole.User, "summary")];
+            return Task.FromResult(new HistoryCompactionResult(HistoryCompactionStatus.Completed,
+                ticket.SourceBinding, candidate, Size(request.Messages), Size(candidate)));
+        };
+
+        await SaveAsync(scenario.Provider, scenario.Session, "current", "reply");
+
+        Assert.Equal(scenario.Source.ConversationId, State(scenario.Session).ActiveHistory.ConversationId);
+        Assert.Null(State(scenario.Session).PendingCompaction);
+        Assert.Single(scenario.Backend.Cancellations);
+        var stored = await ReadAsync(scenario);
+        Assert.Single(stored, message => message.Role == ChatRole.Assistant && message.Text == text);
+        Assert.Equal(new[] { "current", "reply" }, stored.TakeLast(2).Select(message => message.Text));
+        Assert.Contains(scenario.Logger.Messages, message => message.Contains("InvalidSummary", StringComparison.Ordinal));
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task BackgroundMergeRestoresOnlyProvenApprovalsWithoutChangingCallerObjects(bool validExchange)
