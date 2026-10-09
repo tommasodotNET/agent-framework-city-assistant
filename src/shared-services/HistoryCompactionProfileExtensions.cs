@@ -19,15 +19,16 @@ public static class HistoryCompactionProfileExtensions
     /// </summary>
     /// <remarks>
     /// CompactorKey is mandatory when enabled. MaxHistoryUtf8Bytes is an optional positive cap;
-    /// missing or null disables that cap. Mode defaults to Foreground;
-    /// Timeout is an optional TimeSpan. The test-sliding-window key additionally requires positive
+    /// missing or null disables that cap. Mode defaults to Foreground. Timeout is an optional
+    /// per-call TimeSpan; BackgroundSaveWaitTimeout defaults to two seconds. The test-sliding-window key additionally requires positive
     /// MaxTurns and registers a model-free MAF strategy preserving that many recent turns.
     /// The summary key requires Model, positive TriggerTokens and positive MinimumPreservedGroups.
     /// Optional TargetTokens must be positive and below TriggerTokens; omission retains MAF's default
     /// target. It estimates retained history before adding the summary, not a final prompt budget.
     /// Its factory must create a dedicated, concurrency-safe client without tools, history or compaction
     /// middleware; it is called lazily with the explicit model and its result is owned by DI.
-    /// Both built-ins support only Foreground. Other keys use normal keyed IHistoryCompactor registrations.
+    /// Both built-ins use a best-effort local adapter when Mode is Background.
+    /// Other keys use normal keyed IHistoryCompactor registrations.
     /// </remarks>
     public static HistoryCompactionOptions? AddHistoryCompactionProfile(
         this IServiceCollection services, IConfigurationSection section,
@@ -43,25 +44,24 @@ public static class HistoryCompactionProfileExtensions
             CompactorKey = section["CompactorKey"] ?? string.Empty,
             Mode = section.GetValue<HistoryCompactionMode?>("Mode") ?? HistoryCompactionMode.Foreground,
             MaxHistoryUtf8Bytes = section.GetValue<long?>("MaxHistoryUtf8Bytes"),
-            Timeout = section.GetValue<TimeSpan?>("Timeout")
+            Timeout = section.GetValue<TimeSpan?>("Timeout"),
+            BackgroundSaveWaitTimeout = section.GetValue<TimeSpan?>("BackgroundSaveWaitTimeout")
+                ?? TimeSpan.FromSeconds(2)
         };
         options.Validate();
         if (string.Equals(options.CompactorKey, "test-sliding-window", StringComparison.Ordinal))
         {
-            if (options.Mode != HistoryCompactionMode.Foreground)
-                throw new NotSupportedException(CompactionErrors.Get("UnsupportedMode"));
             var maxTurns = section.GetValue<int?>("MaxTurns") ?? 0;
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxTurns);
             services.AddHistoryCompactor(options.CompactorKey, provider =>
-                new MafForegroundHistoryCompactor(
+                ForMode(options.Mode, new MafForegroundHistoryCompactor(
                     new SlidingWindowCompactionStrategy(CompactionTriggers.TurnsExceed(maxTurns),
                         minimumPreservedTurns: maxTurns),
-                    provider.GetService<ILogger<MafForegroundHistoryCompactor>>()));
+                    provider.GetService<ILogger<MafForegroundHistoryCompactor>>()),
+                    provider.GetService<ILogger<LocalBackgroundHistoryCompactor>>()));
         }
         else if (string.Equals(options.CompactorKey, "summary", StringComparison.Ordinal))
         {
-            if (options.Mode != HistoryCompactionMode.Foreground)
-                throw new NotSupportedException(CompactionErrors.Get("UnsupportedMode"));
             var model = section["Model"];
             if (string.IsNullOrWhiteSpace(model))
                 throw new ArgumentException(CompactionErrors.Get("SummaryModelRequired"), "Model");
@@ -89,7 +89,7 @@ public static class HistoryCompactionProfileExtensions
             {
                 var logger = provider.GetService<ILogger<MafForegroundHistoryCompactor>>();
                 var trigger = CompactionTriggers.TokensExceed(triggerTokens);
-                return new MafForegroundHistoryCompactor(
+                return ForMode(options.Mode, new MafForegroundHistoryCompactor(
                     new SummarizationCompactionStrategy(
                         provider.GetRequiredKeyedService<IChatClient>(s_summaryClientKey),
                         trigger: index =>
@@ -100,11 +100,19 @@ public static class HistoryCompactionProfileExtensions
                         },
                         minimumPreservedGroups: minimumPreservedGroups,
                         target: targetTokens is { } threshold ? index => index.IncludedTokenCount <= threshold : null),
-                    logger);
+                    logger), provider.GetService<ILogger<LocalBackgroundHistoryCompactor>>());
             });
         }
         return options;
     }
+
+    private static IHistoryCompactor ForMode(
+        HistoryCompactionMode mode,
+        MafForegroundHistoryCompactor foreground,
+        ILogger<LocalBackgroundHistoryCompactor>? backgroundLogger) =>
+        mode == HistoryCompactionMode.Background
+            ? new LocalBackgroundHistoryCompactor(foreground, backgroundLogger)
+            : foreground;
 
     private static IEnumerable<ChatMessage> WithSummaryInstruction(IEnumerable<ChatMessage> messages) =>
         messages.Append(new ChatMessage(ChatRole.User, """

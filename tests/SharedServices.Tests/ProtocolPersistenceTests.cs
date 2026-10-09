@@ -481,14 +481,19 @@ public sealed class ProtocolPersistenceTests
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
-    public async Task Background_ticket_survives_protocol_checkpoint_and_restart_before_save_rotation(bool responses)
+    public async Task Background_restart_starts_fresh_job_and_rotates_at_save(bool responses)
     {
         var cosmos = new SessionCosmosSdkFixture();
         var history = new HistoryCosmosFixture();
         var jobs = new ProtocolBackgroundJobs();
         CosmosChatHistoryProvider Provider(CosmosChatMessageRepository repository) => new(repository,
             compactor: new ProtocolBackgroundCompactor(jobs),
-            compactionOptions: new() { CompactorKey = "protocol-background", Mode = HistoryCompactionMode.Background });
+            compactionOptions: new()
+            {
+                CompactorKey = "protocol-background",
+                Mode = HistoryCompactionMode.Background,
+                BackgroundSaveWaitTimeout = TimeSpan.Zero
+            });
         const string contextId = "background-context";
         string? previous = null;
         var firstQuestion = new string('x', 500);
@@ -527,10 +532,9 @@ public sealed class ProtocolPersistenceTests
 
         Assert.Contains(restarted.Model.Inputs.First(), message => message.Text == firstQuestion);
         Assert.DoesNotContain(restarted.Model.Inputs.Last(), message => message.Text == firstQuestion);
-        Assert.Contains(restarted.Model.Inputs.Last(), message => message.Text == "second");
         Assert.Contains(restarted.Model.Inputs.Last(), message => message.Text == "third");
         Assert.Contains(restarted.Model.Inputs.Last(), message => message.Text == "summary");
-        Assert.Equal(2, history.Documents.Count(document => document.GetProperty("type").GetString() == "HistoryHead"));
+        Assert.Equal(3, history.Documents.Count(document => document.GetProperty("type").GetString() == "HistoryHead"));
     }
 
     [Fact]
@@ -542,7 +546,12 @@ public sealed class ProtocolPersistenceTests
         await using var host = await ProtocolHost.StartAsync(cosmos: cosmos, history: history,
             historyProviderFactory: repository => new(repository,
                 compactor: new ProtocolBackgroundCompactor(jobs),
-                compactionOptions: new() { CompactorKey = "background", Mode = HistoryCompactionMode.Background }));
+                compactionOptions: new()
+                {
+                    CompactorKey = "background",
+                    Mode = HistoryCompactionMode.Background,
+                    BackgroundSaveWaitTimeout = TimeSpan.Zero
+                }));
         var conversationId = await host.CreateConversationAsync();
         await host.CreateResponseAsync(new string('x', 500), conversationId: conversationId, store: false);
         await host.CreateResponseAsync("second", conversationId: conversationId, store: false);
@@ -554,8 +563,8 @@ public sealed class ProtocolPersistenceTests
         Assert.Equal(4, writes.Length);
         Assert.All(writes, write => Assert.Equal(conversationId, JsonSerializer.Deserialize<SessionDocument>(write.Body)!.SessionId));
         Assert.Contains(host.Model.Inputs.Last(), message => message.Text == "summary");
-        Assert.Contains(host.Model.Inputs.Last(), message => message.Text == "second");
-        Assert.Equal(2, history.Documents.Count(document => document.GetProperty("type").GetString() == "HistoryHead"));
+        Assert.Contains(host.Model.Inputs.Last(), message => message.Text == "third");
+        Assert.Equal(3, history.Documents.Count(document => document.GetProperty("type").GetString() == "HistoryHead"));
     }
 
     private sealed class ProtocolBackgroundJobs
@@ -570,12 +579,6 @@ public sealed class ProtocolPersistenceTests
             new HashSet<HistoryCompactionMode> { HistoryCompactionMode.Background };
         public Task<HistoryCompactionResult> CompactAsync(HistoryCompactionRequest request, CancellationToken cancellationToken = default)
         {
-            if (jobs.Request is not null)
-            {
-                var size = HistoryCompactionValidation.Measure(request.Messages);
-                return Task.FromResult(new HistoryCompactionResult(HistoryCompactionStatus.Unchanged, request.SourceBinding,
-                    request.Messages, size, size));
-            }
             jobs.Request = request;
             return Task.FromResult(HistoryCompactionResult.Pending(new("protocol-job", request.SourceBinding)));
         }

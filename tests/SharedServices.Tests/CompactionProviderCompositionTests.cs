@@ -251,10 +251,28 @@ public class CompactionProviderCompositionTests
     }
 
     [Fact]
-    public void BuiltInForegroundProfileRejectsBackgroundAtRegistration()
+    public void BuiltInSlidingWindowProfileSupportsLocalBackgroundMode()
     {
-        Assert.Throws<NotSupportedException>(() => new ServiceCollection().AddHistoryCompactionProfile(Section(
-            new() { ["CompactorKey"] = "test-sliding-window", ["Mode"] = "Background", ["MaxTurns"] = "2" })));
+        var services = new ServiceCollection();
+        var options = services.AddHistoryCompactionProfile(Section(
+            new() { ["CompactorKey"] = "test-sliding-window", ["Mode"] = "Background", ["MaxTurns"] = "2" }));
+        using var provider = services.BuildServiceProvider();
+
+        Assert.IsType<LocalBackgroundHistoryCompactor>(provider.GetHistoryCompactor(options));
+    }
+
+    [Fact]
+    public void ProfileReadsBackgroundSaveWaitTimeout()
+    {
+        var options = new ServiceCollection().AddHistoryCompactionProfile(Section(new()
+        {
+            ["CompactorKey"] = "test-sliding-window",
+            ["Mode"] = "Background",
+            ["MaxTurns"] = "2",
+            ["BackgroundSaveWaitTimeout"] = "00:00:00.250"
+        }));
+
+        Assert.Equal(TimeSpan.FromMilliseconds(250), options!.BackgroundSaveWaitTimeout);
     }
 
     [Fact]

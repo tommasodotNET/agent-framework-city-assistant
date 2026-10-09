@@ -29,8 +29,8 @@ public enum HistoryCompactionStatus
 /// history or agent sessions. They must deep-copy mutable messages and contents before running a strategy.
 /// Per-invocation indexes and message state must not be shared between calls.
 /// SupportedModes alone declares capabilities; background implementations must override GetResultAsync.
-/// Background jobs may be local best-effort or durable remote work; ticket persistence does not make
-/// the job durable. Implementations own execution and retention, not the history provider.
+/// Background jobs may be local best-effort or durable remote work. Implementations own execution
+/// and short-lived result retention, not the history provider.
 /// </remarks>
 public interface IHistoryCompactor
 {
@@ -45,11 +45,8 @@ public interface IHistoryCompactor
     /// <remarks>
     /// In Background mode CompactAsync returns Unchanged or Pending, never inline Completed.
     /// Return Pending only for a known accepted job that is still running, or the final
-    /// Unchanged/Completed result bound to the original source. Reads must be repeatable while
-    /// retained: retrieval does not acknowledge or consume a result. Report missing, expired or
-    /// failed jobs (including local jobs lost on restart or another replica) with InvalidOperationException,
-    /// never fake Pending or empty history. HttpRequestException/TimeoutException denote transient
-    /// retrieval failures. Providers log the category and clear terminal tickets, but retain transient ones.
+    /// Unchanged/Completed result bound to the original source. Report missing, expired or failed
+    /// jobs with InvalidOperationException, never fake Pending or empty history.
     /// Request cancellation cancels enqueue/retrieval, not an already accepted job.
     /// Foreground-only implementations can use this default, which explicitly rejects retrieval.
     /// </remarks>
@@ -71,7 +68,7 @@ public sealed record HistoryCompactionTicket
         SourceBinding = sourceBinding;
     }
 
-    /// <summary>The backend's opaque correlation id; availability across instances depends on the backend.</summary>
+    /// <summary>The backend's opaque correlation id.</summary>
     [JsonPropertyName("jobId")]
     public string JobId { get; }
     /// <summary>The exact opaque source binding received when the job was started.</summary>

@@ -276,14 +276,13 @@ public sealed class CosmosEmulatorIntegrationTests
     }
 
     [CosmosEmulatorFact]
-    public async Task Background_provider_resumes_ticket_and_merges_exact_suffix_on_Cosmos()
+    public async Task Background_provider_rotates_ready_result_on_Cosmos()
     {
         await using var database = await EmulatorDatabase.CreateAsync();
         var repository = new CosmosChatMessageRepository(database.Conversations);
         var compactor = new Mock<IHistoryCompactor>();
         compactor.SetupGet(value => value.SupportedModes).Returns(new HashSet<HistoryCompactionMode> { HistoryCompactionMode.Background });
         HistoryCompactionRequest? job = null;
-        var ready = false;
         compactor.Setup(value => value.CompactAsync(It.IsAny<HistoryCompactionRequest>(), It.IsAny<CancellationToken>()))
             .Returns((HistoryCompactionRequest request, CancellationToken _) =>
             {
@@ -294,10 +293,9 @@ public sealed class CosmosEmulatorIntegrationTests
             .Returns((HistoryCompactionTicket ticket, CancellationToken _) =>
             {
                 ChatMessage[] summary = [new(ChatRole.User, "summary")];
-                return Task.FromResult(ready
-                    ? new HistoryCompactionResult(HistoryCompactionStatus.Completed, ticket.SourceBinding, summary,
-                        HistoryCompactionValidation.Measure(job!.Messages), HistoryCompactionValidation.Measure(summary))
-                    : HistoryCompactionResult.Pending(ticket));
+                return Task.FromResult(new HistoryCompactionResult(HistoryCompactionStatus.Completed,
+                    ticket.SourceBinding, summary,
+                    HistoryCompactionValidation.Measure(job!.Messages), HistoryCompactionValidation.Measure(summary)));
             });
         var options = new HistoryCompactionOptions { CompactorKey = "test", Mode = HistoryCompactionMode.Background };
         using var provider = new CosmosChatHistoryProvider(repository, compactor: compactor.Object, compactionOptions: options);
@@ -313,29 +311,17 @@ public sealed class CosmosEmulatorIntegrationTests
         var key = new AgentSessionStoreKey("background-context");
         var session = await store.GetOrCreateSessionAsync(agent, key);
         await agent.RunAsync(new string('x', 800), session);
-        await agent.RunAsync("first retained", session);
+        var original = SessionPersistenceState.GetRequired(session).ActiveHistory;
+        await agent.RunAsync("current", session);
         await store.SaveSessionAsync(agent, key, session);
-        var original = SessionPersistenceState.GetRequired(session);
-        Assert.NotNull(original.PendingCompaction);
-
-        using var replicaProvider = new CosmosChatHistoryProvider(new CosmosChatMessageRepository(database.Conversations),
-            compactor: compactor.Object, compactionOptions: options);
-        var replicaAgent = Agent(replicaProvider);
-        var replicaStore = Store();
-        var restored = await replicaStore.GetSessionAsync(replicaAgent, key);
-        Assert.NotNull(restored);
-        ready = true;
-        await replicaAgent.RunAsync("second retained", restored);
-        await replicaStore.SaveSessionAsync(replicaAgent, key, restored);
-
-        var final = SessionPersistenceState.GetRequired(restored);
+        var final = SessionPersistenceState.GetRequired(session);
         Assert.Null(final.PendingCompaction);
-        Assert.NotEqual(original.ActiveHistory.ConversationId, final.ActiveHistory.ConversationId);
-        Assert.Equal(new[] { "summary", "first retained", "reply", "second retained", "reply" },
+        Assert.NotEqual(original.ConversationId, final.ActiveHistory.ConversationId);
+        Assert.Equal(new[] { "summary", "current", "reply" },
             (await repository.ReadAsync(final.ActiveHistory)).Messages.Select(message => message.Text));
         compactor.Verify(value => value.CompactAsync(It.IsAny<HistoryCompactionRequest>(), It.IsAny<CancellationToken>()), Times.Once);
         await Assert.ThrowsAsync<HistoryConcurrencyException>(() =>
-            repository.AppendAsync(original.ActiveHistory, [new(ChatRole.User, "stale")]));
+            repository.AppendAsync(original, [new(ChatRole.User, "stale")]));
     }
 
     private sealed class EmulatorDatabase(CosmosClient client, Database database,

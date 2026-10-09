@@ -209,21 +209,15 @@ implementation, `MafForegroundHistoryCompactor`, uses MAF's experimental
 | Save the complete agent session | Normal A2A/Responses hosting and session store |
 
 `Foreground` awaits and validates a candidate during Load, but publishes it only
-at Save. `Background` starts
-work during Load and retrieves a result once per Save. The provider implements
-both lifecycles; the supplied `MafForegroundHistoryCompactor` supports only
-foreground. A background registration advertises the mode in `SupportedModes`
-and overrides `IHistoryCompactor.GetResultAsync`. This single contract has a default
-retrieval implementation throwing `NotSupportedException` for foreground-only engines;
-composition validates capabilities, not runtime subtypes. Jobs may be local best-effort
-or durable remote work. There is no background executor or queue in this repository,
-and persisting a ticket does not make a local job durable or available on another replica.
+at Save. `Background` starts work during Load and polls for the result during Save.
+The built-in profiles use `LocalBackgroundHistoryCompactor`, an in-process best-effort
+adapter over `MafForegroundHistoryCompactor`. Custom engines use the same
+`IHistoryCompactor` contract and advertise their supported mode.
 
 Foreground Load keeps C1 and its expected revision active. A ready candidate, its
 exact source reference, operation id and immutable profile are held only in
 `SessionPersistenceContext.PreparedCompaction`, a transient `[JsonIgnore]` property
-beside `ActiveHistory` and serialized `PendingCompaction`. There is no provider field,
-separate StateBag entry, ticket, global cache or external store for this value.
+beside `ActiveHistory`. There is no separate StateBag entry or external store.
 Every new Load clears abandoned preparation **before** reading, including after a
 failed/cancelled model invocation and when compaction is disabled. Clear invalidates
 it too. Serialization excludes it from snapshots without clearing the live value;
@@ -247,9 +241,7 @@ mixed-content, denied, pending and ambiguous records are not removed. This preve
 the inference adapter from projecting old approval audit records as empty assistant
 messages. Source storage remains unchanged. It is not a generic empty-text filter:
 real function calls/results and even unrelated empty messages are preserved.
-Foreground receives a clone of this view. A background ticket records the raw stored
-message count/sequence, and its result is checked against the same normalized view of
-that raw prefix; filtering must not move the suffix boundary.
+Both execution modes receive a detached clone of this view.
 
 Tool/approval middleware can call Save with an incomplete new exchange. The foreground
 prefix has already passed full compaction validation, including complete tool groups;
@@ -257,57 +249,17 @@ the appended suffix is copied unchanged, not reduced. This allows a native appro
 pause to be persisted without dropping its messages or retaining a foreground job.
 The combined history must still fit an explicit cap; failure is surfaced instead of
 silently exceeding it or appending to the unreduced source. A subsequent Load with
-pending tools uses the existing safe unchanged-history path. Background behavior
-remains different: the original history was used for inference, so an incomplete
-later exchange can defer application while appending normally.
+pending tools uses the existing safe unchanged-history path.
 
 Background start returns `Unchanged` or `Pending(ticket)`, never inline `Completed`.
-The additive `pendingCompaction` field lives inside `SessionPersistenceContext`
-in the serialized session. It holds the profile key, opaque ticket/source binding,
-original history reference, original message count, inclusive last sequence and
-publication operation id, not a second copy of the messages. Existing snapshots
-without compaction state remain valid.
-
-Source tracking relies on the repository's append-only invariant: message payloads
-are immutable, and sequences increase without being reused, even after Clear.
-Counting live messages at or before the recorded sequence detects lost originals
-(TTL expiry or clear/recreate) while excluding later appends. There is no source
-content hash or support for out-of-band edits of message documents. The distinct
-candidate `SnapshotHash` remains part of rotation retry validation.
-
-At Save the provider **retrieves the job first**. `Pending` keeps the ticket and
-appends normally, with no history query for compaction. Only a ready result triggers
-a full read at the **expected current revision**, after retrieval, and a check of
-the original prefix. Expiry during retrieval is therefore observed by that read.
-`Completed` is independently validated against that original prefix; the candidate
-is then joined with the exact ordered stored suffix and the current invocation's
-filtered input/output. The merged history is validated, and C2 is published against
-the current source revision. As with foreground, this uses the live-message snapshot
-at read time, not an atomic transaction with the independent TTL sweeper. This Save
-does not also append to C1 or append the same turn twice to C2. Invalid results
-against the original prefix always discard the ticket, including malformed or
-invented tool exchanges. Incomplete tool or approval exchanges in the subsequent
-turns defer application of a valid result; the original messages are saved normally.
-No background result is applied solely because the worker finishes: a Save is needed.
-
-The provider exposes these steps as separate methods: foreground execution,
-background enqueue, result retrieval, merge/validation and publication. Deep copies
-are confined to plugin input/output, the foreground model view and new framework messages; already-private
-repository messages do not need repeated serialization just to form the merge.
-
-Profile changes, explicit clear, original-prefix expiry/replacement, or invalid/
-terminal job outcomes discard the pending ticket with diagnostics where applicable.
-Once cleared, the next Load asks the compactor to evaluate the current history
-again; it does not overwrite a valid job while that job remains pending.
-Terminal `InvalidOperationException` clears the ticket; transient
-`HttpRequestException`/`TimeoutException` keeps it for another Save. Cancellation and storage/
-publication errors propagate; no fallback append follows an uncertain publication.
-Normal hosting checkpoints the ticket and history reference, preserving Responses
-alias and `store=false` behavior. Compactors own job retention and report missing,
-expired or failed jobs explicitly (including lost local jobs), never fake `Pending`
-or empty history. Unsaved sessions can leave orphan jobs to expire.
-Accepted-job results support repeatable reads while retained; retrieval must not consume
-a result, since retries and fresh replicas can request it.
+The ticket, exact request and source reference live only in transient `[JsonIgnore]`
+state between that Load and its Save. They are never written into a hosted session
+snapshot. `BackgroundSaveWaitTimeout` gives Save a bounded polling window, defaulting
+to two seconds. A valid ready result is merged with the current invocation's filtered
+input/output and conditionally published as C2. Pending, missing, failed, or invalid
+work falls back to the normal append on C1 and the ticket is discarded. A later Load
+starts a fresh job; restart recovery and cross-turn suffix merging are intentionally
+out of scope. External cancellation and uncertain storage publication still propagate.
 
 A profile identifies a keyed compactor and can optionally set a positive
 `MaxHistoryUtf8Bytes` cap. It is nullable and **disabled by default**: missing or
@@ -332,8 +284,9 @@ no full compaction index is placed in `AgentSession.StateBag`.
 
 All five text hosts accept a built-in opt-in `summary` profile via
 `AddHistoryCompactionProfile`. It requires an explicit `HistoryCompaction:Model`
-deployment, positive `TriggerTokens` and positive `MinimumPreservedGroups`, and rejects
-`Background`. No default activation, implicit model reuse or fixed threshold is supplied.
+deployment, positive `TriggerTokens` and positive `MinimumPreservedGroups`.
+`Background` wraps the same strategy in the local best-effort adapter. No default
+activation, implicit model reuse or fixed threshold is supplied.
 Each host provides a lazy factory that calls `AsIChatClient(model)` on the already
 registered Azure Inference `ChatCompletionsClient`, reusing the `foundry`
 endpoint/credentials but not the agent's wrapped `IChatClient`. The separate adapter
@@ -384,8 +337,8 @@ provider's configured retention. The reference in the working session changes
 only after successful publication, and hosting persists the snapshot normally.
 
 This is optimistic concurrency, **not** automatic request queuing or merging of
-competing writers. Background merges only the proven prefix/suffix of the same
-linear working history.
+competing writers. Background publishes only against the exact history reference
+captured by the current Load.
 If another request advances C1 during compaction, the stale rotation cannot win.
 A request already running on retired C1 cannot silently redirect its output to
 C2. A conflicting turn is not automatically replayed.
@@ -427,7 +380,7 @@ when profiling demonstrates a benefit, and consume each instance once.
 
 This delivery covers **text only**. Voice keeps its existing load/replay/save
 flow and separate transcript. Live audio compaction, ACS adapters, independent
-Responses branches and a concrete durable background compactor/worker remain separate work.
+Responses branches and a durable cross-process background compactor remain separate work.
 
 Measure history loading, local indexing, optional summarizer inference, target
 writes and publication separately. Foreground still awaits compaction before model

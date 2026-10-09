@@ -1,4 +1,5 @@
 using Microsoft.Agents.AI;
+using Microsoft.Extensions.AI;
 using SharedServices;
 
 namespace SharedServices.Tests;
@@ -154,7 +155,7 @@ public class SessionPersistenceContextTests
     }
 
     [Fact]
-    public void PendingJobRoundTripsAndSurvivesAppendButNotRotation()
+    public void PendingJobIsLiveOnlyAndDoesNotRoundTrip()
     {
         var session = new TestAgentSession();
         var original = SessionPersistenceState.Initialize(session, SessionStorageAddress.Create("agent", "id"));
@@ -163,20 +164,9 @@ public class SessionPersistenceContextTests
         SessionPersistenceState.SetHistory(session, original.ActiveHistory.WithRevision(1));
         var restored = new TestAgentSession(AgentSessionStateBag.Deserialize(session.StateBag.Serialize()));
 
-        Assert.Equal(pending, SessionPersistenceState.GetRequired(restored).PendingCompaction);
-        Assert.Equal(1, restored.StateBag.Count);
-        SessionPersistenceState.SetHistory(restored, new(original.ActiveHistory.ScopeKey, "rotation", 1));
+        Assert.Equal(pending, SessionPersistenceState.GetRequired(session).PendingCompaction);
         Assert.Null(SessionPersistenceState.GetRequired(restored).PendingCompaction);
-    }
-
-    [Fact]
-    public void PendingJobCannotReferToAnotherHistoryOrAFutureRevision()
-    {
-        var source = new HistoryReference(StorageScope.Create("id"), "original", 2);
-        Assert.Throws<InvalidOperationException>(() =>
-            new SessionPersistenceContext("agent", source, Pending(new(source.ScopeKey, "other", 2))));
-        Assert.Throws<InvalidOperationException>(() =>
-            new SessionPersistenceContext("agent", source, Pending(source.WithRevision(3))));
+        Assert.Equal(1, restored.StateBag.Count);
     }
 
     [Fact]
@@ -190,17 +180,10 @@ public class SessionPersistenceContextTests
         Assert.DoesNotContain("pendingCompaction", System.Text.Json.JsonSerializer.Serialize(state), StringComparison.Ordinal);
     }
 
-    [Theory]
-    [InlineData(-1, 1)]
-    [InlineData(0, 2)]
-    public void PendingJobRequiresASequenceBoundaryConsistentWithItsMessageCount(long lastSequence, int count)
-    {
-        var source = new HistoryReference(StorageScope.Create("id"), "history", 1);
-        Assert.Throws<ArgumentOutOfRangeException>(() =>
-            new PendingHistoryCompaction("background", new("job", "binding"), source, count,
-                lastSequence, Guid.NewGuid().ToString("N")));
-    }
-
     private static PendingHistoryCompaction Pending(HistoryReference source) =>
-        new("background", new("job", "source-binding"), source, 2, 1, Guid.NewGuid().ToString("N"));
+        new(source,
+            new HistoryCompactionRequest("agent", "source-binding", [new ChatMessage(ChatRole.User, "message")],
+                new HistoryCompactionOptions { CompactorKey = "background", Mode = HistoryCompactionMode.Background }),
+            new HistoryCompactionTicket("job", "source-binding"),
+            Guid.NewGuid().ToString("N"));
 }

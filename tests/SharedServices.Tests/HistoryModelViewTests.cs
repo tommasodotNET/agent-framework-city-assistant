@@ -115,7 +115,7 @@ public class HistoryModelViewTests
     }
 
     [Fact]
-    public async Task BackgroundTicketCountsStoredPrefixWhileJobAndResultUseFilteredView()
+    public async Task BackgroundJobAndResultUseTheSameFilteredView()
     {
         var compactor = new ObservingCompactor { Background = true };
         var fixture = new HistoryCosmosFixture();
@@ -126,17 +126,16 @@ public class HistoryModelViewTests
         await provider.InvokingAsync(new(Agent(), session, []));
 
         Assert.Equal(4, compactor.Request!.Messages.Count);
-        Assert.Equal(6, State(session).PendingCompaction!.SourceMessageCount);
-        await provider.InvokedAsync(new(Agent(), session, [new(ChatRole.User, "while pending")], [new(ChatRole.Assistant, "answer")]));
+        Assert.Equal(4, State(session).PendingCompaction!.Request.Messages.Count);
         compactor.Ready = true;
-        await provider.InvokingAsync(new(Agent(), session, []));
-        await provider.InvokedAsync(new(Agent(), session, [new(ChatRole.User, "now ready")], [new(ChatRole.Assistant, "final answer")]));
+        await provider.InvokedAsync(new(Agent(), session,
+            [new(ChatRole.User, "current")], [new(ChatRole.Assistant, "final answer")]));
 
         var stored = (await fixture.CreateRepository().ReadAsync(State(session).ActiveHistory)).Messages;
-        Assert.Equal(new[] { "summary", "while pending", "answer", "now ready", "final answer" }, stored.Select(message => message.Text));
+        Assert.Equal(new[] { "summary", "current", "final answer" }, stored.Select(message => message.Text));
         Assert.NotEqual(source.ConversationId, State(session).ActiveHistory.ConversationId);
         Assert.Null(State(session).PendingCompaction);
-        Assert.Equal(8, fixture.Documents.Count(document => document.GetProperty("type").GetString() == "ChatMessage"
+        Assert.Equal(6, fixture.Documents.Count(document => document.GetProperty("type").GetString() == "ChatMessage"
             && document.GetProperty("conversationId").GetString() == source.ConversationId));
     }
 

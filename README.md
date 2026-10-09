@@ -324,14 +324,13 @@ the complete history. The provider supports both execution lifecycles:
 | Mode | At Load | At Save |
 |---|---|---|
 | `Foreground` | Await and validate `Unchanged`/`Completed`; use a detached candidate for inference, without publishing it | Publish candidate + exact filtered new messages once, or append normally when no candidate was prepared |
-| `Background` | Start work and retain `Pending(ticket)` in serialized session state; keep using the original history | Retrieve once; if ready, publish the compacted original prefix plus the exact stored suffix and current turn |
+| `Background` | Start best-effort work and keep the ticket only for this invocation; inference uses the original history | Poll until `BackgroundSaveWaitTimeout`; publish result + current turn when ready, otherwise append normally |
 
-Foreground preparation is a transient `[JsonIgnore]` value inside the existing
-`SessionPersistenceContext`, not a durable job or a second StateBag entry. A model
-failure/cancellation leaves the source history intact; the next Load clears abandoned
-preparation before reading and recalculates if needed. Serialization keeps preparation
-in the live session but excludes it from restored snapshots. Explicit Clear and changed
-profiles invalidate it. Calls on the same `AgentSession` must not overlap.
+Foreground preparation and the background ticket/request are transient `[JsonIgnore]`
+values inside the existing `SessionPersistenceContext`, not durable jobs or additional
+StateBag entries. A model failure, restart, or Save timeout leaves the source history
+intact. The next Load starts fresh work when compaction is still needed. Calls on the
+same `AgentSession` must not overlap.
 
 The simple MAF provider hooks retain their default error handling and storage filters:
 history supplied to inference is not appended again. The output filter affects only the
@@ -348,35 +347,19 @@ when a matching, completed function call/result proves they are consumed. Pendin
 denied, mixed-content and ambiguous approval messages remain. Actual tool calls and
 results remain too; no source documents are deleted or rewritten. The compactor
 receives a detached copy of this same view, not a separately filtered transcript.
-Background tickets still count the original stored prefix, including its audit records.
-Completed background results are validated against the corresponding filtered prefix.
+Completed background results are validated against that exact filtered view.
 
-**The supplied `MafForegroundHistoryCompactor` supports only `Foreground`.**
-To use `Background`, register an `IHistoryCompactor` advertising that mode in
-`SupportedModes` and implementing `GetResultAsync`. There is only one DI contract;
-capability validation uses `SupportedModes`, not a runtime subtype. Foreground-only
-implementations inherit a default retrieval method that throws `NotSupportedException`.
-The provider lifecycle is implemented, but no queue, worker or background MAF adapter
-is supplied. Selecting `Background` with either built-in profile fails at composition.
+The built-in `test-sliding-window` and `summary` profiles wrap
+`MafForegroundHistoryCompactor` in `LocalBackgroundHistoryCompactor` when
+`Mode` is `Background`. This worker is deliberately best-effort and in-process:
+it does not survive a restart or move across replicas. `BackgroundSaveWaitTimeout`
+defaults to two seconds and may be set to zero for one immediate result check.
+If the result is still pending, missing, failed, or invalid, Save appends the current
+turn normally and discards the live ticket. A later Load starts a new job. No user
+message is dropped merely because compaction missed its deadline.
 
-Jobs may be local best-effort or durable remote work; the compactor owns that choice.
-Pending **tickets** survive normal hosted session checkpoints; a serialized ticket
-does not make the underlying job survive a restart or become available on another replica.
-Accepted-job results must support repeatable, non-consuming reads while retained.
-Missing, expired or failed jobs must throw an explicit terminal `InvalidOperationException`,
-which is logged by category and clears the ticket; never return fake `Pending` for
-lost work. Transient `HttpRequestException`/`TimeoutException` keeps the ticket.
-Unfinished jobs keep their ticket and Save appends normally, without querying
-the history for compaction. Once the job is ready, the original prefix is checked
-using its last sequence and message count, relying on immutable messages and
-non-reused sequences rather than a source hash. Expired/cleared original
-messages or a changed profile invalidate the ticket with a warning;
-storage conflicts remain explicit errors. An invalid final job result clears
-the ticket, even if its error concerns tool history; the next Load can evaluate
-whether a new job is needed. Only a valid result waiting for unfinished tool/
-approval exchanges in later turns keeps its ticket for another Save. A background
-job is applied only on a later Save, not by an autonomous writer. The compactor
-owns job retention, including cleanup of orphan jobs after an unsaved session.
+Custom background implementations still use the same `IHistoryCompactor` contract,
+advertise `Background` in `SupportedModes`, and implement `GetResultAsync`.
 Voice compaction remains out of scope.
 
 The five text hosts also accept an explicit `HistoryCompaction` configuration

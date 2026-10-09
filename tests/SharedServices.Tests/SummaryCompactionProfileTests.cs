@@ -132,13 +132,16 @@ public class SummaryCompactionProfileTests
     }
 
     [Fact]
-    public void SummaryProfileRejectsBackgroundBeforeCreatingAClient()
+    public void SummaryProfileUsesLocalBackgroundAdapter()
     {
+        var services = new ServiceCollection();
         var settings = Settings();
         settings["Mode"] = "Background";
+        var options = services.AddHistoryCompactionProfile(
+            Section(settings), (_, _) => new SummaryClient());
+        using var provider = services.BuildServiceProvider();
 
-        Assert.Throws<NotSupportedException>(() => new ServiceCollection().AddHistoryCompactionProfile(
-            Section(settings), (_, _) => throw new InvalidOperationException()));
+        Assert.IsType<LocalBackgroundHistoryCompactor>(provider.GetHistoryCompactor(options));
     }
 
     [Fact]

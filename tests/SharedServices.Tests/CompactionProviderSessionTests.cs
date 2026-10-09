@@ -146,7 +146,7 @@ public class CompactionProviderSessionTests
     }
 
     [Fact]
-    public async Task WithPendingAndWithHistoryPreserveLivePreparationButOnlyBackgroundTicketSurvivesStateBagRoundTrip()
+    public async Task PreparedAndPendingCompactionsRemainLiveOnly()
     {
         var history = new HistoryCosmosFixture();
         using var provider = new CosmosChatHistoryProvider(history.CreateRepository(),
@@ -157,15 +157,17 @@ public class CompactionProviderSessionTests
         await provider.InvokedAsync(new(agent, session, [new(ChatRole.User, new string('x', 1000))], []));
         var source = SessionPersistenceState.GetRequired(session).ActiveHistory;
         await provider.InvokingAsync(new(agent, session, []));
-        var pending = new PendingHistoryCompaction("background", new("job", "binding"), source,
-            1, 0, Guid.NewGuid().ToString("N"));
+        var pending = new PendingHistoryCompaction(source,
+            new HistoryCompactionRequest(agent.Id, "binding", [new ChatMessage(ChatRole.User, "message")],
+                new HistoryCompactionOptions { CompactorKey = "background", Mode = HistoryCompactionMode.Background }),
+            new HistoryCompactionTicket("job", "binding"), Guid.NewGuid().ToString("N"));
         SessionPersistenceState.SetPendingCompaction(session, pending);
         SessionPersistenceState.SetHistory(session, source);
 
         var restored = new TestAgentSession(AgentSessionStateBag.Deserialize(session.StateBag.Serialize()));
         await provider.InvokedAsync(new(agent, session, [], []));
 
-        Assert.Equal(new SessionPersistenceContext(agent.Id, source, pending), SessionPersistenceState.GetRequired(restored));
+        Assert.Equal(new SessionPersistenceContext(agent.Id, source), SessionPersistenceState.GetRequired(restored));
         Assert.Equal("summary", Assert.Single((await history.CreateRepository()
             .ReadAsync(SessionPersistenceState.GetRequired(session).ActiveHistory)).Messages).Text);
     }

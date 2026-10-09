@@ -83,6 +83,24 @@ public class CompactionContractTests
         Assert.Null(Record.Exception(() => Profile().Validate()));
     }
 
+    [Theory]
+    [InlineData(-1L)]
+    [InlineData(4294967295L)]
+    public void InvalidBackgroundSaveWaitIsRejected(long milliseconds)
+    {
+        Assert.Throws<ArgumentOutOfRangeException>(() =>
+            (Profile() with { BackgroundSaveWaitTimeout = TimeSpan.FromMilliseconds(milliseconds) }).Validate());
+    }
+
+    [Theory]
+    [InlineData(0L)]
+    [InlineData(2000L)]
+    public void FiniteBackgroundSaveWaitIsAccepted(long milliseconds)
+    {
+        Assert.Null(Record.Exception(() =>
+            (Profile() with { BackgroundSaveWaitTimeout = TimeSpan.FromMilliseconds(milliseconds) }).Validate()));
+    }
+
     [Fact]
     public void UnknownExecutionModeIsRejected()
     {

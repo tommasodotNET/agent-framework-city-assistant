@@ -57,10 +57,7 @@ public sealed class CosmosChatMessageRepository
     public async Task<HistoryReadResult> ReadAsync(HistoryReference reference, int? maxMessages = null, CancellationToken cancellationToken = default)
     {
         var documents = await ReadDocumentsAsync(reference, maxMessages, cancellationToken).ConfigureAwait(false);
-        return new(reference, documents.Select(document => document.ToChatMessage()).ToArray())
-        {
-            MessageSequences = documents.Select(document => document.Sequence).ToArray()
-        };
+        return new(reference, documents.Select(document => document.ToChatMessage()).ToArray());
     }
 
     /// <summary>

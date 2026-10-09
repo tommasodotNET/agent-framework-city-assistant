@@ -46,17 +46,7 @@ public sealed record HistoryMessageDocument
 }
 
 /// <summary>A consistent history read at the requested revision.</summary>
-public sealed record HistoryReadResult(HistoryReference Reference, IReadOnlyList<ChatMessage> Messages)
-{
-    internal IReadOnlyList<long> MessageSequences { get; init; } = [];
-
-    internal long LastSequence => MessageSequences.Count == 0 ? -1 : MessageSequences[^1];
-
-    // Messages are immutable and sequences are never reused, including after Clear.
-    // Missing messages at or before this boundary therefore mean the original prefix was lost.
-    internal bool HasOriginalPrefix(long lastSequence, int expectedCount) =>
-        MessageSequences.TakeWhile(sequence => sequence <= lastSequence).Count() == expectedCount;
-}
+public sealed record HistoryReadResult(HistoryReference Reference, IReadOnlyList<ChatMessage> Messages);
 
 /// <summary>The cursor and number of messages affected by a completed operation.</summary>
 public sealed record HistoryWriteResult(HistoryReference Reference, int MessageCount);

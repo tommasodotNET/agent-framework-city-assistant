@@ -15,7 +15,7 @@
   <data name="InvalidSummary" xml:space="preserve"><value>Compaction produced a blank, invalid or unavailable summary. It cannot be persisted as useful history.</value></data>
   <data name="NullMessage" xml:space="preserve"><value>History cannot contain null messages.</value></data>
   <data name="NullContent" xml:space="preserve"><value>History messages cannot contain null content items.</value></data>
-  <data name="UnsupportedMode" xml:space="preserve"><value>The selected compactor does not advertise the requested mode in SupportedModes. The MAF adapter supports only Foreground.</value></data>
+  <data name="UnsupportedMode" xml:space="preserve"><value>The selected compactor does not advertise the requested mode in SupportedModes.</value></data>
   <data name="RetrievalNotSupported" xml:space="preserve"><value>This history compactor does not implement background result retrieval. Foreground-only compactors cannot retrieve job results.</value></data>
   <data name="SummaryModelRequired" xml:space="preserve"><value>The summary profile requires an explicit HistoryCompaction:Model deployment name; it does not reuse AI:ChatModel.</value></data>
   <data name="SummaryTriggerRequired" xml:space="preserve"><value>The summary profile requires a positive HistoryCompaction:TriggerTokens estimate threshold.</value></data>

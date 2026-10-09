@@ -28,6 +28,12 @@ public sealed record HistoryCompactionOptions
     /// </summary>
     public TimeSpan? Timeout { get; init; }
 
+    /// <summary>
+    /// Maximum time Save waits for a background result before appending the turn normally.
+    /// Defaults to two seconds; zero performs a single non-blocking result check.
+    /// </summary>
+    public TimeSpan BackgroundSaveWaitTimeout { get; init; } = TimeSpan.FromSeconds(2);
+
     /// <summary>Validates an enabled profile without resolving any services or invoking a strategy.</summary>
     public void Validate()
     {
@@ -44,6 +50,11 @@ public sealed record HistoryCompactionOptions
         {
             // CancelAfter uses a finite unsigned-millisecond timer; infinite disables the safety limit.
             throw new ArgumentOutOfRangeException(nameof(Timeout));
+        }
+        if (BackgroundSaveWaitTimeout < TimeSpan.Zero
+            || BackgroundSaveWaitTimeout.TotalMilliseconds > uint.MaxValue - 1)
+        {
+            throw new ArgumentOutOfRangeException(nameof(BackgroundSaveWaitTimeout));
         }
     }
 }

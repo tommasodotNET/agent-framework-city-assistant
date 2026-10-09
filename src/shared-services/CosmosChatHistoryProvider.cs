@@ -124,7 +124,7 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
         // The base skips Store on model failure. A fresh invocation (including an opted-out
         // profile) must discard that abandoned view before any read or compactor can fail.
         SessionPersistenceState.SetPreparedCompaction(session, null);
-        DiscardIncompatiblePending(session);
+        SessionPersistenceState.SetPendingCompaction(session, null);
         HistoryReadResult result;
         var recoveredRotation = false;
         try
@@ -169,7 +169,6 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
         ArgumentNullException.ThrowIfNull(session);
         var reference = GetReference(session);
         var messages = context.RequestMessages.Concat(context.ResponseMessages ?? []).ToArray();
-        DiscardIncompatiblePending(session);
         var prepared = SessionPersistenceState.GetRequired(session).PreparedCompaction;
         if (prepared is not null)
         {
@@ -238,7 +237,7 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
         var options = _compactionOptions ?? throw new InvalidOperationException();
         // This invocation still uses the original history; a future job cannot fix its current budget.
         HistoryCompactionValidation.ValidateFallback(history.Messages, options.MaxHistoryUtf8Bytes);
-        if (SessionPersistenceState.GetRequired(session).PendingCompaction is not null || history.Messages.Count == 0)
+        if (history.Messages.Count == 0)
             return history.Messages;
 
         var operationId = Guid.NewGuid().ToString("N");
@@ -257,8 +256,7 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
                 || ticket.SourceBinding != request.SourceBinding)
                 throw new HistoryCompactionValidationException(HistoryCompactionFailureReason.InvalidLifecycle);
 
-            var pending = new PendingHistoryCompaction(options.CompactorKey, ticket, history.Reference,
-                history.MessageSequences.Count, history.LastSequence, operationId);
+            var pending = new PendingHistoryCompaction(history.Reference, request, ticket, operationId);
             cancellationToken.ThrowIfCancellationRequested();
             SessionPersistenceState.SetPendingCompaction(session, pending);
             return history.Messages;
@@ -305,50 +303,32 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
         return baseline;
     }
 
-    private void DiscardIncompatiblePending(AgentSession session)
-    {
-        var pending = SessionPersistenceState.GetRequired(session).PendingCompaction;
-        if (pending is not null && (_compactionOptions?.Mode != HistoryCompactionMode.Background
-            || pending.CompactorKey != _compactionOptions.CompactorKey))
-        {
-            DiscardPendingCompaction(session, "ProfileChanged");
-        }
-    }
-
     private async Task<bool> TryApplyBackgroundAsync(
         AgentSession session, PendingHistoryCompaction pending, IReadOnlyList<ChatMessage> newMessages,
         CancellationToken cancellationToken)
     {
         var options = _compactionOptions ?? throw new InvalidOperationException();
         var reference = GetReference(session);
-        var result = await TryGetBackgroundResultAsync(session, pending.Ticket, cancellationToken).ConfigureAwait(false);
-        if (result is null)
-            return false;
+        if (reference != pending.Source)
+            throw new HistoryConcurrencyException();
 
-        // Only a ready result needs history. Reading after retrieval also observes TTL expiry
-        // during that call; revision checks still reject competing writers.
-        var history = await _repository.ReadAsync(reference, cancellationToken: cancellationToken).ConfigureAwait(false);
-        if (!history.HasOriginalPrefix(pending.SourceLastSequence, pending.SourceMessageCount))
+        var result = await WaitForBackgroundResultAsync(pending.Ticket, cancellationToken).ConfigureAwait(false);
+        if (result is null)
         {
-            DiscardPendingCompaction(session, "SourceExpiredOrReplaced");
+            SessionPersistenceState.SetPendingCompaction(session, null);
             return false;
         }
-        RestoreProcessedApprovals(history.Messages.SelectMany(message => message.Contents));
 
         try
         {
-            // The ticket counts stored messages; the job received the filtered model view.
-            var original = PrepareModelHistory(history.Messages.Take(pending.SourceMessageCount).ToArray());
-            var request = new HistoryCompactionRequest(SessionPersistenceState.GetRequired(session).AgentId,
-                pending.Ticket.SourceBinding, original, options);
-            HistoryCompactionValidation.ValidateResult(request, result);
+            HistoryCompactionValidation.ValidateResult(pending.Request, result);
         }
         catch (HistoryCompactionValidationException exception)
         {
-            // An invalid final job result will not become valid by polling it again.
-            DiscardPendingCompaction(session, FailureCategory(exception));
+            _logger.LogWarning(CompactionErrors.Get("BackgroundLog"), FailureCategory(exception));
+            SessionPersistenceState.SetPendingCompaction(session, null);
             cancellationToken.ThrowIfCancellationRequested();
-            HistoryCompactionValidation.ValidateFallback(history.Messages, options.MaxHistoryUtf8Bytes);
+            HistoryCompactionValidation.ValidateFallback(pending.Request.Messages, options.MaxHistoryUtf8Bytes);
             return false;
         }
 
@@ -361,18 +341,15 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
         IReadOnlyList<ChatMessage> merged;
         try
         {
-            merged = MergeBackgroundResult(history.Messages, result.Messages, pending.SourceMessageCount,
-                newMessages, options.MaxHistoryUtf8Bytes);
+            merged = MergeBackgroundResult(
+                pending.Request.Messages, result.Messages, newMessages, options.MaxHistoryUtf8Bytes);
         }
         catch (HistoryCompactionValidationException exception)
         {
-            // Only the later/current turn can still have a tool exchange waiting to finish.
-            if (exception.Reason == HistoryCompactionFailureReason.UnsafeToolHistory)
-                _logger.LogWarning(CompactionErrors.Get("BackgroundLog"), FailureCategory(exception));
-            else
-                DiscardPendingCompaction(session, FailureCategory(exception));
+            _logger.LogWarning(CompactionErrors.Get("BackgroundLog"), FailureCategory(exception));
+            SessionPersistenceState.SetPendingCompaction(session, null);
             cancellationToken.ThrowIfCancellationRequested();
-            HistoryCompactionValidation.ValidateFallback(history.Messages, options.MaxHistoryUtf8Bytes);
+            HistoryCompactionValidation.ValidateFallback(pending.Request.Messages, options.MaxHistoryUtf8Bytes);
             return false;
         }
 
@@ -380,53 +357,69 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
         return true;
     }
 
-    private async Task<HistoryCompactionResult?> TryGetBackgroundResultAsync(
-        AgentSession session, HistoryCompactionTicket ticket, CancellationToken cancellationToken)
+    private async Task<HistoryCompactionResult?> WaitForBackgroundResultAsync(
+        HistoryCompactionTicket ticket, CancellationToken cancellationToken)
     {
         var compactor = _compactor ?? throw new InvalidOperationException();
-        try
-        {
-            var result = await ExecuteCompactorAsync(
-                token => compactor.GetResultAsync(ticket, token), cancellationToken).ConfigureAwait(false);
-            if (result.Status != HistoryCompactionStatus.Pending)
-                return DetachResult(result);
+        var wait = _compactionOptions?.BackgroundSaveWaitTimeout ?? TimeSpan.Zero;
+        using var deadline = wait > TimeSpan.Zero
+            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
+            : null;
+        deadline?.CancelAfter(wait);
+        var retrievalToken = deadline?.Token ?? cancellationToken;
 
-            if (result.Ticket != ticket)
-                throw new HistoryCompactionValidationException(HistoryCompactionFailureReason.InvalidLifecycle);
-
-            return null;
-        }
-        catch (Exception exception) when (IsCompactorFailure(exception))
+        while (true)
         {
-            if (exception is HttpRequestException or TimeoutException)
+            try
+            {
+                var result = await ExecuteCompactorAsync(
+                    token => compactor.GetResultAsync(ticket, token), retrievalToken).ConfigureAwait(false);
+                if (result.Status != HistoryCompactionStatus.Pending)
+                    return DetachResult(result);
+
+                if (result.Ticket != ticket)
+                    throw new HistoryCompactionValidationException(HistoryCompactionFailureReason.InvalidLifecycle);
+            }
+            catch (OperationCanceledException)
+                when (!cancellationToken.IsCancellationRequested && deadline?.IsCancellationRequested == true)
+            {
+                _logger.LogWarning(CompactionErrors.Get("BackgroundLog"), nameof(HistoryCompactionOptions.BackgroundSaveWaitTimeout));
+                return null;
+            }
+            catch (Exception exception) when (IsCompactorFailure(exception))
+            {
                 _logger.LogWarning(CompactionErrors.Get("BackgroundLog"), FailureCategory(exception));
-            else
-                DiscardPendingCompaction(session, FailureCategory(exception));
-            cancellationToken.ThrowIfCancellationRequested();
-            return null;
+                cancellationToken.ThrowIfCancellationRequested();
+                return null;
+            }
+
+            if (wait == TimeSpan.Zero)
+                return null;
+
+            try
+            {
+                await Task.Delay(TimeSpan.FromMilliseconds(50), retrievalToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException)
+                when (!cancellationToken.IsCancellationRequested && deadline?.IsCancellationRequested == true)
+            {
+                _logger.LogWarning(CompactionErrors.Get("BackgroundLog"), nameof(HistoryCompactionOptions.BackgroundSaveWaitTimeout));
+                return null;
+            }
         }
     }
 
     private static IReadOnlyList<ChatMessage> MergeBackgroundResult(
-        IReadOnlyList<ChatMessage> storedMessages, IReadOnlyList<ChatMessage> compactedPrefix,
-        int originalCount, IReadOnlyList<ChatMessage> newMessages, long? maxHistoryUtf8Bytes)
+        IReadOnlyList<ChatMessage> originalMessages, IReadOnlyList<ChatMessage> compactedMessages,
+        IReadOnlyList<ChatMessage> newMessages, long? maxHistoryUtf8Bytes)
     {
-        // Stored messages and the detached result are private. Copy only the framework's new
-        // messages before restoring approval flags, preserving the caller's mutable objects.
         var currentTurn = CopyMessages(newMessages);
-        var source = storedMessages.Concat(currentTurn).ToArray();
-        var suffix = storedMessages.Skip(originalCount);
-        var merged = compactedPrefix.Concat(suffix).Concat(currentTurn).ToArray();
+        var source = originalMessages.Concat(currentTurn).ToArray();
+        var merged = compactedMessages.Concat(currentTurn).ToArray();
         RestoreProcessedApprovals(source.SelectMany(message => message.Contents));
         RestoreProcessedApprovals(merged.SelectMany(message => message.Contents));
         HistoryCompactionValidation.ValidateCandidate(source, merged, maxHistoryUtf8Bytes);
         return merged;
-    }
-
-    private void DiscardPendingCompaction(AgentSession session, string reason)
-    {
-        _logger.LogWarning(CompactionErrors.Get("BackgroundLog"), reason);
-        SessionPersistenceState.SetPendingCompaction(session, null);
     }
 
     private async Task PublishHistoryAsync(

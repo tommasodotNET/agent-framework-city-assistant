@@ -53,18 +53,12 @@ public sealed record SessionPersistenceContext
 {
     /// <summary>Restores ownership and the single active history reference.</summary>
     [JsonConstructor]
-    public SessionPersistenceContext(string agentId, HistoryReference activeHistory, PendingHistoryCompaction? pendingCompaction = null)
+    public SessionPersistenceContext(string agentId, HistoryReference activeHistory)
     {
         StorageSchema.ValidateKey(agentId, nameof(agentId));
         ArgumentNullException.ThrowIfNull(activeHistory);
-        if (pendingCompaction is { } pending
-            && (pending.Source.ScopeKey != activeHistory.ScopeKey
-                || pending.Source.ConversationId != activeHistory.ConversationId
-                || pending.Source.Revision > activeHistory.Revision))
-            throw new InvalidOperationException(StorageErrors.Get("IncompatibleContext"));
         AgentId = agentId;
         ActiveHistory = activeHistory;
-        PendingCompaction = pendingCompaction;
     }
 
     /// <summary>The stable agent owning this session and its history.</summary>
@@ -74,18 +68,12 @@ public sealed record SessionPersistenceContext
     [JsonPropertyName("activeHistory")]
     public HistoryReference ActiveHistory { get; }
 
-    /// <summary>Optional background job; lives only in the serialized session, not the snapshot envelope.</summary>
-    [JsonPropertyName("pendingCompaction"), JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
-    public PendingHistoryCompaction? PendingCompaction { get; }
-
-    // Live invocation state only. Serializing a session must not turn a prepared model view
-    // into a durable job or lose it from the original session while inference is in progress.
+    // Live invocation state only. Serialization must not retain prepared work or background tickets.
     [JsonIgnore]
     internal PreparedHistoryCompaction? PreparedCompaction { get; init; }
 
-    /// <summary>Updates the pending job without changing ownership or active history.</summary>
-    public SessionPersistenceContext WithPendingCompaction(PendingHistoryCompaction? pending) =>
-        new(AgentId, ActiveHistory, pending) { PreparedCompaction = PreparedCompaction };
+    [JsonIgnore]
+    internal PendingHistoryCompaction? PendingCompaction { get; init; }
 
     /// <summary>Initializes new state before history is used; the history id is generated server-side.</summary>
     public static SessionPersistenceContext Create(SessionStorageAddress initialAddress)
@@ -126,9 +114,10 @@ public sealed record SessionPersistenceContext
             throw new ArgumentOutOfRangeException(nameof(history), StorageErrors.Get("InvalidRevision"));
         }
         var sameConversation = history.ConversationId == ActiveHistory.ConversationId;
-        return new(AgentId, history, sameConversation ? PendingCompaction : null)
+        return new(AgentId, history)
         {
-            PreparedCompaction = sameConversation ? PreparedCompaction : null
+            PreparedCompaction = sameConversation ? PreparedCompaction : null,
+            PendingCompaction = sameConversation ? PendingCompaction : null
         };
     }
 }
@@ -177,9 +166,8 @@ public static class SessionPersistenceState
         s_state.SaveState(session, context.WithHistory(history));
     }
 
-    /// <summary>Records or clears an accepted job ticket; normal hosting remains responsible for the session checkpoint.</summary>
-    public static void SetPendingCompaction(AgentSession session, PendingHistoryCompaction? pending) =>
-        s_state.SaveState(session, GetRequired(session).WithPendingCompaction(pending));
+    internal static void SetPendingCompaction(AgentSession session, PendingHistoryCompaction? pending) =>
+        s_state.SaveState(session, GetRequired(session) with { PendingCompaction = pending });
 
     internal static void SetPreparedCompaction(AgentSession session, PreparedHistoryCompaction? prepared) =>
         s_state.SaveState(session, GetRequired(session) with { PreparedCompaction = prepared });
