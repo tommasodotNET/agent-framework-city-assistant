@@ -28,12 +28,15 @@ public static class CosmosChatHistoryProviderExtensions
         ILogger<CosmosChatHistoryProvider>? logger = null,
         IHistoryCompactor? compactor = null)
     {
+        CosmosChatHistoryProvider? provider = null;
+        var constructorOwnsClient = false;
         try
         {
             options.Compaction?.Validate();
             if (options.Compaction is not null && options.MaxMessagesToRetrieve.HasValue)
                 throw new ArgumentException(HistoryProviderErrors.Get("PartialHistoryConflict"), nameof(options.MaxMessagesToRetrieve));
-            var provider = new CosmosChatHistoryProvider(
+            constructorOwnsClient = ownsClient;
+            provider = new CosmosChatHistoryProvider(
                 cosmosClient, databaseId, containerId,
                 ownsClient,
                 options.ProvideOutputMessageFilter, options.StoreInputMessageFilter, logger,
@@ -50,7 +53,12 @@ public static class CosmosChatHistoryProviderExtensions
         catch
         {
             if (ownsClient)
-                cosmosClient.Dispose();
+            {
+                if (provider is not null)
+                    provider.Dispose();
+                else if (!constructorOwnsClient)
+                    cosmosClient.Dispose();
+            }
             throw;
         }
     }

@@ -201,6 +201,9 @@ direct-client, connection-string and credential overloads remain available.
 Supplied clients are never disposed by per-agent helpers. The standalone extension
 factory disposes a client it owns if any construction/configuration step fails,
 then rethrows the original failure.
+Owned-client direct constructors likewise clean up initialization failures. Borrowed
+client lifetimes remain external; construction and extension configuration do not
+introduce duplicate disposal paths.
 
 Hosted protocols own their normal session load/save lifecycle. A direct `RunAsync`
 caller must explicitly get/create the session and save it using the store, or initialize
@@ -358,6 +361,21 @@ in the existing `MafForegroundHistoryCompactor`, retaining all provider validati
 and deferred publication behavior. MAF's default summarization prompt is used.
 Summary output is trusted persisted assistant content, so deployment trust and
 workload-specific recall testing are essential; no semantic-fidelity guarantee is implied.
+
+Built-in profile kind and runtime DI identity are separate: the configured key selects
+the built-in algorithm, while each helper invocation returns options with a unique
+compactor registration key and captures a private per-profile summary-client key.
+Agent providers reuse those returned options. One host can compose several built-in
+profiles without last-registration wins or cross-agent model/threshold/mode changes.
+Custom keyed registrations retain their explicit key unchanged. Clients stay lazily
+created and DI-owned, without an additional strategy registry or provider lookups at Load.
+
+Timeout applies to provider compactor calls and, for the local adapter, its foreground
+worker too. This is a local worker deadline as well as a per-call limit, separate from
+Save's wait window; custom remote engines define their own job deadlines. A compactor
+cancellation without cancellation of the current caller/deadline token becomes an
+explicit failure eligible for logged, revision-validated fallback. User cancellation
+and the background Save deadline still propagate to their original handlers.
 
 The installed MAF 1.23 exposes the ad-hoc `CompactionProvider.CompactAsync`
 entry point publicly, but its `CompactionMessageIndex.Create` factory is internal.

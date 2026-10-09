@@ -27,6 +27,7 @@
   <data name="InvalidLifecycle" xml:space="preserve"><value>The compaction result or ticket is incompatible with the requested lifecycle.</value></data>
   <data name="BackgroundLog" xml:space="preserve"><value>Background compaction deferred or discarded: {Reason}.</value></data>
   <data name="OperationTimeout" xml:space="preserve"><value>The history compactor call exceeded its configured timeout.</value></data>
+  <data name="OperationCancelled" xml:space="preserve"><value>The history compactor cancelled its operation independently of the caller.</value></data>
   <data name="InvalidSerialization" xml:space="preserve"><value>The detached history could not be deserialized.</value></data>
   <data name="OutcomeLog" xml:space="preserve"><value>Foreground compaction {Status}: {BeforeUtf8Bytes} to {AfterUtf8Bytes} history bytes in {DurationMs} ms; independently validated change {Changed}, strategy warning {StrategyWarning}.</value></data>
   <data name="ValidationLog" xml:space="preserve"><value>Foreground compaction deferred or rejected: {Reason}.</value></data>

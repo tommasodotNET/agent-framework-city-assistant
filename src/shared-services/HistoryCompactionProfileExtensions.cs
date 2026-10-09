@@ -11,15 +11,14 @@ namespace SharedServices;
 /// <summary>Opt-in composition of a history profile, separate from the agent's model and tools.</summary>
 public static class HistoryCompactionProfileExtensions
 {
-    private static readonly object s_summaryClientKey = new();
-
     /// <summary>
     /// Reads an explicit HistoryCompaction section and returns its immutable provider options.
     /// An absent/empty section or Enabled=false disables the feature without registering a service.
     /// </summary>
     /// <remarks>
     /// CompactorKey is mandatory when enabled. Mode defaults to Foreground. Timeout is an optional
-    /// per-call TimeSpan; BackgroundSaveWaitTimeout defaults to two seconds. The test-sliding-window key additionally requires positive
+    /// per-call TimeSpan and also bounds the local background worker; a small value limits its
+    /// summarization time. BackgroundSaveWaitTimeout defaults to two seconds. The test-sliding-window key additionally requires positive
     /// MaxTurns and registers a model-free MAF strategy preserving that many recent turns.
     /// The summary key requires Model, positive TriggerTokens and positive MinimumPreservedGroups.
     /// Optional TargetTokens must be positive and below TriggerTokens; omission retains MAF's default
@@ -27,6 +26,8 @@ public static class HistoryCompactionProfileExtensions
     /// Its factory must create a dedicated, concurrency-safe client without tools, history or compaction
     /// middleware; it is called lazily with the explicit model and its result is owned by DI.
     /// Both built-ins use a best-effort local adapter when Mode is Background.
+    /// Each enabled built-in invocation returns an isolated runtime CompactorKey; the configuration
+    /// key selects the built-in kind. Reuse the returned options when composing that agent.
     /// Other keys use normal keyed IHistoryCompactor registrations.
     /// </remarks>
     public static HistoryCompactionOptions? AddHistoryCompactionProfile(
@@ -51,6 +52,7 @@ public static class HistoryCompactionProfileExtensions
         {
             var maxTurns = section.GetValue<int?>("MaxTurns") ?? 0;
             ArgumentOutOfRangeException.ThrowIfNegativeOrZero(maxTurns);
+            options = options with { CompactorKey = $"test-sliding-window:{Guid.NewGuid():N}" };
             services.AddHistoryCompactor(options.CompactorKey, provider =>
                 ForMode(options.Mode, new MafForegroundHistoryCompactor(
                     new SlidingWindowCompactionStrategy(CompactionTriggers.TurnsExceed(maxTurns),
@@ -75,9 +77,11 @@ public static class HistoryCompactionProfileExtensions
             if (createSummaryChatClient is null)
                 throw new ArgumentNullException(nameof(createSummaryChatClient), CompactionErrors.Get("SummaryClientRequired"));
 
+            options = options with { CompactorKey = $"summary:{Guid.NewGuid():N}" };
+            var summaryClientKey = new object();
             // Never resolve the agent's wrapped IChatClient. A private key also gives DI ownership
             // of the dedicated adapter without replacing or disposing the agent's client.
-            services.AddKeyedSingleton<IChatClient>(s_summaryClientKey,
+            services.AddKeyedSingleton<IChatClient>(summaryClientKey,
                 (provider, _) => createSummaryChatClient(provider, model).AsBuilder().Use(
                     (messages, chatOptions, inner, token) => inner.GetResponseAsync(
                         WithSummaryInstruction(messages), chatOptions, token),
@@ -89,7 +93,7 @@ public static class HistoryCompactionProfileExtensions
                 var trigger = CompactionTriggers.TokensExceed(triggerTokens);
                 return ForMode(options.Mode, new MafForegroundHistoryCompactor(
                     new SummarizationCompactionStrategy(
-                        provider.GetRequiredKeyedService<IChatClient>(s_summaryClientKey),
+                        provider.GetRequiredKeyedService<IChatClient>(summaryClientKey),
                         trigger: index =>
                         {
                             logger?.LogDebug(CompactionErrors.Get("SummaryTriggerLog"),

@@ -315,6 +315,8 @@ DI owns clients created by its singleton factory; externally supplied clients re
 the caller's responsibility.
 Standalone extension overloads that create their own Cosmos client also dispose it
 if provider construction or configuration fails, without swallowing the original error.
+Direct provider constructors dispose an owned client if storage/dependency validation
+fails during initialization; borrowed clients remain the caller's responsibility.
 
 `WithSessionStore` configures a hosting service, not an automatic wrapper around
 arbitrary direct calls to `agent.RunAsync`. A non-HTTP application can explicitly
@@ -481,6 +483,15 @@ Voice compaction remains out of scope.
 The five text hosts also accept an explicit `HistoryCompaction` configuration
 section. An absent/empty section or `Enabled=false` leaves the feature off:
 
+Each enabled built-in `AddHistoryCompactionProfile` call registers its own compactor
+and, for `summary`, dedicated client under private invocation-specific keys. Multiple
+agents in one service collection can use independent models, modes, triggers, targets
+and preservation settings, even with the same built-in kind. Configuration
+`CompactorKey` still selects `summary` or `test-sliding-window`; the returned options
+contain the generated DI key. Pass that returned options object to the relevant
+history provider rather than reconstructing it with the configured kind.
+Custom compactor keys remain unchanged and refer to your explicit keyed registrations.
+
 ```json
 {
   "HistoryCompaction": {
@@ -581,10 +592,15 @@ no extra client. Summaries are lossy and require realistic recall testing.
 
 Other keys must be supplied through a normal keyed DI registration.
 `Timeout` optionally accepts a positive TimeSpan for cooperative
-foreground execution or each background enqueue/retrieval call, not a job deadline;
+foreground execution or each background enqueue/retrieval call;
 it does not abandon a plugin task that ignores cancellation. The local background
-adapter additionally passes this timeout to its foreground worker. Save's separate
+adapter additionally passes this timeout to its foreground worker, so a small value
+also limits local summarization time. Remote job deadlines belong to the custom compactor.
+Save's separate
 deadline cancels that worker through its ticket rather than awaiting its completion.
+An independent compactor/SDK cancellation with the caller token still active is
+logged as a compactor failure and uses the validated original-history fallback;
+actual caller cancellation and Save's deadline retain their existing semantics.
 
 The existing hierarchical container schemas are retained. Rotation adds optional
 control metadata rather than changing partition keys. Update every writer before

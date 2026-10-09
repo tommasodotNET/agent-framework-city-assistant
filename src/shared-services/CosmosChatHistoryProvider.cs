@@ -40,11 +40,7 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
         : base(provideOutputMessageFilter, storeInputRequestMessageFilter: storeInputMessageFilter, storeInputResponseMessageFilter: null)
     {
         ArgumentNullException.ThrowIfNull(repository);
-        if ((compactor is null) != (compactionOptions is null))
-            throw new ArgumentException(HistoryProviderErrors.Get("CompactorOptionsPair"), nameof(compactor));
-        compactionOptions?.Validate();
-        if (compactionOptions is not null)
-            HistoryCompactionExtensions.ValidateCapabilities(compactor!, compactionOptions);
+        ValidateCompaction(compactor, compactionOptions);
         _repository = repository;
         _compactor = compactor;
         _compactionOptions = compactionOptions is null ? null : compactionOptions with { };
@@ -59,7 +55,7 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
         ILogger<CosmosChatHistoryProvider>? logger = null,
         IHistoryCompactor? compactor = null,
         HistoryCompactionOptions? compactionOptions = null)
-        : this(new CosmosChatMessageRepository(cosmosClient, databaseId, containerId, logger),
+        : this(CreateRepository(cosmosClient, databaseId, containerId, ownsClient, logger, compactor, compactionOptions),
             provideOutputMessageFilter, storeInputMessageFilter, compactor, compactionOptions, logger)
     {
         DatabaseId = databaseId;
@@ -474,6 +470,10 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
         {
             throw new TimeoutException(CompactionErrors.Get("OperationTimeout"));
         }
+        catch (OperationCanceledException exception) when (!cancellationToken.IsCancellationRequested)
+        {
+            throw new InvalidOperationException(CompactionErrors.Get("OperationCancelled"), exception);
+        }
     }
 
     private static HistoryCompactionResult DetachResult(HistoryCompactionResult result)
@@ -584,6 +584,33 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         return SessionPersistenceState.GetRequired(session).ActiveHistory;
+    }
+
+    private static void ValidateCompaction(IHistoryCompactor? compactor, HistoryCompactionOptions? options)
+    {
+        if ((compactor is null) != (options is null))
+            throw new ArgumentException(HistoryProviderErrors.Get("CompactorOptionsPair"), nameof(compactor));
+        options?.Validate();
+        if (options is not null)
+            HistoryCompactionExtensions.ValidateCapabilities(compactor!, options);
+    }
+
+    private static CosmosChatMessageRepository CreateRepository(
+        CosmosClient client, string databaseId, string containerId, bool ownsClient,
+        ILogger<CosmosChatHistoryProvider>? logger, IHistoryCompactor? compactor, HistoryCompactionOptions? options)
+    {
+        ArgumentNullException.ThrowIfNull(client);
+        try
+        {
+            ValidateCompaction(compactor, options);
+            return new(client, databaseId, containerId, logger);
+        }
+        catch
+        {
+            if (ownsClient)
+                client.Dispose();
+            throw;
+        }
     }
 
     private static CosmosClient CreateClient(string connectionString)

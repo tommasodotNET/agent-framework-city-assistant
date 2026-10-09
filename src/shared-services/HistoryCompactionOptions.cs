@@ -10,8 +10,10 @@ public sealed record HistoryCompactionOptions
     public string CompactorKey { get; init; } = string.Empty;
 
     /// <summary>
-    /// An optional timeout per foreground operation or background enqueue/retrieval call. This is
-    /// not a background job deadline. Calls are cooperatively cancelled and awaited; null imposes no timeout.
+    /// An optional timeout per foreground operation or background enqueue/retrieval call.
+    /// The built-in local background adapter also applies it to its foreground worker execution.
+    /// A custom remote compactor owns its job deadline. Calls are cooperatively cancelled and awaited;
+    /// null imposes no timeout. This is separate from BackgroundSaveWaitTimeout.
     /// </summary>
     public TimeSpan? Timeout { get; init; }
 

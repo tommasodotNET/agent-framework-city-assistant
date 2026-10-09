@@ -1,6 +1,7 @@
 #pragma warning disable MAAI001 // Exercise real public agent/provider composition.
 
 using Microsoft.Agents.AI;
+using Microsoft.Agents.AI.Hosting;
 using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.Configuration;
@@ -85,6 +86,35 @@ public class CompactionProviderCompositionTests
 
         provider.Dispose();
 
+        client.Protected().Verify("Dispose", ownsClient ? Times.Once() : Times.Never(), ItExpr.IsAny<bool>());
+    }
+
+    [Theory]
+    [InlineData("pair", true)]
+    [InlineData("pair", false)]
+    [InlineData("profile", true)]
+    [InlineData("profile", false)]
+    [InlineData("mode", true)]
+    [InlineData("mode", false)]
+    [InlineData("database", true)]
+    [InlineData("database", false)]
+    [InlineData("container", true)]
+    [InlineData("container", false)]
+    public void DirectClientConstructorFailureDisposesOnlyOwnedClient(string failure, bool ownsClient)
+    {
+        var fixture = new HistoryCosmosFixture();
+        var client = Client(fixture);
+        var options = failure == "profile" ? new HistoryCompactionOptions() : Options();
+        var compactor = failure == "pair" ? null : new TrackingCompactor();
+        if (failure == "mode")
+            options = options with { Mode = HistoryCompactionMode.Background };
+
+        var error = Record.Exception(() => new CosmosChatHistoryProvider(client.Object,
+            failure == "database" ? string.Empty : "database",
+            failure == "container" ? string.Empty : "conversations", ownsClient,
+            compactor: compactor, compactionOptions: options));
+
+        Assert.NotNull(error);
         client.Protected().Verify("Dispose", ownsClient ? Times.Once() : Times.Never(), ItExpr.IsAny<bool>());
     }
 
@@ -516,6 +546,155 @@ public class CompactionProviderCompositionTests
         var result = await compactor.CompactAsync(request);
 
         Assert.Equal(new[] { "recent", "recent reply" }, result.Messages.Select(message => message.Text));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SameHostBuiltInWindowsKeepTheirOwnTriggersAndPreservedTurns(bool reverseResolution)
+    {
+        var services = new ServiceCollection();
+        var first = services.AddHistoryCompactionProfile(Section(new()
+        {
+            ["CompactorKey"] = "test-sliding-window", ["MaxTurns"] = "1"
+        }))!;
+        var second = services.AddHistoryCompactionProfile(Section(new()
+        {
+            ["CompactorKey"] = "test-sliding-window", ["MaxTurns"] = "2"
+        }))!;
+        using var provider = services.BuildServiceProvider();
+        Assert.NotEqual(first.CompactorKey, second.CompactorKey);
+        var firstCompactor = provider.GetHistoryCompactor(reverseResolution ? second : first)!;
+        var secondCompactor = provider.GetHistoryCompactor(reverseResolution ? first : second)!;
+        if (reverseResolution)
+            (firstCompactor, secondCompactor) = (secondCompactor, firstCompactor);
+        Assert.NotSame(firstCompactor, secondCompactor);
+        Assert.Same(firstCompactor, provider.GetHistoryCompactor(first));
+        ChatMessage[] history =
+        [
+            new(ChatRole.User, "question 1"), new(ChatRole.Assistant, "answer 1"),
+            new(ChatRole.User, "question 2"), new(ChatRole.Assistant, "answer 2"),
+            new(ChatRole.User, "question 3"), new(ChatRole.Assistant, "answer 3")
+        ];
+
+        var firstResult = await firstCompactor.CompactAsync(new("first", "source", history, first));
+        var secondResult = await secondCompactor.CompactAsync(new("second", "source", history, second));
+
+        Assert.Equal(new[] { "question 3", "answer 3" }, firstResult.Messages.Select(message => message.Text));
+        Assert.Equal(new[] { "question 2", "answer 2", "question 3", "answer 3" },
+            secondResult.Messages.Select(message => message.Text));
+        var shortHistory = history.TakeLast(4).ToArray();
+        Assert.Equal(HistoryCompactionStatus.Completed,
+            (await firstCompactor.CompactAsync(new("first", "source", shortHistory, first))).Status);
+        Assert.Equal(HistoryCompactionStatus.Unchanged,
+            (await secondCompactor.CompactAsync(new("second", "source", shortHistory, second))).Status);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SameHostBuiltInWindowsKeepTheirOwnExecutionModes(bool backgroundFirst)
+    {
+        var services = new ServiceCollection();
+        var first = services.AddHistoryCompactionProfile(Section(new()
+        {
+            ["CompactorKey"] = "test-sliding-window", ["MaxTurns"] = "1",
+            ["Mode"] = backgroundFirst ? "Background" : "Foreground"
+        }))!;
+        var second = services.AddHistoryCompactionProfile(Section(new()
+        {
+            ["CompactorKey"] = "test-sliding-window", ["MaxTurns"] = "2",
+            ["Mode"] = backgroundFirst ? "Foreground" : "Background"
+        }))!;
+        using var provider = services.BuildServiceProvider();
+        var foreground = backgroundFirst ? second : first;
+        var background = backgroundFirst ? first : second;
+        Assert.IsType<MafForegroundHistoryCompactor>(provider.GetHistoryCompactor(foreground));
+        var worker = Assert.IsType<LocalBackgroundHistoryCompactor>(provider.GetHistoryCompactor(background));
+
+        var pending = await worker.CompactAsync(new("agent", "source",
+            [new(ChatRole.User, "question"), new(ChatRole.Assistant, "answer")], background));
+        Assert.Equal(HistoryCompactionStatus.Pending, pending.Status);
+        await worker.CancelAsync(pending.Ticket!);
+    }
+
+    [Fact]
+    public void CustomProfileKeysAreNotRewrittenByProfileComposition()
+    {
+        var services = new ServiceCollection();
+        var compactor = new TrackingCompactor();
+        services.AddHistoryCompactor("my-profile", _ => compactor);
+        var options = services.AddHistoryCompactionProfile(Section(new() { ["CompactorKey"] = "my-profile" }))!;
+        using var provider = services.BuildServiceProvider();
+
+        Assert.Equal("my-profile", options.CompactorKey);
+        Assert.Same(compactor, provider.GetHistoryCompactor(options));
+    }
+
+    [Fact]
+    public async Task TwoHostedAgentsUseIndependentProfilesHistoryAndSessionStoresInOneHost()
+    {
+        var firstHistory = new HistoryCosmosFixture();
+        var secondHistory = new HistoryCosmosFixture();
+        var firstSessions = new SessionCosmosSdkFixture();
+        var secondSessions = new SessionCosmosSdkFixture();
+        var services = new ServiceCollection();
+        services.AddLogging();
+        services.AddKeyedSingleton<Container>("first-history", ConfigureContainer(firstHistory));
+        services.AddKeyedSingleton<Container>("second-history", ConfigureContainer(secondHistory));
+        services.AddKeyedSingleton<Container>("first-sessions", firstSessions.Container.Object);
+        services.AddKeyedSingleton<Container>("second-sessions", secondSessions.Container.Object);
+        var profiles = new Dictionary<string, HistoryCompactionOptions>
+        {
+            ["first"] = services.AddHistoryCompactionProfile(Section(new()
+            {
+                ["CompactorKey"] = "test-sliding-window", ["MaxTurns"] = "1"
+            }))!,
+            ["second"] = services.AddHistoryCompactionProfile(Section(new()
+            {
+                ["CompactorKey"] = "test-sliding-window", ["MaxTurns"] = "2"
+            }))!
+        };
+        foreach (var name in new[] { "first", "second" })
+        {
+            var client = new Mock<IChatClient>();
+            client.Setup(value => value.GetResponseAsync(
+                It.IsAny<IEnumerable<ChatMessage>>(), It.IsAny<ChatOptions>(), It.IsAny<CancellationToken>()))
+                .Returns(() => Task.FromResult(new ChatResponse(new ChatMessage(ChatRole.Assistant, "reply"))));
+            services.AddKeyedSingleton<IChatClient>(name, client.Object);
+            services.AddAIAgent(name, (sp, agentName) =>
+            {
+                var options = new ChatClientAgentOptions { Id = agentName, Name = agentName }
+                    .WithCosmosChatHistoryProvider(sp.GetRequiredKeyedService<Container>($"{agentName}-history"),
+                        sp, history => history.Compaction = profiles[agentName]);
+                return sp.GetRequiredKeyedService<IChatClient>(agentName).AsAIAgent(options, services: sp);
+            }).WithCosmosSessionStore((sp, agentName) => new CosmosAgentSessionStore(
+                sp.GetRequiredKeyedService<Container>($"{agentName}-sessions"),
+                sp.GetRequiredService<Microsoft.Extensions.Logging.ILogger<CosmosAgentSessionStore>>(),
+                ttl: agentName == "first" ? 86400 : 604800));
+        }
+        using var provider = services.BuildServiceProvider();
+        foreach (var name in new[] { "second", "first" })
+        {
+            var agent = provider.GetRequiredKeyedService<AIAgent>(name);
+            var store = provider.GetRequiredKeyedService<AgentSessionStore>(name);
+            var key = new AgentSessionStoreKey("same-context");
+            var session = await store.GetOrCreateSessionAsync(agent, key);
+            for (var turn = 1; turn <= 4; turn++)
+            {
+                await agent.RunAsync($"{name}-{turn}", session);
+                await store.SaveSessionAsync(agent, key, session);
+                session = (await store.GetSessionAsync(agent, key))!;
+            }
+            var fixture = name == "first" ? firstHistory : secondHistory;
+            var stored = await fixture.CreateRepository().ReadAsync(SessionPersistenceState.GetRequired(session).ActiveHistory);
+            var questions = stored.Messages.Where(message => message.Role == ChatRole.User)
+                .Select(message => message.Text).ToArray();
+            Assert.Equal(name == "first" ? new[] { "first-3", "first-4" } : new[] { "second-2", "second-3", "second-4" },
+                questions);
+        }
+        Assert.Equal(4, firstSessions.CompletedWrites);
+        Assert.Equal(4, secondSessions.CompletedWrites);
     }
 
     [Fact]

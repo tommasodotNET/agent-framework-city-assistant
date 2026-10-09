@@ -211,7 +211,9 @@ public class SummaryCompactionProfileTests
     {
         var options = new ServiceCollection().AddHistoryCompactionProfile(Section(Settings()), (_, _) => new SummaryClient());
 
-        Assert.Equal(new HistoryCompactionOptions { CompactorKey = "summary" }, options);
+        Assert.NotNull(options);
+        Assert.StartsWith("summary:", options.CompactorKey);
+        Assert.Equal(new HistoryCompactionOptions { CompactorKey = options.CompactorKey }, options);
     }
 
     [Fact]
@@ -222,10 +224,171 @@ public class SummaryCompactionProfileTests
 
         var options = new ServiceCollection().AddHistoryCompactionProfile(Section(settings), (_, _) => new SummaryClient());
 
+        Assert.NotNull(options);
+        Assert.StartsWith("summary:", options.CompactorKey);
         Assert.Equal(new HistoryCompactionOptions
         {
-            CompactorKey = "summary", Timeout = TimeSpan.FromSeconds(30)
+            CompactorKey = options.CompactorKey, Timeout = TimeSpan.FromSeconds(30)
         }, options);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SameHostSummaryProfilesKeepTheirOwnModelsAndTriggers(bool reverseResolution)
+    {
+        var services = new ServiceCollection();
+        var firstSettings = Settings();
+        firstSettings["Model"] = "first-model";
+        var secondSettings = Settings();
+        secondSettings["Model"] = "second-model";
+        secondSettings["TriggerTokens"] = "100000";
+        var firstClient = new SummaryClient();
+        var secondClient = new SummaryClient();
+        var models = new List<string>();
+        var first = services.AddHistoryCompactionProfile(Section(firstSettings), (_, model) =>
+        {
+            models.Add(model);
+            return firstClient;
+        })!;
+        var second = services.AddHistoryCompactionProfile(Section(secondSettings), (_, model) =>
+        {
+            models.Add(model);
+            return secondClient;
+        })!;
+        Assert.Empty(models);
+        Assert.NotEqual(first.CompactorKey, second.CompactorKey);
+        using (var provider = services.BuildServiceProvider())
+        {
+            var firstCompactor = provider.GetHistoryCompactor(reverseResolution ? second : first)!;
+            var secondCompactor = provider.GetHistoryCompactor(reverseResolution ? first : second)!;
+            if (reverseResolution)
+                (firstCompactor, secondCompactor) = (secondCompactor, firstCompactor);
+            Assert.NotSame(firstCompactor, secondCompactor);
+            Assert.Same(firstCompactor, provider.GetHistoryCompactor(first));
+
+            var firstResult = await firstCompactor.CompactAsync(Request(first));
+            var secondResult = await secondCompactor.CompactAsync(Request(second));
+
+            Assert.Equal(HistoryCompactionStatus.Completed, firstResult.Status);
+            Assert.Equal(HistoryCompactionStatus.Unchanged, secondResult.Status);
+            Assert.Equal(1, firstClient.Calls);
+            Assert.Equal(0, secondClient.Calls);
+        }
+        Assert.Equal(reverseResolution ? new[] { "second-model", "first-model" } : new[] { "first-model", "second-model" }, models);
+        Assert.True(firstClient.Disposed);
+        Assert.True(secondClient.Disposed);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SameHostSummaryProfilesKeepIndependentTargetsAndPreservedGroups(bool differentFloor)
+    {
+        var firstSettings = Settings();
+        firstSettings["TriggerTokens"] = "500";
+        var secondSettings = Settings();
+        secondSettings["TriggerTokens"] = "500";
+        secondSettings["TargetTokens"] = "200";
+        if (differentFloor)
+        {
+            firstSettings["TargetTokens"] = "200";
+            secondSettings["MinimumPreservedGroups"] = "4";
+        }
+        var services = new ServiceCollection();
+        var first = services.AddHistoryCompactionProfile(Section(firstSettings), (_, _) => new SummaryClient())!;
+        var second = services.AddHistoryCompactionProfile(Section(secondSettings), (_, _) => new SummaryClient())!;
+        using var provider = services.BuildServiceProvider();
+        ChatMessage[] messages =
+        [
+            new(ChatRole.User, new string('a', 400)), new(ChatRole.Assistant, new string('b', 400)),
+            new(ChatRole.User, new string('c', 400)), new(ChatRole.Assistant, new string('d', 400)),
+            new(ChatRole.User, new string('e', 400)), new(ChatRole.Assistant, new string('f', 400))
+        ];
+
+        var firstResult = await provider.GetHistoryCompactor(first)!.CompactAsync(new("first", "source", messages, first));
+        var secondResult = await provider.GetHistoryCompactor(second)!.CompactAsync(new("second", "source", messages, second));
+
+        Assert.Equal(differentFloor ? 3 : 6, firstResult.Messages.Count);
+        Assert.Equal(differentFloor ? 5 : 3, secondResult.Messages.Count);
+    }
+
+    [Fact]
+    public async Task SummaryProfilesResolveClientsLazilyWithoutAllocatingUnresolvedAgentClient()
+    {
+        var services = new ServiceCollection();
+        var firstClient = new SummaryClient();
+        var first = services.AddHistoryCompactionProfile(Section(Settings()), (_, _) => firstClient)!;
+        var untouched = Settings();
+        untouched["Model"] = "unresolved";
+        _ = services.AddHistoryCompactionProfile(Section(untouched),
+            (_, _) => throw new InvalidOperationException("unused factory"));
+
+        using (var provider = services.BuildServiceProvider())
+        {
+            await provider.GetHistoryCompactor(first)!.CompactAsync(Request(first));
+            Assert.Equal(1, firstClient.Calls);
+        }
+        Assert.True(firstClient.Disposed);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task SummaryProfilesKeepForegroundAndBackgroundExecutionIndependent(bool backgroundFirst)
+    {
+        var services = new ServiceCollection();
+        var firstSettings = Settings();
+        firstSettings["Mode"] = backgroundFirst ? "Background" : "Foreground";
+        var secondSettings = Settings();
+        secondSettings["Mode"] = backgroundFirst ? "Foreground" : "Background";
+        var first = services.AddHistoryCompactionProfile(Section(firstSettings), (_, _) => new SummaryClient())!;
+        var second = services.AddHistoryCompactionProfile(Section(secondSettings), (_, _) => new SummaryClient())!;
+        using var provider = services.BuildServiceProvider();
+        var foreground = backgroundFirst ? second : first;
+        var background = backgroundFirst ? first : second;
+        Assert.IsType<MafForegroundHistoryCompactor>(provider.GetHistoryCompactor(foreground));
+        var worker = Assert.IsType<LocalBackgroundHistoryCompactor>(provider.GetHistoryCompactor(background));
+
+        var pending = await worker.CompactAsync(Request(background));
+        await worker.CancelAsync(pending.Ticket!);
+    }
+
+    [Fact]
+    public async Task LocalSummaryWorkerHonorsItsConfiguredExecutionTimeout()
+    {
+        var settings = Settings();
+        settings["Mode"] = "Background";
+        settings["Timeout"] = "00:00:00.500";
+        var client = new CancellationClient();
+        var services = new ServiceCollection();
+        var options = services.AddHistoryCompactionProfile(Section(settings), (_, _) => client)!;
+        using var provider = services.BuildServiceProvider();
+        var compactor = provider.GetHistoryCompactor(options)!;
+        var pending = await compactor.CompactAsync(Request(options));
+        await client.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await client.Cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await compactor.CancelAsync(pending.Ticket!);
+    }
+
+    private sealed class CancellationClient : IChatClient
+    {
+        internal TaskCompletionSource Started { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        internal TaskCompletionSource Cancelled { get; } = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public async Task<ChatResponse> GetResponseAsync(
+            IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default)
+        {
+            using var registration = cancellationToken.Register(() => Cancelled.TrySetResult());
+            Started.TrySetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            throw new InvalidOperationException();
+        }
+        public IAsyncEnumerable<ChatResponseUpdate> GetStreamingResponseAsync(
+            IEnumerable<ChatMessage> messages, ChatOptions? options = null, CancellationToken cancellationToken = default) =>
+            throw new NotSupportedException();
+        public object? GetService(Type serviceType, object? serviceKey = null) => null;
+        public void Dispose() { }
     }
 
     [Theory]

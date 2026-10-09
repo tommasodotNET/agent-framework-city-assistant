@@ -545,6 +545,38 @@ public class CompactionProviderTests
         Assert.Single(scenario.Fixture.Queries);
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public async Task CompactorSelfCancellationFallsBackWithoutCancellingUserTurn(
+        bool taskCancellation, bool configuredTimeout)
+    {
+        var logger = new RecordingLogger();
+        var fixture = new HistoryCosmosFixture();
+        var plugin = new Plugin((_, _) => taskCancellation
+            ? throw new TaskCanceledException("sensitive plugin details")
+            : throw new OperationCanceledException("sensitive plugin details"));
+        using var provider = new CosmosChatHistoryProvider(fixture.CreateRepository(),
+            compactor: plugin, compactionOptions: Options() with
+            {
+                Timeout = configuredTimeout ? TimeSpan.FromMinutes(1) : null
+            }, logger: logger);
+        var session = NewSession();
+        await provider.InvokedAsync(new(Agent(), session, [new(ChatRole.User, Original)], []));
+
+        var loaded = (await provider.InvokingAsync(new(Agent(), session, []))).ToArray();
+        await provider.InvokedAsync(new(Agent(), session,
+            [new(ChatRole.User, "current")], [new(ChatRole.Assistant, "reply")]));
+
+        Assert.Equal(Original, Assert.Single(loaded).Text);
+        Assert.Contains(logger.Messages, message => message.Contains("InvalidOperationException", StringComparison.Ordinal));
+        Assert.DoesNotContain(logger.Messages, message => message.Contains("sensitive", StringComparison.Ordinal));
+        Assert.Equal(new[] { Original, "current", "reply" }, (await fixture.CreateRepository()
+            .ReadAsync(SessionPersistenceState.GetRequired(session).ActiveHistory)).Messages.Select(message => message.Text));
+    }
+
     [Fact]
     public async Task StrategyTimeoutAllowsVerifiedFallback()
     {

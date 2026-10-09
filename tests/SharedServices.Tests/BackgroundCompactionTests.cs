@@ -119,6 +119,25 @@ public class BackgroundCompactionTests
             message => message.Contains("sensitive", StringComparison.Ordinal));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task NonCallerCancellationFromEnqueueOrRetrievalStillSavesTurn(bool retrieval)
+    {
+        using var scenario = await SetupAsync();
+        if (retrieval)
+            scenario.Backend.OnPoll = (_, _) => throw new TaskCanceledException();
+        else
+            scenario.Backend.OnStart = (_, _) => throw new TaskCanceledException();
+
+        await LoadAsync(scenario.Provider, scenario.Session);
+        await SaveAsync(scenario.Provider, scenario.Session, "current", "reply");
+
+        Assert.Equal(new[] { "current", "reply" }, (await ReadAsync(scenario)).TakeLast(2).Select(message => message.Text));
+        Assert.Null(State(scenario.Session).PendingCompaction);
+        Assert.Contains(scenario.Logger.Messages, message => message.Contains("InvalidOperationException", StringComparison.Ordinal));
+    }
+
     [Fact]
     public async Task InvalidCompletedResultStillSavesCurrentTurn()
     {
