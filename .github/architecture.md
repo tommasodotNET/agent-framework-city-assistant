@@ -319,6 +319,12 @@ Normal appends and unchanged fallback remain valid. This conservative rule avoid
 reconstructing instruction positions across summarized or removed conversation content;
 instructions outside stored history are not part of this check.
 
+Summary validation distinguishes provenance: explicit summary metadata is required
+for canonical/fallback history, unchanged results and newly appended conversation
+messages. A new compactor-produced message also receives the textual sentinel guard
+when metadata is missing. Source messages retained unchanged are not classified as
+new summaries from their literal text. Flagged summaries remain validated in all paths.
+
 The summarizer, if used, is a separate `IChatClient` dependency without the main
 agent's tools/history/compaction pipeline. Otherwise summarization could recurse
 or execute application tools. Strategies use per-invocation copies and indexes;
@@ -387,9 +393,13 @@ C2. A conflicting turn is not automatically replayed.
 
 Retrying the same unpublished candidate first queries its live messages and verifies
 the exact count, contiguous sequences, and canonical payload hash against the rotation
-binding. Missing/expired/corrupted messages reject the retry before retiring C1.
+binding. Missing/expired messages or payload/sequence mismatches reject the retry before retiring C1.
 This extra read applies only when reusing an already staged target, not every rotation.
 As with ordinary history reads, it is not atomic with Cosmos's independent TTL sweeper.
+Application-created message envelopes are immutable: initial message TTL and rotation
+binding TTL come from the same validated setting, and retries with another setting
+conflict. Out-of-band edits of message-envelope metadata, including TTL, are outside
+this repository's supported writer contract; the retry check is not a general tamper audit.
 
 Rotation is not a transaction across partitions or containers. If publication
 completed but the session checkpoint did not, recovery may follow only the

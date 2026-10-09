@@ -399,6 +399,55 @@ public class CompactionMafValidationTests
         Assert.Equal(HistoryCompactionFailureReason.InvalidSummary, error.Reason);
     }
 
+    [Theory]
+    [InlineData("[Summary]")]
+    [InlineData("[Summary unavailable]")]
+    [InlineData("[Summary]\nExplanation quoting [Summary unavailable]")]
+    public void OrdinaryAssistantMarkerTextRemainsValidInHistoryAndUnchangedResults(string text)
+    {
+        var source = Source();
+        source[^1] = new(ChatRole.Assistant, text);
+        var request = Request(source);
+        var size = HistoryCompactionValidation.Measure(source);
+
+        HistoryCompactionValidation.ValidateFallback(source);
+        HistoryCompactionValidation.ValidateResult(request,
+            new(HistoryCompactionStatus.Unchanged, request.SourceBinding, source, size, size));
+    }
+
+    [Theory]
+    [InlineData("[Summary]")]
+    [InlineData("[Summary unavailable]")]
+    [InlineData("[Summary]\nExplanation quoting [Summary unavailable]")]
+    public void RetainedOrdinaryMarkerTextIsNotNewCompactorOutput(string text)
+    {
+        var source = Source();
+        source[^1] = new(ChatRole.Assistant, text) { MessageId = "ordinary-response" };
+        var candidate = new[] { source[0], source[^2], source[^1] };
+
+        HistoryCompactionValidation.ValidateCandidate(source, candidate);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ExplicitInvalidSummaryMetadataIsRejectedInCanonicalHistory(bool deserializedFlag)
+    {
+        var source = new ChatMessage(ChatRole.Assistant, "[Summary unavailable]")
+        {
+            AdditionalProperties = new()
+            {
+                [CompactionMessageGroup.SummaryPropertyKey] = deserializedFlag
+                    ? JsonSerializer.SerializeToElement(true) : true
+            }
+        };
+
+        var error = Assert.Throws<HistoryCompactionValidationException>(() =>
+            HistoryCompactionValidation.ValidateFallback([source]));
+
+        Assert.Equal(HistoryCompactionFailureReason.InvalidSummary, error.Reason);
+    }
+
     [Fact]
     public void SmallerCandidatePassesIndependentValidation()
     {

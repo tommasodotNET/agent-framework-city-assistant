@@ -41,6 +41,25 @@ public class BackgroundCompactionTests
         Assert.Null(State(scenario.Session).PendingCompaction);
     }
 
+    [Theory]
+    [InlineData("[Summary]")]
+    [InlineData("[Summary unavailable]")]
+    [InlineData("[Summary]\nExplanation quoting [Summary unavailable]")]
+    public async Task OrdinaryCurrentReplySurvivesBackgroundMergeAndNextLoad(string text)
+    {
+        using var scenario = await SetupAsync();
+        await LoadAsync(scenario.Provider, scenario.Session);
+        scenario.Backend.Ready = true;
+
+        await SaveAsync(scenario.Provider, scenario.Session, "current", text);
+        var stored = await ReadAsync(scenario);
+        var loaded = await LoadAsync(scenario.Provider, scenario.Session);
+
+        Assert.Equal(new[] { "summary", "current", text }, stored.Select(message => message.Text));
+        Assert.Equal(text, loaded[^1].Text);
+        Assert.NotEqual(scenario.Source.ConversationId, State(scenario.Session).ActiveHistory.ConversationId);
+    }
+
     [Fact]
     public async Task SaveWaitsBrieflyForJobThatIsAlmostReady()
     {

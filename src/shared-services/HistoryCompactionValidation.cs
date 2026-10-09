@@ -69,6 +69,7 @@ public static class HistoryCompactionValidation
     /// <summary>
     /// Checks whether original history can be used after a no-op or failure. Pending tools are allowed
     /// in original history; this does not authorize rewriting them or prove the storage revision.
+    /// Only explicit summary metadata identifies summaries in ordinary history.
     /// </summary>
     public static void ValidateFallback(IReadOnlyList<ChatMessage> messages)
     {
@@ -140,7 +141,8 @@ public static class HistoryCompactionValidation
             Fail(HistoryCompactionFailureReason.EmptyCandidate);
         }
 
-        ValidateFallback(candidate);
+        ValidateMessages(candidate);
+        ValidateSummaries(candidate, source);
         var sourceTools = GetToolGroups(source);
         ValidateProcessedApprovals(source, sourceTools);
         var candidateJson = Serialize(candidate);
@@ -421,16 +423,18 @@ public static class HistoryCompactionValidation
             JsonSerializer.SerializeToElement(new { left.CallId, left.Name, left.Arguments, left.Annotations, left.AdditionalProperties }),
             JsonSerializer.SerializeToElement(new { right.CallId, right.Name, right.Arguments, right.Annotations, right.AdditionalProperties }));
 
-    private static void ValidateSummaries(IReadOnlyList<ChatMessage> messages)
+    private static void ValidateSummaries(
+        IReadOnlyList<ChatMessage> messages, IReadOnlyList<ChatMessage>? original = null)
     {
         foreach (var message in messages)
         {
             var text = message.Text.Trim();
             var isSummary = message.AdditionalProperties?.TryGetValue(CompactionMessageGroup.SummaryPropertyKey, out var value) == true
                 && (value is true || value is JsonElement { ValueKind: JsonValueKind.True });
-            if (!isSummary && (message.Role != ChatRole.Assistant
+            if (!isSummary && (original is null || message.Role != ChatRole.Assistant
                 || (!text.StartsWith("[Summary]", StringComparison.Ordinal)
-                    && !string.Equals(text, "[Summary unavailable]", StringComparison.Ordinal))))
+                    && !string.Equals(text, "[Summary unavailable]", StringComparison.Ordinal))
+                || original.Any(source => Equivalent([source], [message]))))
             {
                 continue;
             }
@@ -440,8 +444,8 @@ public static class HistoryCompactionValidation
                 text = text["[Summary]".Length..].Trim();
             }
 
-            // MAF treats blank model output as successful compaction with this sentinel. Never
-            // persist it as useful memory. A genuine summary quoting the sentinel is conservatively rejected.
+            // Guard new compactor output even when it drops summary metadata. An unchanged source
+            // message or current-turn reply is not a generated summary merely because of its text.
             if (message.Role != ChatRole.Assistant || string.IsNullOrWhiteSpace(text)
                 || text.Contains("[Summary unavailable]", StringComparison.Ordinal))
             {

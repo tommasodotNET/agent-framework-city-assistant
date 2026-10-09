@@ -373,6 +373,12 @@ Full-history UTF-8 JSON sizes (including roles, contents and metadata) are retai
 as diagnostics and to verify a genuine reduction, not as a tokenizer count or a
 model-window guarantee. Compaction triggers/targets remain owned by the MAF strategy.
 
+Normal history and current-turn replies are recognized as summaries only through
+explicit MAF summary metadata. Literal assistant text such as `[Summary]` or
+`[Summary unavailable]` is not itself a generated summary. For new compactor output,
+the unavailable/blank-summary guard still applies even when metadata is missing;
+unchanged messages retained from the source are excluded from that text heuristic.
+
 System/developer messages stored in history are compactable only when they form
 an initial contiguous prefix. That exact prefix must stay unchanged at the start
 of the candidate. Interleaved instructions skip compaction with a diagnostic;

@@ -501,6 +501,23 @@ public class MafForegroundCompactorTests
         Assert.Equal(HistoryCompactionStatus.Unchanged, result.Status);
     }
 
+    [Theory]
+    [InlineData("[Summary]")]
+    [InlineData("[Summary unavailable]")]
+    [InlineData("[Summary]\nExplanation quoting [Summary unavailable]")]
+    public async Task NativeNoOpDoesNotTreatOrdinaryReplyAsGeneratedSummary(string text)
+    {
+        var history = History();
+        history[^1] = new(ChatRole.Assistant, text);
+        var compactor = new MafForegroundHistoryCompactor(
+            new TruncationCompactionStrategy(CompactionTriggers.Never));
+
+        var result = await compactor.CompactAsync(Request(history));
+
+        Assert.Equal(HistoryCompactionStatus.Unchanged, result.Status);
+        Assert.Equal(text, result.Messages[^1].Text);
+    }
+
     [Fact]
     public async Task FailedBuiltInSummaryPreservesWarningEvidence()
     {

@@ -63,6 +63,65 @@ public class CompactionProviderTests
         Assert.Equal(2, scenario.Fixture.Queries.Count);
     }
 
+    [Theory]
+    [InlineData("[Summary]", false)]
+    [InlineData("[Summary unavailable]", false)]
+    [InlineData("[Summary]\nExplanation quoting [Summary unavailable]", false)]
+    [InlineData("[Summary]", true)]
+    [InlineData("[Summary unavailable]", true)]
+    [InlineData("[Summary]\nExplanation quoting [Summary unavailable]", true)]
+    public async Task OrdinaryMarkerTextDoesNotBlockUnchangedOrFailureFallback(string text, bool failStrategy)
+    {
+        using var scenario = await SetupAsync(new Plugin((request, _) => failStrategy
+            ? throw new HttpRequestException("model unavailable") : Task.FromResult(Unchanged(request))),
+            messages: [new(ChatRole.User, Original), new(ChatRole.Assistant, text)]);
+
+        var loaded = await scenario.LoadAsync();
+        await scenario.Provider.InvokedAsync(new(Agent(), scenario.Session,
+            [new(ChatRole.User, "current")], [new(ChatRole.Assistant, "reply")]));
+
+        Assert.Equal(text, loaded[^1].Text);
+        Assert.Equal(scenario.Source.ConversationId, scenario.Active.ConversationId);
+        Assert.Equal(new[] { Original, text, "current", "reply" },
+            (await scenario.Fixture.CreateRepository().ReadAsync(scenario.Active)).Messages.Select(message => message.Text));
+    }
+
+    [Theory]
+    [InlineData("[Summary]")]
+    [InlineData("[Summary unavailable]")]
+    [InlineData("[Summary]\nExplanation quoting [Summary unavailable]")]
+    public async Task OrdinaryNewReplyDoesNotBlockPreparedCompactionSave(string text)
+    {
+        using var scenario = await SetupAsync(new Plugin((request, _) =>
+            Task.FromResult(Completed(request, [new(ChatRole.User, "short")]))));
+        await scenario.LoadAsync();
+
+        await scenario.Provider.InvokedAsync(new(Agent(), scenario.Session,
+            [new(ChatRole.User, "current")], [new(ChatRole.Assistant, text)]));
+
+        Assert.NotEqual(scenario.Source.ConversationId, scenario.Active.ConversationId);
+        Assert.Equal(new[] { "short", "current", text },
+            (await scenario.Fixture.CreateRepository().ReadAsync(scenario.Active)).Messages.Select(message => message.Text));
+    }
+
+    [Theory]
+    [InlineData("[Summary]")]
+    [InlineData("[Summary unavailable]")]
+    public async Task CompletedCandidateCanRetainOrdinarySourceMarkerText(string text)
+    {
+        var ordinary = new ChatMessage(ChatRole.Assistant, text);
+        using var scenario = await SetupAsync(new Plugin((request, _) =>
+            Task.FromResult(Completed(request, [request.Messages[^1]]))),
+            messages: [new(ChatRole.User, Original), ordinary]);
+
+        var loaded = await scenario.LoadAsync();
+        await scenario.SaveAsync();
+
+        Assert.Equal(text, Assert.Single(loaded).Text);
+        Assert.NotEqual(scenario.Source.ConversationId, scenario.Active.ConversationId);
+        Assert.Equal(text, Assert.Single((await scenario.Fixture.CreateRepository().ReadAsync(scenario.Active)).Messages).Text);
+    }
+
     [Fact]
     public async Task ProtectedInstructionsRemainRequired()
     {
@@ -479,7 +538,10 @@ public class CompactionProviderTests
     {
         using var scenario = await SetupAsync(new Plugin((_, _) => throw new InvalidOperationException()));
         await scenario.Fixture.CreateRepository().RotateAsync(scenario.Source,
-            [new(ChatRole.Assistant, "[Summary]\n[Summary unavailable]")],
+            [new(ChatRole.Assistant, "[Summary]\n[Summary unavailable]")
+            {
+                AdditionalProperties = new() { ["_is_summary"] = true }
+            }],
             86400, Guid.NewGuid().ToString("N"));
 
         var exception = await Assert.ThrowsAsync<HistoryCompactionValidationException>(scenario.LoadAsync);
