@@ -240,7 +240,7 @@ public class CompactionProviderSessionTests
         }
     }
 
-    private static HistoryCompactionOptions Options() => new() { CompactorKey = "test", MaxHistoryUtf8Bytes = 10000 };
+    private static HistoryCompactionOptions Options() => new() { CompactorKey = "test" };
 
     private static ChatClientAgent Agent(CosmosChatHistoryProvider provider)
     {

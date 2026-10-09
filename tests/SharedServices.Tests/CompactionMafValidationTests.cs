@@ -57,44 +57,27 @@ public class CompactionMafValidationTests
     {
         IReadOnlyList<ChatMessage> source = [new(new ChatRole(role), "[Summary]\n[Summary unavailable]")];
 
-        var error = Record.Exception(() => HistoryCompactionValidation.ValidateFallback(source, 100_000));
+        var error = Record.Exception(() => HistoryCompactionValidation.ValidateFallback(source));
 
         Assert.Null(error);
     }
 
-    [Theory]
-    [InlineData(0)]
-    [InlineData(-1)]
-    public void FallbackRejectsNonpositiveExplicitBudget(long cap)
-    {
-        Assert.Throws<ArgumentOutOfRangeException>(() => HistoryCompactionValidation.ValidateFallback(Source(), cap));
-    }
-
     [Fact]
-    public void FallbackCannotBypassBudget()
-    {
-        var error = Assert.Throws<HistoryCompactionValidationException>(() =>
-            HistoryCompactionValidation.ValidateFallback(Source(), 1));
-
-        Assert.Equal(HistoryCompactionFailureReason.BudgetExceeded, error.Reason);
-    }
-
-    [Fact]
-    public void FallbackWithNullCapStillRejectsNullMessageAndContent()
+    public void FallbackRejectsNullMessageAndContent()
     {
         Assert.Throws<ArgumentException>(() =>
-            HistoryCompactionValidation.ValidateFallback(new ChatMessage[] { null! }, null));
+            HistoryCompactionValidation.ValidateFallback(new ChatMessage[] { null! }));
         var source = Source();
         source[1].Contents.Add(null!);
-        Assert.Throws<ArgumentException>(() => HistoryCompactionValidation.ValidateFallback(source, null));
+        Assert.Throws<ArgumentException>(() => HistoryCompactionValidation.ValidateFallback(source));
     }
 
     [Fact]
-    public void NullCapStillRequiresARealReduction()
+    public void CandidateRequiresARealReduction()
     {
         var source = Source();
         var error = Assert.Throws<HistoryCompactionValidationException>(() =>
-            HistoryCompactionValidation.ValidateCandidate(source, source, null));
+            HistoryCompactionValidation.ValidateCandidate(source, source));
 
         Assert.Equal(HistoryCompactionFailureReason.NotReduced, error.Reason);
     }
@@ -113,21 +96,9 @@ public class CompactionMafValidationTests
         Assert.True(HistoryCompactionValidation.Measure(candidate) < HistoryCompactionValidation.Measure(source));
 
         var error = Assert.Throws<HistoryCompactionValidationException>(() =>
-            HistoryCompactionValidation.ValidateCandidate(source, candidate, null));
+            HistoryCompactionValidation.ValidateCandidate(source, candidate));
 
         Assert.Equal(HistoryCompactionFailureReason.NotReduced, error.Reason);
-    }
-
-    [Fact]
-    public void ExplicitCapAllowsExactlyTheMeasuredSizeButNotOneByteLess()
-    {
-        var source = Source();
-        var size = HistoryCompactionValidation.Measure(source);
-        HistoryCompactionValidation.ValidateFallback(source, size);
-        var error = Assert.Throws<HistoryCompactionValidationException>(() =>
-            HistoryCompactionValidation.ValidateFallback(source, size - 1));
-
-        Assert.Equal(HistoryCompactionFailureReason.BudgetExceeded, error.Reason);
     }
 
     [Fact]
@@ -139,7 +110,7 @@ public class CompactionMafValidationTests
             new(ChatRole.Assistant, [new ToolApprovalRequestContent("approval", call)])
         ];
 
-        HistoryCompactionValidation.ValidateFallback(messages, 100_000);
+        HistoryCompactionValidation.ValidateFallback(messages);
 
         Assert.False(call.InformationalOnly);
     }
@@ -184,18 +155,6 @@ public class CompactionMafValidationTests
         var error = Assert.Throws<HistoryCompactionValidationException>(() => HistoryCompactionValidation.ValidateResult(request, result));
 
         Assert.Equal(HistoryCompactionFailureReason.InvalidUnchangedResult, error.Reason);
-    }
-
-    [Fact]
-    public void UnchangedPluginResultCannotBypassProviderBudget()
-    {
-        var request = Request(cap: 1);
-        var size = HistoryCompactionValidation.Measure(request.Messages);
-        var result = new HistoryCompactionResult(HistoryCompactionStatus.Unchanged, request.SourceBinding, request.Messages, size, size);
-
-        var error = Assert.Throws<HistoryCompactionValidationException>(() => HistoryCompactionValidation.ValidateResult(request, result));
-
-        Assert.Equal(HistoryCompactionFailureReason.BudgetExceeded, error.Reason);
     }
 
     [Fact]
@@ -273,7 +232,7 @@ public class CompactionMafValidationTests
         var source = MalformedExchange(condition);
 
         var error = Assert.Throws<HistoryCompactionValidationException>(() =>
-            HistoryCompactionValidation.ValidateCandidate(source, Candidate(), 100_000));
+            HistoryCompactionValidation.ValidateCandidate(source, Candidate()));
 
         Assert.Equal(HistoryCompactionFailureReason.UnsafeToolHistory, error.Reason);
     }
@@ -286,7 +245,7 @@ public class CompactionMafValidationTests
         source[3].Contents.Insert(0, new FunctionResultContent("second", "second answer"));
         var candidate = source.Where((_, index) => index != 1).ToArray();
 
-        var error = Record.Exception(() => HistoryCompactionValidation.ValidateCandidate(source, candidate, 100_000));
+        var error = Record.Exception(() => HistoryCompactionValidation.ValidateCandidate(source, candidate));
 
         Assert.Null(error);
     }
@@ -300,7 +259,7 @@ public class CompactionMafValidationTests
         IReadOnlyList<ChatMessage> candidate = [source[0], source[4], source[5], source[2], source[3], source[6], source[7]];
 
         var error = Assert.Throws<HistoryCompactionValidationException>(() =>
-            HistoryCompactionValidation.ValidateCandidate(source, candidate, 100_000));
+            HistoryCompactionValidation.ValidateCandidate(source, candidate));
 
         Assert.Equal(HistoryCompactionFailureReason.UnsafeToolHistory, error.Reason);
     }
@@ -313,7 +272,7 @@ public class CompactionMafValidationTests
         source.Insert(5, new(ChatRole.Tool, [new FunctionResultContent("second", "second answer")]));
         IReadOnlyList<ChatMessage> candidate = [source[0], source[4], source[5], source[6], source[7]];
 
-        var error = Record.Exception(() => HistoryCompactionValidation.ValidateCandidate(source, candidate, 100_000));
+        var error = Record.Exception(() => HistoryCompactionValidation.ValidateCandidate(source, candidate));
 
         Assert.Null(error);
     }
@@ -326,7 +285,7 @@ public class CompactionMafValidationTests
         IReadOnlyList<ChatMessage> candidate = [source[0], source[3], source[4], source[5], source[6]];
 
         var error = Assert.Throws<HistoryCompactionValidationException>(() =>
-            HistoryCompactionValidation.ValidateCandidate(source, candidate, 100_000));
+            HistoryCompactionValidation.ValidateCandidate(source, candidate));
 
         Assert.Equal(HistoryCompactionFailureReason.UnsafeToolHistory, error.Reason);
     }
@@ -339,7 +298,7 @@ public class CompactionMafValidationTests
         source.Insert(5, new(ChatRole.Assistant, [new TextReasoningContent("trailing") { ProtectedData = "opaque trailing" }]));
         var candidate = source.Where((_, index) => index != 1).ToArray();
 
-        var error = Record.Exception(() => HistoryCompactionValidation.ValidateCandidate(source, candidate, 100_000));
+        var error = Record.Exception(() => HistoryCompactionValidation.ValidateCandidate(source, candidate));
 
         Assert.Null(error);
     }
@@ -365,10 +324,10 @@ public class CompactionMafValidationTests
     }
 
     [Fact]
-    public void ValidCandidateFromOversizedOriginalPassesIndependentValidation()
+    public void SmallerCandidatePassesIndependentValidation()
     {
         var candidate = Candidate();
-        var request = Request(cap: HistoryCompactionValidation.Measure(candidate));
+        var request = Request();
         var result = Completed(request, candidate);
 
         var error = Record.Exception(() => HistoryCompactionValidation.ValidateResult(request, result));
@@ -396,7 +355,7 @@ public class CompactionMafValidationTests
     public void EmptyCandidateIsRejectedByReusableValidation()
     {
         var error = Assert.Throws<HistoryCompactionValidationException>(() =>
-            HistoryCompactionValidation.ValidateCandidate(Source(), Array.Empty<ChatMessage>(), 100_000));
+            HistoryCompactionValidation.ValidateCandidate(Source(), Array.Empty<ChatMessage>()));
 
         Assert.Equal(HistoryCompactionFailureReason.EmptyCandidate, error.Reason);
     }
@@ -405,7 +364,7 @@ public class CompactionMafValidationTests
     public void WhitespaceOnlyCandidateIsNotUsefulHistory()
     {
         var error = Assert.Throws<HistoryCompactionValidationException>(() =>
-            HistoryCompactionValidation.ValidateCandidate(Source(), new[] { new ChatMessage(ChatRole.Assistant, "  ") }, 100_000));
+            HistoryCompactionValidation.ValidateCandidate(Source(), new[] { new ChatMessage(ChatRole.Assistant, "  ") }));
 
         Assert.Equal(HistoryCompactionFailureReason.EmptyCandidate, error.Reason);
     }
@@ -417,7 +376,7 @@ public class CompactionMafValidationTests
         var candidate = Candidate();
         var before = JsonSerializer.Serialize(new { source, candidate });
 
-        HistoryCompactionValidation.ValidateCandidate(source, candidate, 100_000);
+        HistoryCompactionValidation.ValidateCandidate(source, candidate);
 
         Assert.Equal(before, JsonSerializer.Serialize(new { source, candidate }));
     }
@@ -510,11 +469,10 @@ public class CompactionMafValidationTests
         return source;
     }
 
-    private static HistoryCompactionRequest Request(IReadOnlyList<ChatMessage>? source = null, long cap = 100_000) =>
+    private static HistoryCompactionRequest Request(IReadOnlyList<ChatMessage>? source = null) =>
         new("agent", "opaque-private-binding", source ?? Source(), new HistoryCompactionOptions
         {
-            CompactorKey = "foreground-test",
-            MaxHistoryUtf8Bytes = cap
+            CompactorKey = "foreground-test"
         });
 
     private static HistoryCompactionResult Completed(

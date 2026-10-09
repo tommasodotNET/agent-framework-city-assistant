@@ -24,11 +24,11 @@ public class CompactionProviderTests
     }
 
     [Fact]
-    public async Task NullByteCapAllowsUnchangedHistoryBeyondAPreviouslyTypicalCap()
+    public async Task UnchangedHistoryKeepsLargeMessages()
     {
         var text = new string('x', 120_000);
         using var scenario = await SetupAsync(new Plugin((request, _) => Task.FromResult(Unchanged(request))),
-            Options() with { MaxHistoryUtf8Bytes = null }, [new(ChatRole.User, text)]);
+            messages: [new(ChatRole.User, text)]);
 
         var result = await scenario.LoadAsync();
 
@@ -38,10 +38,10 @@ public class CompactionProviderTests
     }
 
     [Fact]
-    public async Task NullByteCapStillAllowsForegroundRotation()
+    public async Task ForegroundRotationUsesValidatedReduction()
     {
         var plugin = new Plugin((request, _) => Task.FromResult(Completed(request, [new(ChatRole.User, "short")])));
-        using var scenario = await SetupAsync(plugin, Options() with { MaxHistoryUtf8Bytes = null });
+        using var scenario = await SetupAsync(plugin);
 
         var result = await scenario.LoadAsync();
         await scenario.SaveAsync();
@@ -51,10 +51,10 @@ public class CompactionProviderTests
     }
 
     [Fact]
-    public async Task NullByteCapAllowsFallbackAfterStrategyFailureButStillChecksSourceVersion()
+    public async Task StrategyFailureFallbackStillChecksSourceVersion()
     {
         var plugin = new Plugin((_, _) => throw new HttpRequestException("model unavailable"));
-        using var scenario = await SetupAsync(plugin, Options() with { MaxHistoryUtf8Bytes = null });
+        using var scenario = await SetupAsync(plugin);
 
         var result = await scenario.LoadAsync();
 
@@ -64,11 +64,11 @@ public class CompactionProviderTests
     }
 
     [Fact]
-    public async Task NullByteCapDoesNotPermitRemovingProtectedInstructions()
+    public async Task ProtectedInstructionsRemainRequired()
     {
         var plugin = new Plugin((request, _) => Task.FromResult(Completed(request, [new(ChatRole.User, "short")])));
-        using var scenario = await SetupAsync(plugin, Options() with { MaxHistoryUtf8Bytes = null },
-            [new(ChatRole.System, "protected"), new(ChatRole.User, Original)]);
+        using var scenario = await SetupAsync(plugin,
+            messages: [new(ChatRole.System, "protected"), new(ChatRole.User, Original)]);
 
         var result = await scenario.LoadAsync();
 
@@ -165,32 +165,6 @@ public class CompactionProviderTests
         using var provider = Provider(fixture, new Plugin((request, _) => Task.FromResult(Unchanged(request))));
 
         await Assert.ThrowsAsync<InvalidOperationException>(() => provider.InvokingAsync(new(Agent(), NewSession(), [])).AsTask());
-    }
-
-    [Theory]
-    [InlineData(HistoryCompactionStatus.Unchanged)]
-    [InlineData(HistoryCompactionStatus.Completed)]
-    public async Task OverBudgetHistoryCannotReturnSuccess(HistoryCompactionStatus status)
-    {
-        var plugin = new Plugin((request, _) => Task.FromResult(new HistoryCompactionResult(
-            status, request.SourceBinding, request.Messages, Size(request.Messages), Size(request.Messages))));
-        using var scenario = await SetupAsync(plugin, Options() with { MaxHistoryUtf8Bytes = 1 });
-
-        var exception = await Assert.ThrowsAsync<HistoryCompactionValidationException>(scenario.LoadAsync);
-
-        Assert.Equal(HistoryCompactionFailureReason.BudgetExceeded, exception.Reason);
-    }
-
-    [Fact]
-    public async Task OverBudgetCandidateFallsBackOnlyToUnderBudgetSource()
-    {
-        var plugin = new Plugin((request, _) => Task.FromResult(Completed(request,
-            [new(ChatRole.User, new string('y', 2000))])));
-        using var scenario = await SetupAsync(plugin, Options() with { MaxHistoryUtf8Bytes = 1000 });
-
-        var messages = await scenario.LoadAsync();
-
-        Assert.Equal(Original, Assert.Single(messages).Text);
     }
 
     [Fact]
@@ -350,7 +324,7 @@ public class CompactionProviderTests
     }
 
     [Fact]
-    public async Task StrategyTimeoutAllowsVerifiedUnderBudgetFallback()
+    public async Task StrategyTimeoutAllowsVerifiedFallback()
     {
         using var scenario = await SetupAsync(new Plugin(async (_, token) =>
         {
@@ -437,16 +411,16 @@ public class CompactionProviderTests
     }
 
     [Fact]
-    public async Task RecoveredTargetStillMustFitConfiguredBudget()
+    public async Task RecoveredTargetStillValidatesItsSummary()
     {
-        using var scenario = await SetupAsync(new Plugin((_, _) => throw new InvalidOperationException()),
-            Options() with { MaxHistoryUtf8Bytes = 1 });
-        await scenario.Fixture.CreateRepository().RotateAsync(scenario.Source, [new(ChatRole.User, "short")],
+        using var scenario = await SetupAsync(new Plugin((_, _) => throw new InvalidOperationException()));
+        await scenario.Fixture.CreateRepository().RotateAsync(scenario.Source,
+            [new(ChatRole.Assistant, "[Summary]\n[Summary unavailable]")],
             86400, Guid.NewGuid().ToString("N"));
 
         var exception = await Assert.ThrowsAsync<HistoryCompactionValidationException>(scenario.LoadAsync);
 
-        Assert.Equal(HistoryCompactionFailureReason.BudgetExceeded, exception.Reason);
+        Assert.Equal(HistoryCompactionFailureReason.InvalidSummary, exception.Reason);
     }
 
     [Fact]
@@ -596,7 +570,7 @@ public class CompactionProviderTests
         await scenario.LoadAsync();
         using var changed = new CosmosChatHistoryProvider(scenario.Fixture.CreateRepository(),
             compactor: disabled ? null : plugin,
-            compactionOptions: disabled ? null : Options() with { MaxHistoryUtf8Bytes = 5000 });
+            compactionOptions: disabled ? null : Options() with { CompactorKey = "changed-profile" });
 
         await changed.InvokedAsync(new(Agent(), scenario.Session, [new(ChatRole.User, "later")], []));
 
@@ -684,18 +658,22 @@ public class CompactionProviderTests
     }
 
     [Fact]
-    public async Task PreparedCandidatePlusCurrentTurnMustFitExplicitCapBeforePublication()
+    public async Task CompleteHistoryCanExceedTwoMegabytesWhenIndividualDocumentsFitCosmos()
     {
-        using var scenario = await SetupAsync(new Plugin((request, _) =>
-            Task.FromResult(Completed(request, [new(ChatRole.User, "short")]))),
-            Options() with { MaxHistoryUtf8Bytes = Size([new(ChatRole.User, "short")]) });
-        await scenario.LoadAsync();
+        var original = Enumerable.Range(0, 12)
+            .Select(index => new ChatMessage(ChatRole.User, $"{index}: {new string('x', 200_000)}")).ToArray();
+        using var scenario = await SetupAsync(new Plugin((request, _) => Task.FromResult(Unchanged(request))),
+            messages: original);
+        var loaded = await scenario.LoadAsync();
+        var queries = scenario.Fixture.Queries.Count;
 
-        var error = await Assert.ThrowsAsync<HistoryCompactionValidationException>(() =>
-            scenario.Provider.InvokedAsync(new(Agent(), scenario.Session, [new(ChatRole.User, new string('x', 100))], [])).AsTask());
+        await scenario.Provider.InvokedAsync(new(Agent(), scenario.Session,
+            [new(ChatRole.User, new string('y', 500_000))], [new(ChatRole.Assistant, "reply")]));
 
-        Assert.Equal((HistoryCompactionFailureReason.BudgetExceeded, scenario.Source, 1),
-            (error.Reason, scenario.Active, scenario.Fixture.Batches.Count));
+        Assert.True(Size(loaded) > 2 * 1024 * 1024);
+        Assert.Equal(queries, scenario.Fixture.Queries.Count);
+        Assert.Equal(scenario.Source.ConversationId, scenario.Active.ConversationId);
+        Assert.Equal(14, (await scenario.Fixture.CreateRepository().ReadAsync(scenario.Active)).Messages.Count);
     }
 
     [Fact]
@@ -800,7 +778,7 @@ public class CompactionProviderTests
 
     private static HistoryCompactionOptions Options() => new()
     {
-        CompactorKey = "provider-test", MaxHistoryUtf8Bytes = 100_000
+        CompactorKey = "provider-test"
     };
 
     private static HistoryCompactionResult Unchanged(HistoryCompactionRequest request) =>

@@ -88,20 +88,30 @@ const send = response => nonstreaming(response).sendMessage([{ role: 'user', con
 for (const [name, response] of [
     ['user-only task', { history: [user('hello')], status: {}, artifacts: [] }],
     ['user status with empty agent history', { history: [agent(' ')], status: { message: user('hello') }, artifacts: [] }],
+    ['stale agent history before current user', { history: [agent('old answer'), user('hello')], status: {}, artifacts: [] }],
+    ['stale agent history with empty current answer',
+        { history: [agent('old answer'), user('hello'), agent(' \n ')], status: {}, artifacts: [] }],
+    ['multiple old turns with empty current answer',
+        { history: [user('old prompt'), agent('old answer'), user('hello'), agent('')], status: {}, artifacts: [] }],
+    ['agent history without a user boundary', { history: [agent('old answer')], status: {}, artifacts: [] }],
     ['direct user message', { messageId: 'message', ...user('hello') }]
 ]) {
-    test(`nonstreaming ${name} never echoes the user prompt`, async () => {
+    test(`nonstreaming ${name} reports empty_response`, async () => {
         await assert.rejects(() => send(response), EmptyAgentResponseError);
     });
 }
 
 for (const [name, response, expected] of [
-    ['last agent history before a user message',
-        { history: [agent('answer'), user('hello')], status: {}, artifacts: [] }, 'answer'],
     ['latest nonempty agent history',
         { history: [agent('old answer'), user('hello'), agent('answer'), agent(' ')], status: {}, artifacts: [] }, 'answer'],
     ['agent status after user-only history',
         { history: [user('hello')], status: { message: agent('status answer') }, artifacts: [] }, 'status answer'],
+    ['agent status instead of stale history',
+        { history: [agent('old answer'), user('hello'), agent('')], status: { message: agent('current answer') }, artifacts: [] }, 'current answer'],
+    ['artifact instead of stale history',
+        { history: [user('old prompt'), agent('old answer'), user('hello'), agent('')], status: {}, artifacts: [{ parts: [part('current artifact')] }] }, 'current artifact'],
+    ['agent status when history has no user boundary',
+        { history: [agent('old answer')], status: { message: agent('current answer') }, artifacts: [] }, 'current answer'],
     ['artifact after empty agent text',
         { history: [agent('')], status: { message: agent(' ') }, artifacts: [{ parts: [part('artifact answer')] }] }, 'artifact answer'],
     ['artifact after user-only history and status',
@@ -112,3 +122,18 @@ for (const [name, response, expected] of [
         assert.equal((await send({ contextId: 'context', ...response })).content, expected);
     });
 }
+
+test('nonstreaming empty current response never retries or returns stale text', async () => {
+    let requests = 0;
+    const wrapper = new A2AClientWrapper('/unused');
+    wrapper.client = {
+        async sendMessage() {
+            requests++;
+            return { contextId: 'context', history: [agent('old answer'), user('hello'), agent('')], status: {}, artifacts: [] };
+        }
+    };
+
+    await assert.rejects(() => wrapper.sendMessage([{ role: 'user', content: 'hello' }]),
+        error => error instanceof EmptyAgentResponseError && error.code === 'empty_response');
+    assert.equal(requests, 1);
+});

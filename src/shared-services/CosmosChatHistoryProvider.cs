@@ -145,7 +145,7 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
         if (recoveredRotation)
         {
             if (_compactionOptions is not null)
-                HistoryCompactionValidation.ValidateFallback(messages, _compactionOptions.MaxHistoryUtf8Bytes);
+                HistoryCompactionValidation.ValidateFallback(messages);
             SessionPersistenceState.SetHistory(session, reference);
             return messages;
         }
@@ -185,7 +185,7 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
                 // filtered suffix without rewriting it: tool/approval saves can be incomplete.
                 // Revalidating it as a reduction would incorrectly reject ordinary tool pauses.
                 var merged = prepared.Messages.Concat(CopyMessages(messages)).ToArray();
-                HistoryCompactionValidation.ValidateFallback(merged, prepared.Options.MaxHistoryUtf8Bytes);
+                HistoryCompactionValidation.ValidateFallback(merged);
                 await PublishHistoryAsync(session, prepared.Source, merged, prepared.OperationId, cancellationToken).ConfigureAwait(false);
                 return;
             }
@@ -243,8 +243,7 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
         AgentSession session, HistoryReadResult history, CancellationToken cancellationToken)
     {
         var options = _compactionOptions ?? throw new InvalidOperationException();
-        // This invocation still uses the original history; a future job cannot fix its current budget.
-        HistoryCompactionValidation.ValidateFallback(history.Messages, options.MaxHistoryUtf8Bytes);
+        HistoryCompactionValidation.ValidateFallback(history.Messages);
         if (history.Messages.Count == 0)
             return history.Messages;
 
@@ -302,10 +301,10 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
     {
         _logger.LogWarning(CompactionErrors.Get(options.Mode == HistoryCompactionMode.Foreground ? "ValidationLog" : "BackgroundLog"), category);
         cancellationToken.ThrowIfCancellationRequested();
-        HistoryCompactionValidation.ValidateFallback(baseline, options.MaxHistoryUtf8Bytes);
+        HistoryCompactionValidation.ValidateFallback(baseline);
         var reread = await _repository.ReadAsync(reference, cancellationToken: cancellationToken).ConfigureAwait(false);
         var rereadView = PrepareModelHistory(reread.Messages);
-        HistoryCompactionValidation.ValidateFallback(rereadView, options.MaxHistoryUtf8Bytes);
+        HistoryCompactionValidation.ValidateFallback(rereadView);
         if (!HistoryCompactionValidation.Equivalent(baseline, rereadView))
             throw new HistoryConcurrencyException();
         return baseline;
@@ -315,7 +314,6 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
         AgentSession session, PendingHistoryCompaction pending, IReadOnlyList<ChatMessage> newMessages,
         CancellationToken cancellationToken)
     {
-        var options = _compactionOptions ?? throw new InvalidOperationException();
         var reference = GetReference(session);
         if (reference != pending.Source)
             throw new HistoryConcurrencyException();
@@ -332,7 +330,7 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
         {
             _logger.LogWarning(CompactionErrors.Get("BackgroundLog"), FailureCategory(exception));
             cancellationToken.ThrowIfCancellationRequested();
-            HistoryCompactionValidation.ValidateFallback(pending.Request.Messages, options.MaxHistoryUtf8Bytes);
+            HistoryCompactionValidation.ValidateFallback(pending.Request.Messages);
             return false;
         }
 
@@ -342,14 +340,13 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
         IReadOnlyList<ChatMessage> merged;
         try
         {
-            merged = MergeBackgroundResult(
-                pending.Request.Messages, result.Messages, newMessages, options.MaxHistoryUtf8Bytes);
+            merged = MergeBackgroundResult(pending.Request.Messages, result.Messages, newMessages);
         }
         catch (HistoryCompactionValidationException exception)
         {
             _logger.LogWarning(CompactionErrors.Get("BackgroundLog"), FailureCategory(exception));
             cancellationToken.ThrowIfCancellationRequested();
-            HistoryCompactionValidation.ValidateFallback(pending.Request.Messages, options.MaxHistoryUtf8Bytes);
+            HistoryCompactionValidation.ValidateFallback(pending.Request.Messages);
             return false;
         }
 
@@ -411,14 +408,14 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
 
     private static IReadOnlyList<ChatMessage> MergeBackgroundResult(
         IReadOnlyList<ChatMessage> originalMessages, IReadOnlyList<ChatMessage> compactedMessages,
-        IReadOnlyList<ChatMessage> newMessages, long? maxHistoryUtf8Bytes)
+        IReadOnlyList<ChatMessage> newMessages)
     {
         var currentTurn = CopyMessages(newMessages);
         var source = originalMessages.Concat(currentTurn).ToArray();
         var merged = compactedMessages.Concat(currentTurn).ToArray();
         RestoreProcessedApprovals(source.SelectMany(message => message.Contents));
         RestoreProcessedApprovals(merged.SelectMany(message => message.Contents));
-        HistoryCompactionValidation.ValidateCandidate(source, merged, maxHistoryUtf8Bytes);
+        HistoryCompactionValidation.ValidateCandidate(source, merged);
         return merged;
     }
 

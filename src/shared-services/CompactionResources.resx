@@ -4,7 +4,6 @@
   <resheader name="version"><value>2.0</value></resheader>
   <resheader name="reader"><value>System.Resources.ResXResourceReader, System.Windows.Forms</value></resheader>
   <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms</value></resheader>
-  <data name="BudgetExceeded" xml:space="preserve"><value>The complete serialized history exceeds the configured byte budget. Do not use or persist it without a safe reduction.</value></data>
   <data name="EmptyCandidate" xml:space="preserve"><value>History compaction produced an empty replacement.</value></data>
   <data name="SourceBindingMismatch" xml:space="preserve"><value>The compaction result is not bound to the requested source history version.</value></data>
   <data name="InvalidDiagnostics" xml:space="preserve"><value>Compaction byte diagnostics do not match the independently measured history.</value></data>

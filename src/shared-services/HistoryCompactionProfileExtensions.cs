@@ -18,8 +18,7 @@ public static class HistoryCompactionProfileExtensions
     /// An absent/empty section or Enabled=false disables the feature without registering a service.
     /// </summary>
     /// <remarks>
-    /// CompactorKey is mandatory when enabled. MaxHistoryUtf8Bytes is an optional positive cap;
-    /// missing or null disables that cap. Mode defaults to Foreground. Timeout is an optional
+    /// CompactorKey is mandatory when enabled. Mode defaults to Foreground. Timeout is an optional
     /// per-call TimeSpan; BackgroundSaveWaitTimeout defaults to two seconds. The test-sliding-window key additionally requires positive
     /// MaxTurns and registers a model-free MAF strategy preserving that many recent turns.
     /// The summary key requires Model, positive TriggerTokens and positive MinimumPreservedGroups.
@@ -43,7 +42,6 @@ public static class HistoryCompactionProfileExtensions
         {
             CompactorKey = section["CompactorKey"] ?? string.Empty,
             Mode = section.GetValue<HistoryCompactionMode?>("Mode") ?? HistoryCompactionMode.Foreground,
-            MaxHistoryUtf8Bytes = section.GetValue<long?>("MaxHistoryUtf8Bytes"),
             Timeout = section.GetValue<TimeSpan?>("Timeout"),
             BackgroundSaveWaitTimeout = section.GetValue<TimeSpan?>("BackgroundSaveWaitTimeout")
                 ?? TimeSpan.FromSeconds(2)

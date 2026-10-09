@@ -11,10 +11,9 @@ namespace SharedServices;
 /// <summary>A machine-readable reason why history cannot be compacted or used safely.</summary>
 public enum HistoryCompactionFailureReason
 {
-    /// <summary>The history exceeds the configured complete-history byte budget.</summary>
-    BudgetExceeded,
+    // Keep the remaining diagnostic reason values stable.
     /// <summary>A replacement history is empty.</summary>
-    EmptyCandidate,
+    EmptyCandidate = 1,
     /// <summary>The candidate is not bound to the requested source version.</summary>
     SourceBindingMismatch,
     /// <summary>Reported byte counts do not match independently measured history.</summary>
@@ -35,7 +34,7 @@ public enum HistoryCompactionFailureReason
 
 /// <summary>
 /// Rejects an unsafe compaction result without changing history. A provider may fall back only after
-/// separately validating any configured history byte cap and the exact storage revision.
+/// validating the original history and the exact storage revision.
 /// </summary>
 public sealed class HistoryCompactionValidationException : InvalidOperationException
 {
@@ -63,25 +62,17 @@ public sealed class HistoryCompactionValidationException : InvalidOperationExcep
 /// <summary>Storage-independent checks which providers must apply even to third-party compactors.</summary>
 public static class HistoryCompactionValidation
 {
-    /// <summary>Measures the complete history using the exact metric specified by the contract.</summary>
+    /// <summary>Measures UTF-8 JSON for the complete message array, including roles, contents and metadata.</summary>
+    /// <remarks>This is a diagnostic/reduction metric, not a model context or Cosmos document limit.</remarks>
     public static long Measure(IReadOnlyList<ChatMessage> messages) => Serialize(messages).LongLength;
 
     /// <summary>
     /// Checks whether original history can be used after a no-op or failure. Pending tools are allowed
     /// in original history; this does not authorize rewriting them or prove the storage revision.
-    /// A null byte cap disables only the size threshold, not structural validation.
     /// </summary>
-    public static void ValidateFallback(IReadOnlyList<ChatMessage> messages, long? maxHistoryUtf8Bytes)
+    public static void ValidateFallback(IReadOnlyList<ChatMessage> messages)
     {
         ArgumentNullException.ThrowIfNull(messages);
-        if (maxHistoryUtf8Bytes is { } budget)
-        {
-            ArgumentOutOfRangeException.ThrowIfNegativeOrZero(budget, nameof(maxHistoryUtf8Bytes));
-            if (Measure(messages) > budget)
-            {
-                Fail(HistoryCompactionFailureReason.BudgetExceeded);
-            }
-        }
         ValidateMessages(messages);
         ValidateSummaries(messages);
     }
@@ -122,24 +113,23 @@ public static class HistoryCompactionValidation
                 Fail(HistoryCompactionFailureReason.InvalidUnchangedResult);
             }
 
-            ValidateFallback(request.Messages, request.Options.MaxHistoryUtf8Bytes);
+            ValidateFallback(request.Messages);
             return;
         }
 
-        ValidateCandidate(request.Messages, result.Messages, request.Options.MaxHistoryUtf8Bytes);
+        ValidateCandidate(request.Messages, result.Messages);
     }
 
     /// <summary>
     /// Checks a nonempty, genuinely smaller replacement, protected messages, and complete tool groups.
-    /// Original history may exceed the cap: only the replacement must fit. Retained tool groups must
+    /// Retained tool groups must
     /// be byte-semantically identical; entire completed groups may be removed or summarized.
     /// Consumed approvals may be removed, but retained approval messages must be an unchanged
     /// subsequence of the source and remain informational with their complete function exchange.
     /// </summary>
     public static void ValidateCandidate(
         IReadOnlyList<ChatMessage> source,
-        IReadOnlyList<ChatMessage> candidate,
-        long? maxHistoryUtf8Bytes)
+        IReadOnlyList<ChatMessage> candidate)
     {
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(candidate);
@@ -149,7 +139,7 @@ public static class HistoryCompactionValidation
             Fail(HistoryCompactionFailureReason.EmptyCandidate);
         }
 
-        ValidateFallback(candidate, maxHistoryUtf8Bytes);
+        ValidateFallback(candidate);
         var sourceTools = GetToolGroups(source);
         ValidateProcessedApprovals(source, sourceTools);
         var candidateJson = Serialize(candidate);

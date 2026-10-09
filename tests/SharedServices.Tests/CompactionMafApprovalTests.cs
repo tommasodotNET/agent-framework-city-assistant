@@ -91,7 +91,7 @@ public class CompactionMafApprovalTests
         var source = await AutoApprovedHistoryAsync();
         var candidate = source.Where(message => !HasApproval(message)).ToArray();
 
-        var error = Record.Exception(() => HistoryCompactionValidation.ValidateCandidate(source, candidate, 100_000));
+        var error = Record.Exception(() => HistoryCompactionValidation.ValidateCandidate(source, candidate));
 
         Assert.Null(error);
     }
@@ -102,7 +102,7 @@ public class CompactionMafApprovalTests
         var source = await AutoApprovedHistoryAsync();
         var candidate = source.Where((_, index) => index != 1).ToArray();
 
-        var error = Record.Exception(() => HistoryCompactionValidation.ValidateCandidate(source, candidate, 100_000));
+        var error = Record.Exception(() => HistoryCompactionValidation.ValidateCandidate(source, candidate));
 
         Assert.Null(error);
     }
@@ -127,7 +127,7 @@ public class CompactionMafApprovalTests
         AttackApproval(candidate, attack);
 
         var error = Assert.Throws<HistoryCompactionValidationException>(() =>
-            HistoryCompactionValidation.ValidateCandidate(source, candidate, 100_000));
+            HistoryCompactionValidation.ValidateCandidate(source, candidate));
 
         Assert.Equal(HistoryCompactionFailureReason.ProtectedMessagesChanged, error.Reason);
     }
@@ -140,7 +140,7 @@ public class CompactionMafApprovalTests
             content => content is FunctionCallContent or FunctionResultContent)).ToArray();
 
         var error = Assert.Throws<HistoryCompactionValidationException>(() =>
-            HistoryCompactionValidation.ValidateCandidate(source, candidate, 100_000));
+            HistoryCompactionValidation.ValidateCandidate(source, candidate));
 
         Assert.Equal(HistoryCompactionFailureReason.UnsafeToolHistory, error.Reason);
     }
@@ -209,8 +209,7 @@ public class CompactionMafApprovalTests
     private static HistoryCompactionRequest Request(IReadOnlyList<ChatMessage> messages) =>
         new("agent", "source", messages, new HistoryCompactionOptions
         {
-            CompactorKey = "approval-test",
-            MaxHistoryUtf8Bytes = 100_000
+            CompactorKey = "approval-test"
         });
 
     private static bool HasApproval(ChatMessage message) =>

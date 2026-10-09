@@ -117,33 +117,6 @@ public sealed class HistoryApprovalTests
         Assert.Equal((2, 4), (invocations, model.Requests));
     }
 
-    [Fact]
-    public async Task Pending_autoapproval_save_over_explicit_cap_fails_before_publication_or_tool_execution()
-    {
-        var history = new HistoryCosmosFixture();
-        var invocations = 0;
-        var tool = AIFunctionFactory.Create(() => ++invocations, "increment");
-        using var provider = new CosmosChatHistoryProvider(history.CreateRepository(),
-            compactor: new MafForegroundHistoryCompactor(new SlidingWindowCompactionStrategy(
-                CompactionTriggers.TurnsExceed(1), minimumPreservedTurns: 1)),
-            compactionOptions: new()
-            {
-                CompactorKey = "tool-test",
-                MaxHistoryUtf8Bytes = HistoryCompactionValidation.Measure(SeedHistory().TakeLast(2).ToArray())
-            });
-        var model = new SequenceChatClient();
-        var agent = ToolAgent(provider, model, tool, approval: true);
-        var session = await agent.CreateSessionAsync();
-        SessionPersistenceState.Initialize(session, SessionStorageAddress.Create(agent.Id, "budget"));
-        await provider.InvokedAsync(new(agent, session, SeedHistory(), []));
-        var source = SessionPersistenceState.GetRequired(session).ActiveHistory;
-
-        var error = await Assert.ThrowsAsync<HistoryCompactionValidationException>(() => agent.RunAsync("run twice", session));
-
-        Assert.Equal((HistoryCompactionFailureReason.BudgetExceeded, source, 1, 0),
-            (error.Reason, SessionPersistenceState.GetRequired(session).ActiveHistory, history.Batches.Count, invocations));
-    }
-
     private static ChatMessage[] SeedHistory() =>
         [new(ChatRole.User, "old question"), new(ChatRole.Assistant, "old answer"),
          new(ChatRole.User, "middle question"), new(ChatRole.Assistant, "middle answer"),

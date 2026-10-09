@@ -358,7 +358,7 @@ public class CompactionProviderCompositionTests
         var services = new ServiceCollection();
 
         Assert.Throws<ArgumentOutOfRangeException>(() => services.AddHistoryCompactionProfile(Section(
-            new() { ["CompactorKey"] = "test-sliding-window", ["MaxHistoryUtf8Bytes"] = "10000" })));
+            new() { ["CompactorKey"] = "test-sliding-window" })));
     }
 
     [Theory]
@@ -367,7 +367,7 @@ public class CompactionProviderCompositionTests
     {
         var values = new Dictionary<string, string?>
         {
-            ["CompactorKey"] = "test-sliding-window", ["MaxHistoryUtf8Bytes"] = "10000", ["MaxTurns"] = "2"
+            ["CompactorKey"] = "test-sliding-window", ["MaxTurns"] = "2"
         };
         values.Remove(omitted);
 
@@ -375,7 +375,7 @@ public class CompactionProviderCompositionTests
     }
 
     [Fact]
-    public async Task EnabledProfileWithoutByteCapCompactsUsingTheConfiguredStrategy()
+    public async Task EnabledProfileCompactsUsingTheConfiguredStrategy()
     {
         var services = new ServiceCollection();
         var options = services.AddHistoryCompactionProfile(Section(new()
@@ -383,7 +383,6 @@ public class CompactionProviderCompositionTests
             ["Enabled"] = "true", ["CompactorKey"] = "test-sliding-window", ["MaxTurns"] = "1"
         }));
         Assert.NotNull(options);
-        Assert.Null(options.MaxHistoryUtf8Bytes);
         using var serviceProvider = services.BuildServiceProvider();
         var compactor = serviceProvider.GetHistoryCompactor(options);
         Assert.NotNull(compactor);
@@ -394,18 +393,6 @@ public class CompactionProviderCompositionTests
 
         Assert.Equal(HistoryCompactionStatus.Completed, result.Status);
         Assert.Equal(new[] { "recent", "recent answer" }, result.Messages.Select(message => message.Text));
-    }
-
-    [Fact]
-    public void ExplicitJsonNullDisablesByteCap()
-    {
-        using var stream = new System.IO.MemoryStream(System.Text.Encoding.UTF8.GetBytes(
-            """{"HistoryCompaction":{"Enabled":true,"CompactorKey":"test-sliding-window","MaxTurns":1,"MaxHistoryUtf8Bytes":null}}"""));
-        var configuration = new ConfigurationBuilder().AddJsonStream(stream).Build();
-        var options = new ServiceCollection().AddHistoryCompactionProfile(configuration.GetSection("HistoryCompaction"));
-
-        Assert.NotNull(options);
-        Assert.Null(options.MaxHistoryUtf8Bytes);
     }
 
     [Fact]
@@ -440,7 +427,7 @@ public class CompactionProviderCompositionTests
         var profile = services.AddHistoryCompactionProfile(Section(new()
         {
             ["CompactorKey"] = "test-sliding-window", ["Mode"] = "Foreground",
-            ["MaxHistoryUtf8Bytes"] = "10000", ["Timeout"] = "00:00:05", ["MaxTurns"] = "1"
+            ["Timeout"] = "00:00:05", ["MaxTurns"] = "1"
         }));
         using var serviceProvider = services.BuildServiceProvider();
         var compactor = serviceProvider.GetHistoryCompactor(profile);
@@ -463,7 +450,7 @@ public class CompactionProviderCompositionTests
         services.AddHistoryCompactor("custom-summarizer", _ => custom);
         var options = services.AddHistoryCompactionProfile(Section(new()
         {
-            ["CompactorKey"] = "custom-summarizer", ["MaxHistoryUtf8Bytes"] = "10000"
+            ["CompactorKey"] = "custom-summarizer"
         }));
         using var serviceProvider = services.BuildServiceProvider();
 
@@ -475,7 +462,7 @@ public class CompactionProviderCompositionTests
             .Select(entry => new KeyValuePair<string, string?>($"HistoryCompaction:{entry.Key}", entry.Value)))
             .Build().GetSection("HistoryCompaction");
 
-    private static HistoryCompactionOptions Options() => new() { CompactorKey = "test", MaxHistoryUtf8Bytes = 10000 };
+    private static HistoryCompactionOptions Options() => new() { CompactorKey = "test" };
 
     private static CosmosChatHistoryProvider Compose(IServiceProvider services) =>
         Assert.IsType<CosmosChatHistoryProvider>(new ChatClientAgentOptions().WithCosmosChatHistoryProvider(services).ChatHistoryProvider);

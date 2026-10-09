@@ -146,9 +146,7 @@ export class A2AClientWrapper {
             content = getAgentText(response);
         } else {
             responseContextId = response.contextId || undefined;
-            const lastMessage = [...response.history].reverse()
-                .find(message => getAgentText(message).trim().length > 0);
-            content = getAgentText(lastMessage);
+            content = getCurrentTurnAgentText(response.history);
             if (!content.trim()) {
                 content = getAgentText(response.status?.message);
             }
@@ -200,6 +198,17 @@ function getText(parts: Part[]): string {
 
 function getAgentText(message?: Message): string {
     return message?.role === Role.ROLE_AGENT ? getText(message.parts) : '';
+}
+
+function getCurrentTurnAgentText(history: Message[]): string {
+    for (let index = history.length - 1; index >= 0; index--) {
+        if (history[index].role === Role.ROLE_USER) {
+            const lastMessage = history.slice(index + 1).reverse()
+                .find(message => getAgentText(message).trim().length > 0);
+            return getAgentText(lastMessage);
+        }
+    }
+    return '';
 }
 
 function isMessage(result: Message | Task): result is Message {

@@ -28,22 +28,6 @@ public class CompactionContractTests
         Assert.Null(new HistoryCompactionOptions().Timeout);
     }
 
-    [Fact]
-    public void ProfileHasNoByteCapByDefault()
-    {
-        var profile = new HistoryCompactionOptions { CompactorKey = "text" };
-        profile.Validate();
-        Assert.Null(profile.MaxHistoryUtf8Bytes);
-    }
-
-    [Theory]
-    [InlineData(0L)]
-    [InlineData(-1L)]
-    public void NonpositiveHistoryBudgetIsRejected(long budget)
-    {
-        Assert.Throws<ArgumentOutOfRangeException>(() => (Profile() with { MaxHistoryUtf8Bytes = budget }).Validate());
-    }
-
     [Theory]
     [InlineData("")]
     [InlineData(" ")]
@@ -162,12 +146,12 @@ public class CompactionContractTests
     }
 
     [Fact]
-    public void ProfileCopyDoesNotChangeOriginalBudget()
+    public void ProfileCopyDoesNotChangeOriginalMode()
     {
         var original = Profile();
-        _ = original with { MaxHistoryUtf8Bytes = 200 };
+        _ = original with { Mode = HistoryCompactionMode.Background };
 
-        Assert.Equal(1_000, original.MaxHistoryUtf8Bytes);
+        Assert.Equal(HistoryCompactionMode.Foreground, original.Mode);
     }
 
     [Fact]
@@ -367,7 +351,7 @@ public class CompactionContractTests
         var provider = new Mock<IServiceProvider>(MockBehavior.Strict);
 
         Assert.Throws<ArgumentOutOfRangeException>(() =>
-            provider.Object.GetHistoryCompactor(Profile() with { MaxHistoryUtf8Bytes = 0 }));
+            provider.Object.GetHistoryCompactor(Profile() with { Mode = (HistoryCompactionMode)42 }));
     }
 
     [Fact]
@@ -436,7 +420,7 @@ public class CompactionContractTests
     public void RequestRejectsAnUnvalidatedProfile()
     {
         Assert.Throws<ArgumentOutOfRangeException>(() =>
-            new HistoryCompactionRequest("agent", "source", [], Profile() with { MaxHistoryUtf8Bytes = 0 }));
+            new HistoryCompactionRequest("agent", "source", [], Profile() with { Mode = (HistoryCompactionMode)42 }));
     }
 
     [Theory]
@@ -602,7 +586,7 @@ public class CompactionContractTests
             new HistoryCompactionResult(HistoryCompactionStatus.Unchanged, null!, [], 2, 2));
     }
 
-    private static HistoryCompactionOptions Profile() => new() { CompactorKey = "text", MaxHistoryUtf8Bytes = 1_000 };
+    private static HistoryCompactionOptions Profile() => new() { CompactorKey = "text" };
 
     private static Mock<IHistoryCompactor> ForegroundCompactor()
     {

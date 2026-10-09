@@ -207,7 +207,7 @@ public class SummaryCompactionProfileTests
     }
 
     [Fact]
-    public void SummaryProfileDefaultsToForegroundWithoutByteCapOrTimeout()
+    public void SummaryProfileDefaultsToForegroundWithoutTimeout()
     {
         var options = new ServiceCollection().AddHistoryCompactionProfile(Section(Settings()), (_, _) => new SummaryClient());
 
@@ -215,17 +215,16 @@ public class SummaryCompactionProfileTests
     }
 
     [Fact]
-    public void SummaryProfileRetainsExplicitByteCapAndTimeout()
+    public void SummaryProfileRetainsExplicitTimeout()
     {
         var settings = Settings();
-        settings["MaxHistoryUtf8Bytes"] = "50000";
         settings["Timeout"] = "00:00:30";
 
         var options = new ServiceCollection().AddHistoryCompactionProfile(Section(settings), (_, _) => new SummaryClient());
 
         Assert.Equal(new HistoryCompactionOptions
         {
-            CompactorKey = "summary", MaxHistoryUtf8Bytes = 50000, Timeout = TimeSpan.FromSeconds(30)
+            CompactorKey = "summary", Timeout = TimeSpan.FromSeconds(30)
         }, options);
     }
 

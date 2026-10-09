@@ -249,8 +249,8 @@ invocations, not concurrent use of one `AgentSession`.
 The simple `ProvideChatHistoryAsync`/`StoreChatHistoryAsync` hooks retain MAF's base
 merging, stamping, filtering and failure behavior. The model/output-filter view is a
 deep copy of the already detached canonical candidate. At Save, the provider joins
-that canonical prefix with the exact newly filtered request/response messages, checks
-the combined byte cap, and publishes against the captured source revision. It does
+that canonical prefix with the exact newly filtered request/response messages, validates
+them, and publishes against the captured source revision. It does
 not append to C1 first or append the same turn twice. Only successful publication
 updates `ActiveHistory` and clears preparation; hosting saves the snapshot normally.
 Profile/options changes cannot apply an old preparation. A model failure skips Store
@@ -269,9 +269,8 @@ Tool/approval middleware can call Save with an incomplete new exchange. The fore
 prefix has already passed full compaction validation, including complete tool groups;
 the appended suffix is copied unchanged, not reduced. This allows a native approval
 pause to be persisted without dropping its messages or retaining a foreground job.
-The combined history must still fit an explicit cap; failure is surfaced instead of
-silently exceeding it or appending to the unreduced source. A subsequent Load with
-pending tools uses the existing safe unchanged-history path.
+The repository validates individual message and batch payloads before writing.
+A subsequent Load with pending tools uses the existing safe unchanged-history path.
 
 Background start returns `Unchanged` or `Pending(ticket)`, never inline `Completed`.
 The ticket, exact request and source reference live only in transient `[JsonIgnore]`
@@ -289,15 +288,14 @@ results for five minutes after completion, never counting execution time as rete
 A later Load starts a fresh job; restart recovery and cross-turn suffix merging are intentionally
 out of scope. External cancellation and uncertain storage publication still propagate.
 
-A profile identifies a keyed compactor and can optionally set a positive
-`MaxHistoryUtf8Bytes` cap. It is nullable and **disabled by default**: missing or
-null skips the application byte-cap checks for both fallback history and
-replacement candidates. Structural and source-version validation remain enabled,
-as do Cosmos document/batch limits. The metric is the UTF-8 JSON array of the
-complete `ChatMessage` history, including content and metadata. It is **not**
-an exact model token count or a complete prompt budget: leave capacity for
-instructions, tool schemas, the new input and model output. MAF triggers may
-separately use token estimates or a configured tokenizer.
+A profile identifies a keyed compactor and execution mode, not an aggregate byte cap.
+History is stored as separate message documents; its total size can legitimately exceed
+Cosmos's individual item limit. Repository document/batch checks remain independent
+from compaction. UTF-8 diagnostics measure the JSON array of the complete `ChatMessage`
+history, including content and metadata, and independently verify real reduction.
+They are **not** an exact model token count or a complete prompt budget: leave capacity
+for instructions, tool schemas, new input and model output when selecting MAF triggers
+and targets. Structural and source-version validation remain enabled in both modes.
 
 The provider must validate the returned candidate independently. Fewer messages
 are not required: replacing a large tool result with shorter content can change
@@ -399,8 +397,7 @@ exact transition, not an arbitrary chain. Repeated, very aggressive test trigger
 are not a promise of automatic crash recovery through every intermediate history.
 
 Compactor failure during Load may use the original history only when its revision
-is still current and it satisfies the byte cap, if configured. With a null cap,
-there is no application byte-threshold guarantee; the MAF strategy still controls
+is still current and its structural/summary validation passes. The MAF strategy controls
 its own trigger and target. Cancellation,
 storage conflicts, Save validation/publication failures and an unusable context must be surfaced, not converted into
 a successful empty or truncated history.

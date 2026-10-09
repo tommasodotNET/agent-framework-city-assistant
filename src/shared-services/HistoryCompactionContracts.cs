@@ -128,7 +128,8 @@ public sealed record HistoryCompactionRequest
 
 /// <summary>A candidate outcome with independently verifiable before/after history diagnostics.</summary>
 /// <remarks>
-/// UTF-8 sizes use the metric documented on HistoryCompactionOptions.MaxHistoryUtf8Bytes.
+/// UTF-8 sizes measure the complete IReadOnlyList&lt;ChatMessage&gt; JSON array serialized using
+/// System.Text.Json.JsonSerializerOptions.Default. They are diagnostics, not a size cap or token count.
 /// The provider must verify the binding and measure the history it will use before any writes;
 /// plugin-supplied diagnostics alone are not proof of safety. Completed does not imply a smaller
 /// message count or successful persistence. Failures and cancellation are exceptions, not outcomes.

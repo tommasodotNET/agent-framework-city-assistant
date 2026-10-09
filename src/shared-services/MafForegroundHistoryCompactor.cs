@@ -14,7 +14,7 @@ namespace SharedServices;
 /// No persistence or session state is accessed. The injected strategy/client must be concurrency-safe
 /// when registered as a singleton. The public ad-hoc MAF helper creates an invocation-local index
 /// using MAF's default content-token estimate (bytes / 4 per group). It has no tokenizer parameter.
-/// Neither those estimates nor MAF's content-byte metrics replace the complete JSON safety budget.
+/// Complete JSON byte diagnostics are measured separately from these content/token estimates.
 /// No stateful CompactionProvider instance is installed in an agent's context pipeline.
 /// </remarks>
 public sealed class MafForegroundHistoryCompactor : IHistoryCompactor

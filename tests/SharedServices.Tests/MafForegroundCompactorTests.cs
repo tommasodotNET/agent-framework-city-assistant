@@ -40,8 +40,7 @@ public class MafForegroundCompactorTests
             new HistoryCompactionOptions
             {
                 Mode = HistoryCompactionMode.Background,
-                CompactorKey = "foreground-test",
-                MaxHistoryUtf8Bytes = 100_000
+                CompactorKey = "foreground-test"
             });
         var compactor = new MafForegroundHistoryCompactor(new TruncationCompactionStrategy(CompactionTriggers.Never));
         await Assert.ThrowsAsync<NotSupportedException>(() => compactor.CompactAsync(request));
@@ -153,55 +152,44 @@ public class MafForegroundCompactorTests
     }
 
     [Fact]
-    public async Task OriginalOverCapCanEnterStrategyAndShrink()
+    public async Task ReductionReportsTheExactCandidateSize()
     {
         var history = History();
         var expected = new[] { history[0], history[3], history[4] };
-        var cap = HistoryCompactionValidation.Measure(expected);
+        var size = HistoryCompactionValidation.Measure(expected);
         var compactor = new MafForegroundHistoryCompactor(
             new TruncationCompactionStrategy(CompactionTriggers.Always, minimumPreservedGroups: 2));
 
-        var result = await compactor.CompactAsync(Request(history, cap));
+        var result = await compactor.CompactAsync(Request(history));
 
-        Assert.Equal((HistoryCompactionStatus.Completed, cap), (result.Status, result.AfterUtf8Bytes));
+        Assert.Equal((HistoryCompactionStatus.Completed, size), (result.Status, result.AfterUtf8Bytes));
     }
 
     [Fact]
-    public async Task UnchangedOverCapCannotBeReportedSafe()
-    {
-        var history = History();
-        var compactor = new MafForegroundHistoryCompactor(new TruncationCompactionStrategy(CompactionTriggers.Never));
-
-        var error = await Assert.ThrowsAsync<HistoryCompactionValidationException>(() =>
-            compactor.CompactAsync(Request(history, HistoryCompactionValidation.Measure(history) - 1)));
-
-        Assert.Equal(HistoryCompactionFailureReason.BudgetExceeded, error.Reason);
-    }
-
-    [Fact]
-    public async Task UnchangedAtExactByteCapIsAllowed()
+    public async Task UnchangedResultReportsEqualMeasuredSizes()
     {
         var history = History();
         var size = HistoryCompactionValidation.Measure(history);
         var compactor = new MafForegroundHistoryCompactor(new TruncationCompactionStrategy(CompactionTriggers.Never));
 
-        var result = await compactor.CompactAsync(Request(history, size));
+        var result = await compactor.CompactAsync(Request(history));
 
         Assert.Equal((size, size), (result.BeforeUtf8Bytes, result.AfterUtf8Bytes));
     }
 
     [Fact]
-    public async Task MinimumPreservedTargetUnmetStillFailsHardByteCap()
+    public async Task MinimumPreservedGroupsCanPreventReachingTheStrategyTarget()
     {
         var history = History();
-        var cap = HistoryCompactionValidation.Measure(new[] { history[0], history[4] });
         var compactor = new MafForegroundHistoryCompactor(
             new TruncationCompactionStrategy(CompactionTriggers.Always, minimumPreservedGroups: 2,
                 target: CompactionTriggers.Never));
 
-        var error = await Assert.ThrowsAsync<HistoryCompactionValidationException>(() => compactor.CompactAsync(Request(history, cap)));
+        var result = await compactor.CompactAsync(Request(history));
 
-        Assert.Equal(HistoryCompactionFailureReason.BudgetExceeded, error.Reason);
+        Assert.Equal(HistoryCompactionStatus.Completed, result.Status);
+        Assert.Equal(new[] { "instructions", "recent question", "recent answer" },
+            result.Messages.Select(message => message.Text));
     }
 
     [Theory]
@@ -221,16 +209,17 @@ public class MafForegroundCompactorTests
     }
 
     [Fact]
-    public async Task CandidateMetadataCannotBypassCapUsingMafContentMetrics()
+    public async Task ByteDiagnosticsIncludeRetainedMetadataNotOnlyMafContentMetrics()
     {
         var history = History();
         history[4].AdditionalProperties = new() { ["retained-metadata"] = new string('m', 10_000) };
         var compactor = new MafForegroundHistoryCompactor(
             new TruncationCompactionStrategy(CompactionTriggers.Always, minimumPreservedGroups: 2));
 
-        var error = await Assert.ThrowsAsync<HistoryCompactionValidationException>(() => compactor.CompactAsync(Request(history, 1_000)));
+        var result = await compactor.CompactAsync(Request(history));
 
-        Assert.Equal(HistoryCompactionFailureReason.BudgetExceeded, error.Reason);
+        Assert.True(result.AfterUtf8Bytes > 10_000);
+        Assert.Equal(HistoryCompactionValidation.Measure(result.Messages), result.AfterUtf8Bytes);
     }
 
     [Fact]
@@ -497,20 +486,6 @@ public class MafForegroundCompactorTests
         Assert.DoesNotContain(logger.Entries, entry =>
             entry.Message.Contains("private-model-error", StringComparison.Ordinal)
             || entry.Message.Contains("opaque-source", StringComparison.Ordinal));
-    }
-
-    [Fact]
-    public async Task FailedSummaryCannotFallbackWhenOriginalExceedsBudget()
-    {
-        using var client = FailingSummaryClient();
-        var history = History();
-        var compactor = new MafForegroundHistoryCompactor(
-            new SummarizationCompactionStrategy(client, CompactionTriggers.Always, minimumPreservedGroups: 2));
-
-        var error = await Assert.ThrowsAsync<HistoryCompactionValidationException>(() =>
-            compactor.CompactAsync(Request(history, HistoryCompactionValidation.Measure(history) - 1)));
-
-        Assert.Equal(HistoryCompactionFailureReason.BudgetExceeded, error.Reason);
     }
 
     [Fact]
@@ -825,12 +800,11 @@ public class MafForegroundCompactorTests
     ];
 
     private static HistoryCompactionRequest Request(
-        IReadOnlyList<ChatMessage> history, long budget = 100_000, TimeSpan? timeout = null,
+        IReadOnlyList<ChatMessage> history, TimeSpan? timeout = null,
         string binding = "opaque-source") =>
         new("agent", binding, history, new HistoryCompactionOptions
         {
             CompactorKey = "foreground-test",
-            MaxHistoryUtf8Bytes = budget,
             Timeout = timeout
         });
 

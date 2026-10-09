@@ -365,11 +365,13 @@ Extend the existing registration rather than registering the same history
 provider twice. Choose the trigger and algorithm for the application; these
 sample limits are not production recommendations.
 
-`MaxHistoryUtf8Bytes` is an **optional** application guard, defaulting to `null`.
-Omit it or set it to `null` to skip the byte-cap checks. Set a positive value
-only when the use case needs a maximum size for serialized history. It is not a
-token limit or a MAF trigger. Structural validation, concurrency checks and
-Cosmos document/batch limits still apply without it.
+There is no application byte cap on the complete history. Each message is stored
+in a separate Cosmos document, so Cosmos's per-document size limit is not a limit
+on the whole conversation. The repository still validates document/batch payloads
+before writing. Structural, summary, tool/approval and concurrency checks remain.
+Full-history UTF-8 JSON sizes (including roles, contents and metadata) are retained
+as diagnostics and to verify a genuine reduction, not as a tokenizer count or a
+model-window guarantee. Compaction triggers/targets remain owned by the MAF strategy.
 
 Any supported MAF `CompactionStrategy`, including a pipeline or a summarization
 strategy with a separately injected chat client, can be supplied. The foreground
@@ -414,7 +416,7 @@ model view, not the canonical candidate. Context-provider state, tools and instr
 are not copied into history; a contributed `ChatMessage` still follows MAF's normal
 request filtering policy. Intermediate tool/approval Saves may publish a prevalidated
 complete prefix plus an unchanged pending exchange. That suffix is never compacted;
-the combined history must fit an explicit byte cap or Save fails without publication.
+the repository's individual document/batch limits still apply.
 Target staging, source CAS publication and the normal hosted session checkpoint remain
 separate operations, not a single atomic write.
 
@@ -484,8 +486,7 @@ profile using the public MAF `SummarizationCompactionStrategy` through
     "TriggerTokens": 24000,
     "TargetTokens": 12000,
     "MinimumPreservedGroups": 6,
-    "Timeout": "00:01:30",
-    "MaxHistoryUtf8Bytes": null
+    "Timeout": "00:01:30"
   }
 }
 ```
@@ -503,13 +504,16 @@ the same setting is available as `HistoryCompaction__BackgroundSaveWaitTimeout`.
 If an agent response finishes without any non-whitespace text, the chat UI reports
 `empty_response` instead of silently returning to idle. It does not retry the request:
 tools may already have executed. Empty intermediate streaming events remain valid.
+Non-streaming history fallback considers only agent messages after the latest user
+message. Older replies never stand in for an empty current answer. If no user boundary
+is present in history, only agent status text or artifacts can supply the response.
 
 These are explicit example/calibration values, not production defaults or a model-window
 limit. Measure the actual tool-heavy workload before selecting a threshold and preservation
 floor. Nothing is enabled in checked-in appsettings. `Model` (deployment name),
 positive `TriggerTokens`, and positive `MinimumPreservedGroups` are required; invalid
 configuration fails before inference. `Mode` defaults to `Foreground`, and omitting
-the timeout or byte cap leaves them disabled. Recent groups are MAF atomic message/tool
+the timeout leaves it disabled. Recent groups are MAF atomic message/tool
 groups, **not human turns**. The floor can prevent reduction even above the trigger;
 there is no guarantee the result fits a model context window.
 

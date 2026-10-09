@@ -603,8 +603,7 @@ public sealed class ProtocolPersistenceTests
                 CompactionTriggers.TurnsExceed(2), minimumPreservedTurns: 2)),
             compactionOptions: new HistoryCompactionOptions
             {
-                CompactorKey = "protocol-sliding",
-                MaxHistoryUtf8Bytes = 64_000
+                CompactorKey = "protocol-sliding"
             });
 
     private static string CallerScope(string caller) =>

@@ -198,7 +198,7 @@ public sealed class CosmosEmulatorIntegrationTests
             model.Object, CompactionTriggers.Always, minimumPreservedGroups: 2));
         var result = await compactor.CompactAsync(new HistoryCompactionRequest("test-agent", "exact-source",
             (await repository.ReadAsync(source)).Messages,
-            new HistoryCompactionOptions { CompactorKey = "summary", MaxHistoryUtf8Bytes = 10_000 }));
+            new HistoryCompactionOptions { CompactorKey = "summary" }));
 
         Assert.Equal(HistoryCompactionStatus.Completed, result.Status);
         var target = await repository.RotateAsync(source, result.Messages, 604800, Guid.NewGuid().ToString("N"));
@@ -226,7 +226,7 @@ public sealed class CosmosEmulatorIntegrationTests
         using var provider = new CosmosChatHistoryProvider(repository,
             compactor: new MafForegroundHistoryCompactor(new SlidingWindowCompactionStrategy(
                 CompactionTriggers.TurnsExceed(2), minimumPreservedTurns: 2)),
-            compactionOptions: new() { CompactorKey = "test", MaxHistoryUtf8Bytes = 100_000 });
+            compactionOptions: new() { CompactorKey = "test" });
         var model = new Mock<IChatClient>();
         model.Setup(client => client.GetResponseAsync(It.IsAny<IEnumerable<ChatMessage>>(),
                 It.IsAny<ChatOptions>(), It.IsAny<CancellationToken>()))
