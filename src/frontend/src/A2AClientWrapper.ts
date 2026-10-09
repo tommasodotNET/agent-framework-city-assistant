@@ -77,7 +77,7 @@ export class A2AClientWrapper {
                 }
 
                 if (payload.$case === 'message') {
-                    const content = getText(payload.value.parts);
+                    const content = getAgentText(payload.value);
                     receivedText ||= content.trim().length > 0;
                     if (content) {
                         yield {
@@ -92,7 +92,7 @@ export class A2AClientWrapper {
                 }
 
                 if (payload.$case === 'statusUpdate') {
-                    const content = getText(payload.value.status?.message?.parts ?? []);
+                    const content = getAgentText(payload.value.status?.message);
                     receivedText ||= content.trim().length > 0;
                     yield {
                         content: content || undefined,

@@ -6,4 +6,5 @@
   <resheader name="writer"><value>System.Resources.ResXResourceWriter, System.Windows.Forms</value></resheader>
   <data name="CompactorOptionsPair" xml:space="preserve"><value>History compaction requires both compactor and compactionOptions. Supply both to enable compaction, or leave both null to disable it.</value></data>
   <data name="PartialHistoryConflict" xml:space="preserve"><value>Compaction and MaxMessagesToRetrieve cannot be enabled together. Set MaxMessagesToRetrieve to null so compaction reads the complete history, or disable Compaction to use a partial-history window.</value></data>
+  <data name="ApprovalProofRejectedLog" xml:space="preserve"><value>Approval consumption proof rejected: {Reason}. Existing approval records and flags are preserved.</value></data>
 </root>

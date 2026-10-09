@@ -16,7 +16,10 @@ const { A2AClientWrapper, EmptyAgentResponseError } =
 beforeEach(t => { t.mock.method(console, 'error', () => {}); });
 
 const part = text => ({ content: { $case: 'text', value: text } });
-const message = text => ({ payload: { $case: 'message', value: { contextId: 'context', parts: [part(text)] } } });
+const message = (text, role = Role.ROLE_AGENT) =>
+    ({ payload: { $case: 'message', value: { role, contextId: 'context', parts: [part(text)] } } });
+const status = (text, role = Role.ROLE_AGENT) =>
+    ({ payload: { $case: 'statusUpdate', value: { contextId: 'context', status: { message: { role, parts: [part(text)] } } } } });
 function setup(events, failure) {
     const wrapper = new A2AClientWrapper('/unused');
     let requests = 0;
@@ -39,6 +42,12 @@ for (const [name, events] of [
     ['no events', []],
     ['empty assistant text', [message('')]],
     ['whitespace only', [message(' \n ')]],
+    ['user message echo only', [message('hello', Role.ROLE_USER)]],
+    ['user status echo only', [status('hello', Role.ROLE_USER)]],
+    ['unspecified message role', [message('hello', Role.ROLE_UNSPECIFIED)]],
+    ['unspecified status role', [status('hello', Role.ROLE_UNSPECIFIED)]],
+    ['missing message role', [{ payload: { $case: 'message', value: { parts: [part('hello')] } } }]],
+    ['missing status role', [{ payload: { $case: 'statusUpdate', value: { status: { message: { parts: [part('hello')] } } } } }]],
     ['task without text', [{ payload: { $case: 'task', value: { contextId: 'context' } } }]],
     ['empty final status', [{ payload: { $case: 'statusUpdate', value: { contextId: 'context', status: { message: { parts: [] } } } } }]]
 ]) {
@@ -54,6 +63,31 @@ test('empty intermediate events followed by assistant text are valid', async () 
     const { wrapper, requests } = setup([message(''), message('answer')]);
     assert.deepEqual(await collect(wrapper), [{ content: 'answer', contextId: 'context' }]);
     assert.equal(requests(), 1);
+});
+
+test('user message echo is not yielded as assistant text before the real answer', async () => {
+    const { wrapper, requests } = setup([message('hello', Role.ROLE_USER), message('answer')]);
+
+    assert.deepEqual(await collect(wrapper), [{ content: 'answer', contextId: 'context' }]);
+    assert.equal(requests(), 1);
+});
+
+test('user status echo preserves context only and does not count as an answer', async () => {
+    const { wrapper } = setup([status('hello', Role.ROLE_USER), status('answer')]);
+
+    assert.deepEqual(await collect(wrapper), [
+        { content: undefined, contextId: 'context' },
+        { content: 'answer', contextId: 'context' }
+    ]);
+});
+
+test('artifacts remain valid after ignored user echoes', async () => {
+    const { wrapper } = setup([
+        message('hello', Role.ROLE_USER),
+        { payload: { $case: 'artifactUpdate', value: { contextId: 'context', artifact: { parts: [part('answer')] } } } }
+    ]);
+
+    assert.deepEqual(await collect(wrapper), [{ content: 'answer', contextId: 'context' }]);
 });
 
 test('artifact text and context updates retain their normal behavior', async () => {

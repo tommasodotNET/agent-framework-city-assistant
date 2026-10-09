@@ -258,7 +258,14 @@ entirely and therefore leaves C1 untouched (apart from independent concurrent wr
 or TTL expiry).
 
 Before inference or compaction, one private model view omits consumed approval-only
-messages whose call identity/arguments and completed result match. System/developer,
+messages whose call identity/arguments and completed result match. Consumption
+proof reuses the contiguous function-exchange validator, not a scan of result ids.
+Roles, call uniqueness, ordering and complete parallel results must be valid before
+restoring informational flags; nested approval calls must match the direct execution
+and denied decisions never supply consumption proof. With incomplete/malformed exchanges,
+the provider logs the reason and leaves all existing approval flags/records unchanged.
+The same proof applies to background merges, with caller messages copied before mutation.
+System/developer,
 mixed-content, denied, pending and ambiguous records are not removed. This prevents
 the inference adapter from projecting old approval audit records as empty assistant
 messages. Source storage remains unchanged. It is not a generic empty-text filter:

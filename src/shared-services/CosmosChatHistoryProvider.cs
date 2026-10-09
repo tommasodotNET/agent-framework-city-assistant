@@ -406,15 +406,15 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
         }
     }
 
-    private static IReadOnlyList<ChatMessage> MergeBackgroundResult(
+    private IReadOnlyList<ChatMessage> MergeBackgroundResult(
         IReadOnlyList<ChatMessage> originalMessages, IReadOnlyList<ChatMessage> compactedMessages,
         IReadOnlyList<ChatMessage> newMessages)
     {
         var currentTurn = CopyMessages(newMessages);
         var source = originalMessages.Concat(currentTurn).ToArray();
         var merged = compactedMessages.Concat(currentTurn).ToArray();
-        RestoreProcessedApprovals(source.SelectMany(message => message.Contents));
-        RestoreProcessedApprovals(merged.SelectMany(message => message.Contents));
+        RestoreProcessedApprovals(source);
+        RestoreProcessedApprovals(merged);
         HistoryCompactionValidation.ValidateCandidate(source, merged);
         return merged;
     }
@@ -495,17 +495,9 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
         exception is HistoryCompactionValidationException validation
             ? $"{validation.Reason}/{exception.GetType().Name}" : exception.GetType().Name;
 
-    private static IReadOnlyList<ChatMessage> PrepareModelHistory(IReadOnlyList<ChatMessage> messages)
+    private IReadOnlyList<ChatMessage> PrepareModelHistory(IReadOnlyList<ChatMessage> messages)
     {
-        var contents = messages.SelectMany(message => message.Contents).ToArray();
-        RestoreProcessedApprovals(contents);
-        var calls = contents.OfType<FunctionCallContent>().GroupBy(call => call.CallId)
-            .Where(group => group.Count() == 1).ToDictionary(group => group.Key, group => group.Single());
-        var completed = contents.OfType<FunctionResultContent>().GroupBy(result => result.CallId)
-            .Where(group => group.Count() == 1).Select(group => group.Key).ToHashSet(StringComparer.Ordinal);
-        var denied = contents.OfType<ToolApprovalResponseContent>().Where(response => !response.Approved)
-            .Select(response => response.ToolCall).OfType<FunctionCallContent>().Select(call => call.CallId)
-            .ToHashSet(StringComparer.Ordinal);
+        var completed = RestoreProcessedApprovals(messages);
 
         bool IsConsumedApproval(ChatMessage message, AIContent content)
         {
@@ -515,8 +507,7 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
                 ToolApprovalResponseContent response when message.Role == ChatRole.User => response.ToolCall as FunctionCallContent,
                 _ => null
             };
-            return call is { InformationalOnly: true } && completed.Contains(call.CallId)
-                && !denied.Contains(call.CallId) && calls.TryGetValue(call.CallId, out var executed)
+            return call is { InformationalOnly: true } && completed.TryGetValue(call.CallId, out var executed)
                 && HistoryCompactionValidation.EquivalentCall(call, executed);
         }
 
@@ -526,24 +517,44 @@ public sealed class CosmosChatHistoryProvider : ChatHistoryProvider, IDisposable
             || !message.Contents.All(content => IsConsumedApproval(message, content))).ToArray();
     }
 
-    private static void RestoreProcessedApprovals(IEnumerable<AIContent> contents)
+    private IReadOnlyDictionary<string, FunctionCallContent> RestoreProcessedApprovals(IReadOnlyList<ChatMessage> messages)
     {
-        // The framework mutates old approval objects after execution. Append-only storage retains
-        // their earlier state; a persisted result proves the call is no longer pending.
-        var completedCalls = contents.OfType<FunctionResultContent>()
-            .Select(result => result.CallId)
-            .ToHashSet(StringComparer.Ordinal);
-        foreach (var content in contents)
+        var contents = messages.SelectMany(message => message.Contents).ToArray();
+        if (!contents.Any(content => content is ToolApprovalRequestContent or ToolApprovalResponseContent))
+            return new Dictionary<string, FunctionCallContent>();
+
+        Dictionary<string, FunctionCallContent> completed;
+        try
+        {
+            completed = HistoryCompactionValidation.GetCompletedFunctionCalls(messages);
+        }
+        catch (HistoryCompactionValidationException exception)
+            when (exception.Reason == HistoryCompactionFailureReason.UnsafeToolHistory)
+        {
+            // Partial windows or malformed exchanges cannot prove that any approval was consumed.
+            _logger.LogWarning(HistoryProviderErrors.Get("ApprovalProofRejectedLog"), exception.Reason);
+            return new Dictionary<string, FunctionCallContent>();
+        }
+
+        foreach (var denied in contents.OfType<ToolApprovalResponseContent>().Where(response => !response.Approved)
+            .Select(response => response.ToolCall).OfType<FunctionCallContent>())
+            completed.Remove(denied.CallId);
+
+        // Only a complete contiguous exchange with matching execution identity proves consumption.
+        foreach (var message in messages)
+        foreach (var content in message.Contents)
         {
             var call = content switch
             {
-                ToolApprovalRequestContent request => request.ToolCall as FunctionCallContent,
-                ToolApprovalResponseContent response => response.ToolCall as FunctionCallContent,
+                ToolApprovalRequestContent request when message.Role == ChatRole.Assistant => request.ToolCall as FunctionCallContent,
+                ToolApprovalResponseContent response when message.Role == ChatRole.User => response.ToolCall as FunctionCallContent,
                 _ => null
             };
-            if (call is not null && completedCalls.Contains(call.CallId))
+            if (call is not null && completed.TryGetValue(call.CallId, out var executed)
+                && HistoryCompactionValidation.EquivalentCall(call, executed))
                 call.InformationalOnly = true;
         }
+        return completed;
     }
 
     /// <summary>Counts live messages using the required shared history cursor.</summary>

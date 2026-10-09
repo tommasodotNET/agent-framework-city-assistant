@@ -220,6 +220,14 @@ public static class HistoryCompactionValidation
         ValidateProcessedApprovals(source, GetToolGroups(source));
     }
 
+    internal static Dictionary<string, FunctionCallContent> GetCompletedFunctionCalls(IReadOnlyList<ChatMessage> messages)
+    {
+        ValidateMessages(messages);
+        return GetToolGroups(messages).SelectMany(group => group)
+            .SelectMany(message => message.Contents).OfType<FunctionCallContent>()
+            .ToDictionary(call => call.CallId, StringComparer.Ordinal);
+    }
+
     private static ChatMessage[] GetProtectedPrefix(IReadOnlyList<ChatMessage> messages)
     {
         ValidateMessages(messages);

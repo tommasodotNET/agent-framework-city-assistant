@@ -427,7 +427,11 @@ Target staging, source CAS publication and the normal hosted session checkpoint 
 separate operations, not a single atomic write.
 
 Each Load prepares one model-history view. Approval-only messages are omitted only
-when a matching, completed function call/result proves they are consumed. Pending,
+when a matching, complete contiguous function call/result exchange proves they are
+consumed. Proof uses the same exchange validator as compaction, including roles,
+unique call ids and complete parallel results; a matching result id alone is insufficient.
+Partial/malformed exchanges keep all existing approval records and flags unchanged,
+with an explicit diagnostic. Denied or nonmatching calls are not marked consumed. Pending,
 denied, mixed-content and ambiguous approval messages remain. Actual tool calls and
 results remain too; no source documents are deleted or rewritten. The compactor
 receives a detached copy of this same view, not a separately filtered transcript.
@@ -510,6 +514,9 @@ the same setting is available as `HistoryCompaction__BackgroundSaveWaitTimeout`.
 If an agent response finishes without any non-whitespace text, the chat UI reports
 `empty_response` instead of silently returning to idle. It does not retry the request:
 tools may already have executed. Empty intermediate streaming events remain valid.
+Streaming message/status text is accepted only with the agent role; user echoes
+and unspecified roles cannot count as answers. Status context updates and text
+artifacts remain supported.
 Non-streaming history fallback considers only agent messages after the latest user
 message. Older replies never stand in for an empty current answer. If no user boundary
 is present in history, only agent status text or artifacts can supply the response.

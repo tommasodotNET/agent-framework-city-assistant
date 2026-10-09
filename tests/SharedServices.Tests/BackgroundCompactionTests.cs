@@ -114,6 +114,44 @@ public class BackgroundCompactionTests
         Assert.Equal(scenario.Source.ConversationId, State(scenario.Session).ActiveHistory.ConversationId);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task BackgroundMergeRestoresOnlyProvenApprovalsWithoutChangingCallerObjects(bool validExchange)
+    {
+        using var scenario = await SetupAsync();
+        await LoadAsync(scenario.Provider, scenario.Session);
+        scenario.Backend.Ready = true;
+        var approvalCall = new FunctionCallContent("current-call", "lookup", null);
+        List<ChatMessage> response =
+        [
+            new(ChatRole.Assistant, [new ToolApprovalRequestContent("approval", approvalCall)]),
+            new(ChatRole.User, [new ToolApprovalResponseContent("approval", true,
+                new FunctionCallContent("current-call", "lookup", null))])
+        ];
+        if (validExchange)
+            response.Add(new(ChatRole.Assistant, [new FunctionCallContent("current-call", "lookup", null)]));
+        response.Add(new(ChatRole.Tool, [new FunctionResultContent("current-call", "result")]));
+        response.Add(new(ChatRole.Assistant, "done"));
+
+        await scenario.Provider.InvokedAsync(new(Agent(), scenario.Session,
+            [new(ChatRole.User, "current")], response));
+
+        Assert.False(approvalCall.InformationalOnly);
+        var stored = await ReadAsync(scenario);
+        var approval = Assert.Single(stored.SelectMany(message => message.Contents).OfType<ToolApprovalRequestContent>());
+        Assert.Equal(validExchange, Assert.IsType<FunctionCallContent>(approval.ToolCall).InformationalOnly);
+        Assert.Equal(validExchange, State(scenario.Session).ActiveHistory.ConversationId != scenario.Source.ConversationId);
+        if (!validExchange)
+        {
+            Assert.Contains(scenario.Logger.Messages, message =>
+                message.Contains("Approval consumption proof rejected", StringComparison.Ordinal));
+            var view = await LoadAsync(scenario.Provider, scenario.Session);
+            var pending = Assert.Single(view.SelectMany(message => message.Contents).OfType<ToolApprovalRequestContent>());
+            Assert.False(Assert.IsType<FunctionCallContent>(pending.ToolCall).InformationalOnly);
+        }
+    }
+
     [Fact]
     public async Task CallerCancellationDuringWaitDoesNotSave()
     {
