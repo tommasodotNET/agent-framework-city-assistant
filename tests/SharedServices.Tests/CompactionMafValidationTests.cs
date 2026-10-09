@@ -589,6 +589,48 @@ public class CompactionMafValidationTests
         Assert.Equal(HistoryCompactionFailureReason.InvalidSummary, error.Reason);
     }
 
+    [Theory]
+    [InlineData("   ", false)]
+    [InlineData("   ", true)]
+    [InlineData("[Summary unavailable]", false)]
+    [InlineData("[Summary unavailable]", true)]
+    public void CompletedCandidateCannotHideInvalidFlaggedSourceSummary(string text, bool deserializedFlag)
+    {
+        var source = Source();
+        source.Insert(2, new(ChatRole.Assistant, text)
+        {
+            AdditionalProperties = new()
+            {
+                [CompactionMessageGroup.SummaryPropertyKey] = deserializedFlag
+                    ? JsonSerializer.SerializeToElement(true) : true
+            }
+        });
+        var before = JsonSerializer.Serialize(source);
+        var request = Request(source);
+        var candidate = Candidate();
+
+        var direct = Assert.Throws<HistoryCompactionValidationException>(() =>
+            HistoryCompactionValidation.ValidateCandidate(source, candidate));
+        var result = Assert.Throws<HistoryCompactionValidationException>(() =>
+            HistoryCompactionValidation.ValidateResult(request, Completed(request, candidate)));
+
+        Assert.Equal(HistoryCompactionFailureReason.InvalidSummary, direct.Reason);
+        Assert.Equal(HistoryCompactionFailureReason.InvalidSummary, result.Reason);
+        Assert.Equal(before, JsonSerializer.Serialize(source));
+    }
+
+    [Fact]
+    public void ValidFlaggedSourceSummaryMayStillBeRemovedByCompaction()
+    {
+        var source = Source();
+        source.Insert(2, new(ChatRole.Assistant, "[Summary]\nOld facts.")
+        {
+            AdditionalProperties = new() { [CompactionMessageGroup.SummaryPropertyKey] = true }
+        });
+
+        HistoryCompactionValidation.ValidateCandidate(source, Candidate());
+    }
+
     [Fact]
     public void SmallerCandidatePassesIndependentValidation()
     {

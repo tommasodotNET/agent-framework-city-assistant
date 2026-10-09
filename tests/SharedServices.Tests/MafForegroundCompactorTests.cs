@@ -312,6 +312,32 @@ public class MafForegroundCompactorTests
     }
 
     [Theory]
+    [InlineData("   ")]
+    [InlineData("[Summary unavailable]")]
+    public async Task InvalidFlaggedSourceSummaryIsRejectedBeforeStrategyExecution(string text)
+    {
+        var history = History();
+        history.Insert(2, new(ChatRole.Assistant, text)
+        {
+            AdditionalProperties = new() { [CompactionMessageGroup.SummaryPropertyKey] = true }
+        });
+        var executions = 0;
+        var strategy = new TestStrategy((_, _) =>
+        {
+            executions++;
+            return ValueTask.FromResult(false);
+        });
+        var before = JsonSerializer.Serialize(history);
+
+        var error = await Assert.ThrowsAsync<HistoryCompactionValidationException>(() =>
+            new MafForegroundHistoryCompactor(strategy).CompactAsync(Request(history)));
+
+        Assert.Equal(HistoryCompactionFailureReason.InvalidSummary, error.Reason);
+        Assert.Equal(0, executions);
+        Assert.Equal(before, JsonSerializer.Serialize(history));
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public async Task SystemPrefixRemainsCompactableWithBuiltInStrategies(bool summarize)

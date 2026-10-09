@@ -335,6 +335,9 @@ do not require summary text. Flagged summaries remain validated in all paths.
 Retention exemptions consume source occurrences once, using semantic message equality
 and per-validation bookkeeping. One source message cannot excuse multiple invalid
 candidate copies; genuine repeated source messages can retain their original count.
+The same canonical/fallback validation runs on the source before strategy/job execution
+and in the independent candidate validator. Explicitly flagged invalid persisted summaries
+fail even if a replacement removes them; compaction is not an implicit corruption-repair path.
 
 The summarizer, if used, is a separate `IChatClient` dependency without the main
 agent's tools/history/compaction pipeline. Otherwise summarization could recurse

@@ -216,6 +216,34 @@ public class CompactionProviderTests
         Assert.Equal(new[] { Original, text, "recent", "current", "reply" }, stored.Select(message => message.Text));
     }
 
+    [Theory]
+    [InlineData("   ", HistoryCompactionMode.Foreground)]
+    [InlineData("[Summary unavailable]", HistoryCompactionMode.Foreground)]
+    [InlineData("   ", HistoryCompactionMode.Background)]
+    [InlineData("[Summary unavailable]", HistoryCompactionMode.Background)]
+    public async Task InvalidFlaggedSourceSummaryCannotBeHiddenByCompactor(string text, HistoryCompactionMode mode)
+    {
+        var plugin = new Plugin((request, _) =>
+            Task.FromResult(Completed(request, [new(ChatRole.User, "short")])))
+        {
+            SupportedModes = new HashSet<HistoryCompactionMode> { mode }
+        };
+        using var scenario = await SetupAsync(plugin, Options() with { Mode = mode }, messages:
+            [new(ChatRole.User, Original), new(ChatRole.Assistant, text)
+            {
+                AdditionalProperties = new() { ["_is_summary"] = true }
+            }]);
+        var before = scenario.Fixture.Documents.Select(document => document.GetRawText()).ToArray();
+
+        var error = await Assert.ThrowsAsync<HistoryCompactionValidationException>(scenario.LoadAsync);
+
+        Assert.Equal(HistoryCompactionFailureReason.InvalidSummary, error.Reason);
+        Assert.Equal(0, plugin.Invocations);
+        Assert.Equal(scenario.Source, scenario.Active);
+        Assert.Single(scenario.Fixture.Batches);
+        Assert.Equal(before, scenario.Fixture.Documents.Select(document => document.GetRawText()));
+    }
+
     [Fact]
     public async Task AlreadyInformationalDenialSkipsCompactorAndPreservesStoredDecision()
     {

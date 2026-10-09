@@ -135,6 +135,7 @@ public static class HistoryCompactionValidation
     {
         ArgumentNullException.ThrowIfNull(source);
         ArgumentNullException.ThrowIfNull(candidate);
+        ValidateFallback(source);
         if (candidate.Count == 0 || !candidate.Any(message => message is not null && message.Contents.Any(content =>
             content is not TextContent text || !string.IsNullOrWhiteSpace(text.Text))))
         {
@@ -218,6 +219,7 @@ public static class HistoryCompactionValidation
 
     internal static void ValidateSourceForCompaction(IReadOnlyList<ChatMessage> source)
     {
+        ValidateFallback(source);
         _ = GetProtectedPrefix(source);
         ValidateProcessedApprovals(source, GetToolGroups(source));
     }
