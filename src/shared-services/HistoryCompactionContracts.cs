@@ -28,7 +28,7 @@ public enum HistoryCompactionStatus
 /// Implementations must reject unsupported modes, propagate failures and cancellation, and never write
 /// history or agent sessions. They must deep-copy mutable messages and contents before running a strategy.
 /// Per-invocation indexes and message state must not be shared between calls.
-/// SupportedModes alone declares capabilities; background implementations must override GetResultAsync.
+/// SupportedModes alone declares capabilities; background implementations must override GetResultAsync and CancelAsync.
 /// Background jobs may be local best-effort or durable remote work. Implementations own execution
 /// and short-lived result retention, not the history provider.
 /// </remarks>
@@ -54,6 +54,14 @@ public interface IHistoryCompactor
     Task<HistoryCompactionResult> GetResultAsync(
         HistoryCompactionTicket ticket, CancellationToken cancellationToken = default) =>
         throw new NotSupportedException(CompactionErrors.Get("RetrievalNotSupported"));
+
+    /// <summary>Requests cooperative cancellation and releases a job identified by its existing ticket.</summary>
+    /// <remarks>
+    /// Cancellation is idempotent for jobs already retrieved, cancelled or expired. It must not await
+    /// the worker's completion. The caller token governs only the cancellation request itself.
+    /// </remarks>
+    Task CancelAsync(HistoryCompactionTicket ticket, CancellationToken cancellationToken = default) =>
+        throw new NotSupportedException(CompactionErrors.Get("CancellationNotSupported"));
 }
 
 /// <summary>Opaque accepted job identity bound to the original provider request.</summary>

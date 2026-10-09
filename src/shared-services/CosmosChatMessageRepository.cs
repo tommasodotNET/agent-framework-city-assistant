@@ -181,6 +181,14 @@ public sealed class CosmosChatMessageRepository
             if (existing.Document.RotationCandidate != binding || existing.Document.RotationState != Ready
                 || existing.Document.Revision != target.Revision || existing.Document.NextSequence != binding.MessageCount)
                 throw new HistoryConcurrencyException();
+            var liveDocuments = await QueryDocumentsAsync(target, null, cancellationToken).ConfigureAwait(false);
+            if (liveDocuments.Count != binding.MessageCount
+                || liveDocuments.Where((document, index) => document.Sequence != index).Any()
+                || HistoryJson.Hash(liveDocuments.Select(document => document.Message), cancellationToken) != binding.SnapshotHash)
+                throw new HistoryConcurrencyException();
+            var checkedHead = await ReadStoredHeadAsync(target.ToAddress(), cancellationToken).ConfigureAwait(false);
+            if (checkedHead != existing)
+                throw new HistoryConcurrencyException();
         }
         else
         {
@@ -319,6 +327,15 @@ public sealed class CosmosChatMessageRepository
         ArgumentNullException.ThrowIfNull(reference);
         if (maxMessages is <= 0) throw new ArgumentOutOfRangeException(nameof(maxMessages), HistoryErrors.Get("PositiveLimit"));
         await ReadHeadAsync(reference, cancellationToken).ConfigureAwait(false);
+        var documents = await QueryDocumentsAsync(reference, maxMessages, cancellationToken).ConfigureAwait(false);
+        // This also detects writes racing the query rather than returning mixed revisions.
+        await ReadHeadAsync(reference, cancellationToken).ConfigureAwait(false);
+        return documents;
+    }
+
+    private async Task<List<HistoryMessageDocument>> QueryDocumentsAsync(
+        HistoryReference reference, int? maxMessages, CancellationToken cancellationToken)
+    {
         var select = maxMessages.HasValue ? "SELECT TOP @limit * FROM c" : "SELECT * FROM c";
         var query = MessageQuery(reference, select, maxMessages.HasValue ? " ORDER BY c.sequence DESC" : " ORDER BY c.sequence ASC");
         if (maxMessages.HasValue) query.WithParameter("@limit", maxMessages.Value);
@@ -338,8 +355,6 @@ public sealed class CosmosChatMessageRepository
                 documents.Add(document);
             }
         }
-        // This also detects writes racing the query rather than returning mixed revisions.
-        await ReadHeadAsync(reference, cancellationToken).ConfigureAwait(false);
         return documents.OrderBy(document => document.Sequence).ThenBy(document => document.Id, StringComparer.Ordinal).ToList();
     }
 

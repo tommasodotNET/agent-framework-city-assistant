@@ -76,6 +76,7 @@ public class BackgroundCompactionTests
         Assert.Equal(scenario.Source.ConversationId, State(scenario.Session).ActiveHistory.ConversationId);
         Assert.Equal(4, (await ReadAsync(scenario)).Count);
         Assert.Null(State(scenario.Session).PendingCompaction);
+        Assert.Single(scenario.Backend.Cancellations);
         Assert.Contains(scenario.Logger.Messages,
             message => message.Contains(nameof(HistoryCompactionOptions.BackgroundSaveWaitTimeout), StringComparison.Ordinal));
     }
@@ -130,6 +131,8 @@ public class BackgroundCompactionTests
 
         Assert.Single(scenario.Fixture.Batches);
         Assert.Equal(2, (await ReadAsync(scenario)).Count);
+        Assert.Single(scenario.Backend.Cancellations);
+        Assert.Null(State(scenario.Session).PendingCompaction);
     }
 
     [Fact]
@@ -143,6 +146,48 @@ public class BackgroundCompactionTests
 
         Assert.Equal(2, scenario.Backend.Starts);
         Assert.NotEqual(first, State(scenario.Session).PendingCompaction!.Ticket);
+        Assert.Equal(first, Assert.Single(scenario.Backend.Cancellations));
+    }
+
+    [Fact]
+    public async Task DisabledProfileCancelsJobThroughItsOriginalCompactor()
+    {
+        using var scenario = await SetupAsync();
+        await LoadAsync(scenario.Provider, scenario.Session);
+        using var disabled = new CosmosChatHistoryProvider(scenario.Fixture.CreateRepository());
+
+        await SaveAsync(disabled, scenario.Session, "current", "answer");
+
+        Assert.Single(scenario.Backend.Cancellations);
+        Assert.Equal(0, scenario.Backend.Polls);
+        Assert.Equal(4, (await ReadAsync(scenario)).Count);
+    }
+
+    [Fact]
+    public async Task ClearCancelsAbandonedJob()
+    {
+        using var scenario = await SetupAsync();
+        await LoadAsync(scenario.Provider, scenario.Session);
+
+        await scenario.Provider.ClearMessagesAsync(scenario.Session);
+
+        Assert.Single(scenario.Backend.Cancellations);
+        Assert.Null(State(scenario.Session).PendingCompaction);
+        Assert.Empty(await ReadAsync(scenario));
+    }
+
+    [Fact]
+    public async Task FailedCancellationDoesNotPreventSavingTurn()
+    {
+        using var scenario = await SetupAsync();
+        await LoadAsync(scenario.Provider, scenario.Session);
+        scenario.Backend.OnCancel = () => throw new HttpRequestException("sensitive");
+
+        await SaveAsync(scenario.Provider, scenario.Session, "current", "answer");
+
+        Assert.Equal(4, (await ReadAsync(scenario)).Count);
+        Assert.Contains(scenario.Logger.Messages, message => message.Contains("Cancellation/", StringComparison.Ordinal));
+        Assert.DoesNotContain(scenario.Logger.Messages, message => message.Contains("sensitive", StringComparison.Ordinal));
     }
 
     [Fact]
@@ -190,6 +235,214 @@ public class BackgroundCompactionTests
         } while (result.Status == HistoryCompactionStatus.Pending);
 
         Assert.Equal(HistoryCompactionStatus.Completed, result.Status);
+    }
+
+    [Fact]
+    public async Task LocalCancellationSignalsWorkerAndIsIdempotent()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var foreground = Foreground(async (_, token) =>
+        {
+            using var registration = token.Register(() => cancelled.TrySetResult());
+            started.SetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            throw new UnreachableException();
+        });
+        var compactor = new LocalBackgroundHistoryCompactor(foreground);
+        var pending = await compactor.CompactAsync(new("agent", "binding", Original, Options()));
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await compactor.CancelAsync(pending.Ticket!).WaitAsync(TimeSpan.FromSeconds(5));
+        await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        await compactor.CancelAsync(pending.Ticket!);
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => compactor.GetResultAsync(pending.Ticket!));
+    }
+
+    [Fact]
+    public async Task SaveDeadlineCancelsActualLocalWorkerAndPersistsTurn()
+    {
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var cancelled = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var compactor = new LocalBackgroundHistoryCompactor(Foreground(async (_, token) =>
+        {
+            using var registration = token.Register(() => cancelled.TrySetResult());
+            started.SetResult();
+            await Task.Delay(Timeout.InfiniteTimeSpan, token);
+            throw new UnreachableException();
+        }));
+        var fixture = new HistoryCosmosFixture();
+        using var provider = new CosmosChatHistoryProvider(fixture.CreateRepository(),
+            compactor: compactor, compactionOptions: Options() with
+            {
+                BackgroundSaveWaitTimeout = TimeSpan.FromMilliseconds(50)
+            });
+        var session = NewSession();
+        await provider.InvokedAsync(new(Agent(), session, Original, []));
+        await LoadAsync(provider, session);
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        await SaveAsync(provider, session, "current", "answer");
+        await cancelled.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(4, (await fixture.CreateRepository().ReadAsync(State(session).ActiveHistory)).Messages.Count);
+        Assert.Null(State(session).PendingCompaction);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task FailedOrSelfCancelledLocalWorkerStillSavesTurn(bool selfCancelled)
+    {
+        var compactor = new LocalBackgroundHistoryCompactor(Foreground((_, _) =>
+            selfCancelled
+                ? Task.FromCanceled<HistoryCompactionResult>(new CancellationToken(true))
+                : Task.FromException<HistoryCompactionResult>(new ArgumentException("sensitive"))));
+        var fixture = new HistoryCosmosFixture();
+        var logger = new TestLogger();
+        using var provider = new CosmosChatHistoryProvider(fixture.CreateRepository(),
+            compactor: compactor, compactionOptions: Options() with
+            {
+                BackgroundSaveWaitTimeout = TimeSpan.FromSeconds(2)
+            }, logger: logger);
+        var session = NewSession();
+        await provider.InvokedAsync(new(Agent(), session, Original, []));
+        var source = State(session).ActiveHistory;
+        await LoadAsync(provider, session);
+
+        await SaveAsync(provider, session, "current", "answer");
+
+        Assert.Equal(source.ConversationId, State(session).ActiveHistory.ConversationId);
+        Assert.Equal(4, (await fixture.CreateRepository().ReadAsync(State(session).ActiveHistory)).Messages.Count);
+        Assert.NotEmpty(logger.Messages);
+        Assert.DoesNotContain(logger.Messages, message => message.Contains("sensitive", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task LocalCancellationDoesNotWaitForWorkerIgnoringToken()
+    {
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var finished = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var compactor = new LocalBackgroundHistoryCompactor(Foreground(async (request, _) =>
+        {
+            started.SetResult();
+            await completion.Task;
+            finished.SetResult();
+            return Completed(request);
+        }));
+        var pending = await compactor.CompactAsync(new("agent", "binding", Original, Options()));
+        await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        try
+        {
+            await compactor.CancelAsync(pending.Ticket!).WaitAsync(TimeSpan.FromSeconds(1));
+            Assert.False(finished.Task.IsCompleted);
+            await Assert.ThrowsAsync<InvalidOperationException>(() => compactor.GetResultAsync(pending.Ticket!));
+        }
+        finally
+        {
+            completion.SetResult();
+            await finished.Task.WaitAsync(TimeSpan.FromSeconds(5));
+        }
+    }
+
+    [Fact]
+    public async Task WrongTicketBindingCannotCancelAnotherJob()
+    {
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var compactor = new LocalBackgroundHistoryCompactor(Foreground(async (request, _) =>
+        {
+            await completion.Task;
+            return Completed(request);
+        }));
+        var pending = await compactor.CompactAsync(new("agent", "binding", Original, Options()));
+
+        try
+        {
+            await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                compactor.CancelAsync(new(pending.Ticket!.JobId, "wrong-binding")));
+            Assert.Equal(HistoryCompactionStatus.Pending,
+                (await compactor.GetResultAsync(pending.Ticket!)).Status);
+        }
+        finally
+        {
+            await compactor.CancelAsync(pending.Ticket!);
+            completion.SetResult();
+        }
+    }
+
+    [Fact]
+    public async Task RetentionTimerStartsOnlyAfterWorkerTerminates()
+    {
+        var completion = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var started = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var clock = new RetentionClock();
+        var compactor = new LocalBackgroundHistoryCompactor(Foreground(async (request, _) =>
+        {
+            started.SetResult();
+            await completion.Task;
+            return Completed(request);
+        }), null, clock);
+        var pending = await compactor.CompactAsync(new("agent", "binding", Original,
+            Options() with { BackgroundSaveWaitTimeout = TimeSpan.FromMinutes(6) }));
+
+        try
+        {
+            await started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.False(clock.Created.Task.IsCompleted);
+            Assert.Equal(HistoryCompactionStatus.Pending,
+                (await compactor.GetResultAsync(pending.Ticket!)).Status);
+            completion.SetResult();
+
+            var timer = await clock.Created.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(TimeSpan.FromMinutes(5), timer.DueTime);
+            Assert.Equal(HistoryCompactionStatus.Completed,
+                (await compactor.GetResultAsync(pending.Ticket!)).Status);
+            timer.Fire();
+        }
+        finally
+        {
+            completion.TrySetResult();
+            await compactor.CancelAsync(pending.Ticket!);
+            if (clock.Created.Task.IsCompletedSuccessfully)
+                (await clock.Created.Task).Fire();
+        }
+    }
+
+    private sealed class RetentionClock : TimeProvider
+    {
+        internal TaskCompletionSource<RetentionTimer> Created { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public override ITimer CreateTimer(TimerCallback callback, object? state, TimeSpan dueTime, TimeSpan period)
+        {
+            var timer = new RetentionTimer(callback, state, dueTime);
+            Created.TrySetResult(timer);
+            return timer;
+        }
+    }
+
+    private sealed class RetentionTimer(TimerCallback callback, object? state, TimeSpan dueTime) : ITimer
+    {
+        internal TimeSpan DueTime { get; } = dueTime;
+        internal void Fire() => callback(state);
+        public bool Change(TimeSpan dueTime, TimeSpan period) => false;
+        public void Dispose() { }
+        public ValueTask DisposeAsync() => ValueTask.CompletedTask;
+    }
+
+    private static IHistoryCompactor Foreground(
+        Func<HistoryCompactionRequest, CancellationToken, Task<HistoryCompactionResult>> execute)
+    {
+        var foreground = new Mock<IHistoryCompactor>();
+        foreground.SetupGet(value => value.SupportedModes)
+            .Returns(new HashSet<HistoryCompactionMode> { HistoryCompactionMode.Foreground });
+        foreground.Setup(value => value.CompactAsync(
+            It.IsAny<HistoryCompactionRequest>(), It.IsAny<CancellationToken>()))
+            .Returns(execute);
+        return foreground.Object;
     }
 
     [Fact]
@@ -275,6 +528,8 @@ public class BackgroundCompactionTests
         public int Polls { get; set; }
         public bool Ready { get; set; }
         public HistoryCompactionRequest? Request { get; set; }
+        public List<HistoryCompactionTicket> Cancellations { get; } = [];
+        public Func<Task>? OnCancel { get; set; }
         public Func<HistoryCompactionRequest, CancellationToken, Task<HistoryCompactionResult>>? OnStart { get; set; }
         public Func<HistoryCompactionTicket, CancellationToken, Task<HistoryCompactionResult>>? OnPoll { get; set; }
     }
@@ -305,6 +560,13 @@ public class BackgroundCompactionTests
             return Task.FromResult(backend.Ready
                 ? Completed(request)
                 : HistoryCompactionResult.Pending(ticket));
+        }
+
+        public Task CancelAsync(HistoryCompactionTicket ticket, CancellationToken cancellationToken = default)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            backend.Cancellations.Add(ticket);
+            return backend.OnCancel?.Invoke() ?? Task.CompletedTask;
         }
     }
 

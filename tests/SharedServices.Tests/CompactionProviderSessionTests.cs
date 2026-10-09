@@ -160,7 +160,8 @@ public class CompactionProviderSessionTests
         var pending = new PendingHistoryCompaction(source,
             new HistoryCompactionRequest(agent.Id, "binding", [new ChatMessage(ChatRole.User, "message")],
                 new HistoryCompactionOptions { CompactorKey = "background", Mode = HistoryCompactionMode.Background }),
-            new HistoryCompactionTicket("job", "binding"), Guid.NewGuid().ToString("N"));
+            new HistoryCompactionTicket("job", "binding"), Guid.NewGuid().ToString("N"),
+            new Mock<IHistoryCompactor>().Object);
         SessionPersistenceState.SetPendingCompaction(session, pending);
         SessionPersistenceState.SetHistory(session, source);
 

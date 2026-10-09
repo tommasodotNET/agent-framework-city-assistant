@@ -257,8 +257,14 @@ state between that Load and its Save. They are never written into a hosted sessi
 snapshot. `BackgroundSaveWaitTimeout` gives Save a bounded polling window, defaulting
 to two seconds. A valid ready result is merged with the current invocation's filtered
 input/output and conditionally published as C2. Pending, missing, failed, or invalid
-work falls back to the normal append on C1 and the ticket is discarded. A later Load
-starts a fresh job; restart recovery and cross-turn suffix merging are intentionally
+work falls back to the normal append on C1. The provider calls `CancelAsync` using
+that same ticket and discards its live state; cancellation does not await the worker.
+A new Load, explicit Clear, or cancelled Save also cancels abandoned jobs through
+their original compactor. Cleanup failure is logged without masking the normal
+turn save or its original error. The local worker owns a `CancellationTokenSource`
+per ticket, forwards its token to the strategy/client, and retains orphan terminal
+results for five minutes after completion, never counting execution time as retention.
+A later Load starts a fresh job; restart recovery and cross-turn suffix merging are intentionally
 out of scope. External cancellation and uncertain storage publication still propagate.
 
 A profile identifies a keyed compactor and can optionally set a positive
@@ -342,6 +348,12 @@ captured by the current Load.
 If another request advances C1 during compaction, the stale rotation cannot win.
 A request already running on retired C1 cannot silently redirect its output to
 C2. A conflicting turn is not automatically replayed.
+
+Retrying the same unpublished candidate first queries its live messages and verifies
+the exact count, contiguous sequences, and canonical payload hash against the rotation
+binding. Missing/expired/corrupted messages reject the retry before retiring C1.
+This extra read applies only when reusing an already staged target, not every rotation.
+As with ordinary history reads, it is not atomic with Cosmos's independent TTL sweeper.
 
 Rotation is not a transaction across partitions or containers. If publication
 completed but the session checkpoint did not, recovery may follow only the

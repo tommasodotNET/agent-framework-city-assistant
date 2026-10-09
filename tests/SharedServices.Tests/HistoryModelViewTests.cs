@@ -180,5 +180,8 @@ public class HistoryModelViewTests
                 summary, HistoryCompactionValidation.Measure(Request!.Messages), HistoryCompactionValidation.Measure(summary))
                 : HistoryCompactionResult.Pending(ticket));
         }
+
+        public Task CancelAsync(HistoryCompactionTicket ticket, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
     }
 }

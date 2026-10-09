@@ -185,5 +185,6 @@ public class SessionPersistenceContextTests
             new HistoryCompactionRequest("agent", "source-binding", [new ChatMessage(ChatRole.User, "message")],
                 new HistoryCompactionOptions { CompactorKey = "background", Mode = HistoryCompactionMode.Background }),
             new HistoryCompactionTicket("job", "source-binding"),
-            Guid.NewGuid().ToString("N"));
+            Guid.NewGuid().ToString("N"),
+            new Moq.Mock<IHistoryCompactor>().Object);
 }

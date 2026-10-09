@@ -17,6 +17,8 @@
   <data name="NullContent" xml:space="preserve"><value>History messages cannot contain null content items.</value></data>
   <data name="UnsupportedMode" xml:space="preserve"><value>The selected compactor does not advertise the requested mode in SupportedModes.</value></data>
   <data name="RetrievalNotSupported" xml:space="preserve"><value>This history compactor does not implement background result retrieval. Foreground-only compactors cannot retrieve job results.</value></data>
+  <data name="CancellationNotSupported" xml:space="preserve"><value>This history compactor does not implement background job cancellation.</value></data>
+  <data name="BackgroundJobFailed" xml:space="preserve"><value>The background history compaction job failed or was cancelled.</value></data>
   <data name="SummaryModelRequired" xml:space="preserve"><value>The summary profile requires an explicit HistoryCompaction:Model deployment name; it does not reuse AI:ChatModel.</value></data>
   <data name="SummaryTriggerRequired" xml:space="preserve"><value>The summary profile requires a positive HistoryCompaction:TriggerTokens estimate threshold.</value></data>
   <data name="SummaryTargetInvalid" xml:space="preserve"><value>HistoryCompaction:TargetTokens must be positive and less than HistoryCompaction:TriggerTokens when specified.</value></data>

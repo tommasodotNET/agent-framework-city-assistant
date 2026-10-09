@@ -341,6 +341,15 @@ public class CompactionContractTests
     }
 
     [Fact]
+    public async Task ForegroundCompactorDefaultCancellationExplicitlyRejectsBackgroundJobs()
+    {
+        IHistoryCompactor compactor = new MafForegroundHistoryCompactor(
+            new SlidingWindowCompactionStrategy(CompactionTriggers.TurnsExceed(2)));
+
+        await Assert.ThrowsAsync<NotSupportedException>(() => compactor.CancelAsync(new("job", "source")));
+    }
+
+    [Fact]
     public void ForegroundOnlyCompactorRejectsBackgroundConfiguration()
     {
         var services = new ServiceCollection();

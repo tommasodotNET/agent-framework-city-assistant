@@ -354,12 +354,22 @@ The built-in `test-sliding-window` and `summary` profiles wrap
 `Mode` is `Background`. This worker is deliberately best-effort and in-process:
 it does not survive a restart or move across replicas. `BackgroundSaveWaitTimeout`
 defaults to two seconds and may be set to zero for one immediate result check.
-If the result is still pending, missing, failed, or invalid, Save appends the current
-turn normally and discards the live ticket. A later Load starts a new job. No user
-message is dropped merely because compaction missed its deadline.
+If the result is still pending, missing, failed, or invalid, Save requests
+`CancelAsync(ticket)`, discards the live ticket, and appends the current turn normally.
+The same ticket identifies both retrieval and cancellation; no additional id or
+session field is needed. Cancellation signals the worker without awaiting its
+completion, so a strategy ignoring cancellation cannot delay Save. A later Load
+starts a new job. No user message is dropped merely because compaction missed
+its deadline. New Load, Clear, and caller cancellation during Save also abandon outstanding work.
+
+The local worker's five-minute cleanup window starts only after the task terminates,
+not at enqueue. It covers orphan results, not running jobs or Save's two-second wait.
+Cancellation is cooperative; stopping the local request does not guarantee that
+the remote model service stops processing immediately.
 
 Custom background implementations still use the same `IHistoryCompactor` contract,
-advertise `Background` in `SupportedModes`, and implement `GetResultAsync`.
+advertise `Background` in `SupportedModes`, and implement `GetResultAsync` and
+idempotent `CancelAsync` without waiting for the worker to finish.
 Voice compaction remains out of scope.
 
 The five text hosts also accept an explicit `HistoryCompaction` configuration
@@ -410,6 +420,10 @@ requests. That instruction exists only in the summarizer request, never in persi
 conversation history. This improves task framing; it does not guarantee semantic
 fidelity, which still needs workload-specific evaluation.
 
+To use this profile in the local background worker, set `"Mode": "Background"`.
+`"BackgroundSaveWaitTimeout": "00:00:02"` explicitly sets the default Save wait;
+the same setting is available as `HistoryCompaction__BackgroundSaveWaitTimeout`.
+
 If an agent response finishes without any non-whitespace text, the chat UI reports
 `empty_response` instead of silently returning to idle. It does not retry the request:
 tools may already have executed. Empty intermediate streaming events remain valid.
@@ -457,7 +471,9 @@ no extra client. Summaries are lossy and require realistic recall testing.
 Other keys must be supplied through a normal keyed DI registration.
 `Timeout` optionally accepts a positive TimeSpan for cooperative
 foreground execution or each background enqueue/retrieval call, not a job deadline;
-it does not abandon a plugin task that ignores cancellation.
+it does not abandon a plugin task that ignores cancellation. The local background
+adapter additionally passes this timeout to its foreground worker. Save's separate
+deadline cancels that worker through its ticket rather than awaiting its completion.
 
 The existing hierarchical container schemas are retained. Rotation adds optional
 control metadata rather than changing partition keys. Update every writer before

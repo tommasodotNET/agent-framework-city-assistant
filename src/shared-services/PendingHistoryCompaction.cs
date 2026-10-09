@@ -5,4 +5,5 @@ internal sealed record PendingHistoryCompaction(
     HistoryReference Source,
     HistoryCompactionRequest Request,
     HistoryCompactionTicket Ticket,
-    string OperationId);
+    string OperationId,
+    IHistoryCompactor Compactor);

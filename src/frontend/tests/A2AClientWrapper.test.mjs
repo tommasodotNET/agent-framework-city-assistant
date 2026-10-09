@@ -2,6 +2,7 @@ import { test, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import ts from 'typescript';
+import { Role } from '@a2a-js/sdk';
 
 const source = await readFile(new URL('../src/A2AClientWrapper.ts', import.meta.url), 'utf8');
 const { outputText } = ts.transpileModule(source, {
@@ -71,6 +72,43 @@ test('actual transport errors are not mislabeled as empty responses', async () =
 
 test('nonstreaming empty result is also explicit', async () => {
     const wrapper = new A2AClientWrapper('/unused');
-    wrapper.client = { async sendMessage() { return { messageId: 'message', contextId: 'context', parts: [part('')] }; } };
+    wrapper.client = { async sendMessage() { return { messageId: 'message', role: Role.ROLE_AGENT, contextId: 'context', parts: [part('')] }; } };
     await assert.rejects(() => wrapper.sendMessage([{ role: 'user', content: 'hello' }]), EmptyAgentResponseError);
 });
+
+const user = text => ({ role: Role.ROLE_USER, parts: [part(text)] });
+const agent = text => ({ role: Role.ROLE_AGENT, parts: [part(text)] });
+const nonstreaming = response => {
+    const wrapper = new A2AClientWrapper('/unused');
+    wrapper.client = { async sendMessage() { return response; } };
+    return wrapper;
+};
+const send = response => nonstreaming(response).sendMessage([{ role: 'user', content: 'hello' }]);
+
+for (const [name, response] of [
+    ['user-only task', { history: [user('hello')], status: {}, artifacts: [] }],
+    ['user status with empty agent history', { history: [agent(' ')], status: { message: user('hello') }, artifacts: [] }],
+    ['direct user message', { messageId: 'message', ...user('hello') }]
+]) {
+    test(`nonstreaming ${name} never echoes the user prompt`, async () => {
+        await assert.rejects(() => send(response), EmptyAgentResponseError);
+    });
+}
+
+for (const [name, response, expected] of [
+    ['last agent history before a user message',
+        { history: [agent('answer'), user('hello')], status: {}, artifacts: [] }, 'answer'],
+    ['latest nonempty agent history',
+        { history: [agent('old answer'), user('hello'), agent('answer'), agent(' ')], status: {}, artifacts: [] }, 'answer'],
+    ['agent status after user-only history',
+        { history: [user('hello')], status: { message: agent('status answer') }, artifacts: [] }, 'status answer'],
+    ['artifact after empty agent text',
+        { history: [agent('')], status: { message: agent(' ') }, artifacts: [{ parts: [part('artifact answer')] }] }, 'artifact answer'],
+    ['artifact after user-only history and status',
+        { history: [user('hello')], status: { message: user('hello') }, artifacts: [{ parts: [part('artifact answer')] }] }, 'artifact answer'],
+    ['direct agent message', { messageId: 'message', ...agent('answer') }, 'answer']
+]) {
+    test(`nonstreaming selects ${name}`, async () => {
+        assert.equal((await send({ contextId: 'context', ...response })).content, expected);
+    });
+}

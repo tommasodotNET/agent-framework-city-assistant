@@ -333,6 +333,88 @@ public class HistoryRotationTests
         Assert.Equal(Target(operation), target);
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task RetryRejectsExpiredStagedMessagesWithoutRetiringSource(bool expireAll)
+    {
+        var fixture = SeededFixture();
+        var operation = OperationId();
+        fixture.BatchFailures[2] = HttpStatusCode.ServiceUnavailable;
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            fixture.CreateRepository().RotateAsync(Source(), Messages(), 86400, operation));
+        var staged = fixture.Documents.Where(document =>
+            document.GetProperty("conversationId").GetString() == Target(operation).ConversationId
+            && document.GetProperty("type").GetString() == "ChatMessage").ToArray();
+        foreach (var document in expireAll ? staged : staged.Take(1))
+            fixture.ExpireMessage(Target(operation).ToAddress(), document.GetProperty("id").GetString()!);
+
+        await Assert.ThrowsAsync<HistoryConcurrencyException>(() =>
+            fixture.CreateRepository().RotateAsync(Source(), Messages(), 86400, operation));
+
+        Assert.Equal(2, fixture.Batches.Count);
+        Assert.Equal(Source().Revision, Head(fixture, Source()).GetProperty("revision").GetInt64());
+        Assert.Null(await fixture.CreateRepository().ResolveRotationAsync(Source()));
+    }
+
+    [Theory]
+    [InlineData("payload")]
+    [InlineData("sequence")]
+    [InlineData("extra-message")]
+    public async Task RetryRejectsCorruptedStagedCandidateWithoutRetiringSource(string corruption)
+    {
+        var fixture = SeededFixture();
+        var operation = OperationId();
+        fixture.BatchFailures[2] = HttpStatusCode.ServiceUnavailable;
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            fixture.CreateRepository().RotateAsync(Source(), Messages(), 86400, operation));
+        var original = fixture.Documents.First(document =>
+            document.GetProperty("conversationId").GetString() == Target(operation).ConversationId
+            && document.GetProperty("type").GetString() == "ChatMessage");
+        var changed = JsonNode.Parse(original.GetRawText())!;
+        if (corruption == "payload")
+            changed["message"] = JsonSerializer.SerializeToNode(new ChatMessage(ChatRole.User, "changed"));
+        else if (corruption == "sequence")
+            changed["sequence"] = 1;
+        else
+        {
+            changed["id"] = "extra-staged-message";
+            changed["sequence"] = 2;
+        }
+        fixture.Seed(Target(operation).ToAddress(), JsonSerializer.SerializeToElement(changed));
+
+        await Assert.ThrowsAsync<HistoryConcurrencyException>(() =>
+            fixture.CreateRepository().RotateAsync(Source(), Messages(), 86400, operation));
+
+        Assert.Equal(2, fixture.Batches.Count);
+        Assert.Null(await fixture.CreateRepository().ResolveRotationAsync(Source()));
+    }
+
+    [Fact]
+    public async Task RetryAcceptsCanonicalEquivalentStagedPayload()
+    {
+        var fixture = SeededFixture();
+        var operation = OperationId();
+        fixture.BatchFailures[2] = HttpStatusCode.ServiceUnavailable;
+        await Assert.ThrowsAsync<InvalidOperationException>(() =>
+            fixture.CreateRepository().RotateAsync(Source(), Messages(), 86400, operation));
+        foreach (var original in fixture.Documents.Where(document =>
+            document.GetProperty("conversationId").GetString() == Target(operation).ConversationId
+            && document.GetProperty("type").GetString() == "ChatMessage"))
+        {
+            var changed = JsonNode.Parse(original.GetRawText())!;
+            changed["message"] = JsonSerializer.SerializeToNode(original.GetProperty("message").EnumerateObject()
+                .Reverse().ToDictionary(property => property.Name, property => property.Value));
+            fixture.Seed(Target(operation).ToAddress(), JsonSerializer.SerializeToElement(changed));
+        }
+
+        var target = await fixture.CreateRepository().RotateAsync(Source(), Messages(), 86400, operation);
+
+        Assert.Equal(Target(operation), target);
+        Assert.Equal(new[] { "summary", "recent" },
+            (await fixture.CreateRepository().ReadAsync(target)).Messages.Select(message => message.Text));
+    }
+
     [Fact]
     public async Task LostSourcePublicationResponseCanRecoverFromAnotherRepository()
     {

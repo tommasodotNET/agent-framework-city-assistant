@@ -143,13 +143,16 @@ export class A2AClientWrapper {
 
         if (isMessage(response)) {
             responseContextId = response.contextId || undefined;
-            content = getText(response.parts);
+            content = getAgentText(response);
         } else {
             responseContextId = response.contextId || undefined;
-            const lastMessage = response.history[response.history.length - 1] ?? response.status?.message;
-            if (lastMessage) {
-                content = getText(lastMessage.parts);
-            } else {
+            const lastMessage = [...response.history].reverse()
+                .find(message => getAgentText(message).trim().length > 0);
+            content = getAgentText(lastMessage);
+            if (!content.trim()) {
+                content = getAgentText(response.status?.message);
+            }
+            if (!content.trim()) {
                 content = response.artifacts.map(artifact => getText(artifact.parts)).join('');
             }
         }
@@ -193,6 +196,10 @@ function getText(parts: Part[]): string {
         .filter(part => part.content?.$case === 'text')
         .map(part => part.content?.value ?? '')
         .join('');
+}
+
+function getAgentText(message?: Message): string {
+    return message?.role === Role.ROLE_AGENT ? getText(message.parts) : '';
 }
 
 function isMessage(result: Message | Task): result is Message {

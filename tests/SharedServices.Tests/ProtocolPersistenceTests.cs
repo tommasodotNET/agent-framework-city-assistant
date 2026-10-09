@@ -592,6 +592,9 @@ public sealed class ProtocolPersistenceTests
                     HistoryCompactionValidation.Measure(request.Messages), HistoryCompactionValidation.Measure(summary))
                 : HistoryCompactionResult.Pending(ticket));
         }
+
+        public Task CancelAsync(HistoryCompactionTicket ticket, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
     }
 
     private static CosmosChatHistoryProvider CompactingHistory(CosmosChatMessageRepository repository) =>
