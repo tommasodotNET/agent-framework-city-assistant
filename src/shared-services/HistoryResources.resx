@@ -11,4 +11,7 @@
   <data name="TooLarge" xml:space="preserve"><value>A history message exceeds the safe transactional batch payload budget. Reduce the message size before retrying.</value></data>
   <data name="BatchLimit" xml:space="preserve"><value>The batch limit must be between 2 and 100, including the reserved history metadata operation.</value></data>
   <data name="PositiveLimit" xml:space="preserve"><value>The message/query limit must be positive.</value></data>
+  <data name="RotationOperationId" xml:space="preserve"><value>The rotation operation id must be a randomly generated GUID v4 in lowercase N format. Reuse it only for the exact same source, messages and retention.</value></data>
+  <data name="RotationEmpty" xml:space="preserve"><value>A rotation must contain at least one compacted message.</value></data>
+  <data name="RotationMissingSource" xml:space="preserve"><value>A missing history head cannot be rotated. Persist the source before rotating it.</value></data>
 </root>

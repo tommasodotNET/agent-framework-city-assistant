@@ -4,7 +4,6 @@ using Microsoft.Azure.Cosmos;
 using Microsoft.Extensions.AI;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
-using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;
 
 namespace SharedServices;
@@ -26,24 +25,42 @@ public static class CosmosChatHistoryProviderExtensions
         string containerId,
         CosmosChatHistoryProviderOptions options,
         bool ownsClient = false,
-        ILogger<CosmosChatHistoryProvider>? logger = null)
+        ILogger<CosmosChatHistoryProvider>? logger = null,
+        IHistoryCompactor? compactor = null)
     {
-        var provider = new CosmosChatHistoryProvider(
-            cosmosClient, databaseId, containerId,
-            ownsClient,
-            options.ProvideOutputMessageFilter, options.StoreInputMessageFilter, logger)
+        CosmosChatHistoryProvider? provider = null;
+        var constructorOwnsClient = false;
+        try
         {
-            ChatReducer = options.ChatReducer,
-            ReductionStoragePolicy = options.ReductionStoragePolicy ?? ReductionStoragePolicy.Clear
-        };
+            options.Compaction?.Validate();
+            if (options.Compaction is not null && options.MaxMessagesToRetrieve.HasValue)
+                throw new ArgumentException(HistoryProviderErrors.Get("PartialHistoryConflict"), nameof(options.MaxMessagesToRetrieve));
+            constructorOwnsClient = ownsClient;
+            provider = new CosmosChatHistoryProvider(
+                cosmosClient, databaseId, containerId,
+                ownsClient,
+                options.ProvideOutputMessageFilter, options.StoreInputMessageFilter, logger,
+                compactor, options.Compaction);
 
-        if (options.MaxItemCount.HasValue) provider.MaxItemCount = options.MaxItemCount.Value;
-        if (options.MaxBatchSize.HasValue) provider.MaxBatchSize = options.MaxBatchSize.Value;
-        if (options.MaxMessagesToRetrieve.HasValue) provider.MaxMessagesToRetrieve = options.MaxMessagesToRetrieve;
-        provider.MessageTtlSeconds = options.MessageTtlSeconds;
-        options.ConfigureProvider?.Invoke(provider);
+            if (options.MaxItemCount.HasValue) provider.MaxItemCount = options.MaxItemCount.Value;
+            if (options.MaxBatchSize.HasValue) provider.MaxBatchSize = options.MaxBatchSize.Value;
+            if (options.MaxMessagesToRetrieve.HasValue) provider.MaxMessagesToRetrieve = options.MaxMessagesToRetrieve;
+            provider.MessageTtlSeconds = options.MessageTtlSeconds;
+            options.ConfigureProvider?.Invoke(provider);
 
-        return provider;
+            return provider;
+        }
+        catch
+        {
+            if (ownsClient)
+            {
+                if (provider is not null)
+                    provider.Dispose();
+                else if (!constructorOwnsClient)
+                    cosmosClient.Dispose();
+            }
+            throw;
+        }
     }
 
     /// <summary>
@@ -59,7 +76,7 @@ public static class CosmosChatHistoryProviderExtensions
     }
 
     // ────────────────────────────────────────────────────────────
-    //  Aspire / DI registration
+    //  Standard DI registration (also usable with Aspire)
     // ────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -104,7 +121,7 @@ public static class CosmosChatHistoryProviderExtensions
     }
 
     // ────────────────────────────────────────────────────────────
-    //  Aspire / DI consumption
+    //  Standard DI consumption (also usable with Aspire)
     // ────────────────────────────────────────────────────────────
 
     /// <summary>
@@ -123,13 +140,63 @@ public static class CosmosChatHistoryProviderExtensions
 
         var registration = serviceProvider.GetRequiredService<CosmosChatHistoryProviderRegistration>();
         var container = serviceProvider.GetRequiredKeyedService<Container>(registration.ContainerServiceKey);
-        var logger = serviceProvider.GetService<ILogger<CosmosChatHistoryProvider>>();
         var providerOptions = ResolveOptions(registration.Options, configure);
 
+        return ConfigureFromContainer(options, serviceProvider, container, providerOptions);
+    }
+
+    /// <summary>Configures this agent's history using an existing container and standard DI services.</summary>
+    /// <remarks>
+    /// No global history registration or Aspire is required. Settings are local to this agent;
+    /// the logger and optional keyed compactor are resolved once during composition.
+    /// The provider does not own or dispose the container's Cosmos client.
+    /// </remarks>
+    [RequiresUnreferencedCode("The CosmosChatHistoryProvider uses JSON serialization which is incompatible with trimming.")]
+    [RequiresDynamicCode("The CosmosChatHistoryProvider uses JSON serialization which is incompatible with NativeAOT.")]
+    public static ChatClientAgentOptions WithCosmosChatHistoryProvider(
+        this ChatClientAgentOptions options,
+        Container container,
+        IServiceProvider serviceProvider,
+        Action<CosmosChatHistoryProviderOptions>? configure = null)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(serviceProvider);
+        ArgumentNullException.ThrowIfNull(container);
+
+        return ConfigureFromContainer(options, serviceProvider, container, ResolveOptions(null, configure));
+    }
+
+    /// <summary>Selects this agent's history container through a factory evaluated once during composition.</summary>
+    /// <remarks>
+    /// The factory can resolve ordinary or keyed services without a global history registration.
+    /// Options, compactor resolution and Cosmos client ownership match the direct-container overload.
+    /// </remarks>
+    [RequiresUnreferencedCode("The CosmosChatHistoryProvider uses JSON serialization which is incompatible with trimming.")]
+    [RequiresDynamicCode("The CosmosChatHistoryProvider uses JSON serialization which is incompatible with NativeAOT.")]
+    public static ChatClientAgentOptions WithCosmosChatHistoryProvider(
+        this ChatClientAgentOptions options,
+        Func<IServiceProvider, Container> createContainer,
+        IServiceProvider serviceProvider,
+        Action<CosmosChatHistoryProviderOptions>? configure = null)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(serviceProvider);
+        ArgumentNullException.ThrowIfNull(createContainer);
+
+        var container = createContainer(serviceProvider);
+        ArgumentNullException.ThrowIfNull(container);
+        return options.WithCosmosChatHistoryProvider(container, serviceProvider, configure);
+    }
+
+    private static ChatClientAgentOptions ConfigureFromContainer(
+        ChatClientAgentOptions options, IServiceProvider serviceProvider,
+        Container container, CosmosChatHistoryProviderOptions providerOptions)
+    {
         options.ChatHistoryProvider = BuildProvider(
             container.Database.Client, container.Database.Id, container.Id,
-            providerOptions, logger: logger);
-
+            providerOptions,
+            logger: serviceProvider.GetService<ILogger<CosmosChatHistoryProvider>>(),
+            compactor: serviceProvider.GetHistoryCompactor(providerOptions.Compaction));
         return options;
     }
 
@@ -147,7 +214,8 @@ public static class CosmosChatHistoryProviderExtensions
         string connectionString,
         string databaseId,
         string containerId,
-        Action<CosmosChatHistoryProviderOptions>? configure = null)
+        Action<CosmosChatHistoryProviderOptions>? configure = null,
+        IHistoryCompactor? compactor = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentException.ThrowIfNullOrWhiteSpace(connectionString);
@@ -155,7 +223,7 @@ public static class CosmosChatHistoryProviderExtensions
         var providerOptions = ResolveOptions(null, configure);
         options.ChatHistoryProvider = BuildProvider(
             new CosmosClient(connectionString), databaseId, containerId,
-            providerOptions, ownsClient: true);
+            providerOptions, ownsClient: true, compactor: compactor);
 
         return options;
     }
@@ -171,7 +239,8 @@ public static class CosmosChatHistoryProviderExtensions
         string databaseId,
         string containerId,
         TokenCredential tokenCredential,
-        Action<CosmosChatHistoryProviderOptions>? configure = null)
+        Action<CosmosChatHistoryProviderOptions>? configure = null,
+        IHistoryCompactor? compactor = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(tokenCredential);
@@ -180,7 +249,7 @@ public static class CosmosChatHistoryProviderExtensions
         var providerOptions = ResolveOptions(null, configure);
         options.ChatHistoryProvider = BuildProvider(
             new CosmosClient(accountEndpoint, tokenCredential), databaseId, containerId,
-            providerOptions, ownsClient: true);
+            providerOptions, ownsClient: true, compactor: compactor);
 
         return options;
     }
@@ -195,7 +264,8 @@ public static class CosmosChatHistoryProviderExtensions
         CosmosClient cosmosClient,
         string databaseId,
         string containerId,
-        Action<CosmosChatHistoryProviderOptions>? configure = null)
+        Action<CosmosChatHistoryProviderOptions>? configure = null,
+        IHistoryCompactor? compactor = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(cosmosClient);
@@ -203,7 +273,7 @@ public static class CosmosChatHistoryProviderExtensions
         var providerOptions = ResolveOptions(null, configure);
         options.ChatHistoryProvider = BuildProvider(
             cosmosClient, databaseId, containerId,
-            providerOptions);
+            providerOptions, compactor: compactor);
 
         return options;
     }
@@ -216,7 +286,7 @@ public static class CosmosChatHistoryProviderExtensions
 internal sealed class CosmosChatHistoryProviderRegistration(string containerServiceKey, CosmosChatHistoryProviderOptions options)
 {
     public string ContainerServiceKey { get; } = containerServiceKey ?? throw new ArgumentNullException(nameof(containerServiceKey));
-    public CosmosChatHistoryProviderOptions Options { get; } = options ?? throw new ArgumentNullException(nameof(options));
+    public CosmosChatHistoryProviderOptions Options { get; } = options?.Clone() ?? throw new ArgumentNullException(nameof(options));
 }
 
 /// <summary>
@@ -224,19 +294,14 @@ internal sealed class CosmosChatHistoryProviderRegistration(string containerServ
 /// </summary>
 public sealed class CosmosChatHistoryProviderOptions
 {
+    /// <summary>Optional compaction profile; null disables the feature. Persistence remains owned by the provider.</summary>
+    public HistoryCompactionOptions? Compaction { get; set; }
+
     /// <summary>Filters provided history without changing persisted messages.</summary>
     public Func<IEnumerable<ChatMessage>, IEnumerable<ChatMessage>>? ProvideOutputMessageFilter { get; set; }
 
     /// <summary>Filters request messages for persistence; null preserves the framework's history-exclusion default.</summary>
     public Func<IEnumerable<ChatMessage>, IEnumerable<ChatMessage>>? StoreInputMessageFilter { get; set; }
-
-#pragma warning disable MEAI001
-    /// <summary>Legacy reducer, off by default; no automatic compaction is enabled.</summary>
-    public IChatReducer? ChatReducer { get; set; }
-#pragma warning restore MEAI001
-
-    /// <summary>The legacy policy for an explicitly configured reducer.</summary>
-    public ReductionStoragePolicy? ReductionStoragePolicy { get; set; }
 
     /// <summary>The query page size.</summary>
     public int? MaxItemCount { get; set; }
@@ -244,7 +309,7 @@ public sealed class CosmosChatHistoryProviderOptions
     /// <summary>Total batch operations (2..100), including one metadata operation.</summary>
     public int? MaxBatchSize { get; set; }
 
-    /// <summary>Optional latest-message limit, bypassing reduction when specified.</summary>
+    /// <summary>Optional latest-message read limit; does not modify storage and cannot be combined with compaction.</summary>
     public int? MaxMessagesToRetrieve { get; set; }
 
     /// <summary>Message retention, default 24 hours; null/-1 disables expiration.</summary>
@@ -257,10 +322,9 @@ public sealed class CosmosChatHistoryProviderOptions
 
     internal CosmosChatHistoryProviderOptions Clone() => new()
     {
+        Compaction = Compaction is null ? null : Compaction with { },
         ProvideOutputMessageFilter = ProvideOutputMessageFilter,
         StoreInputMessageFilter = StoreInputMessageFilter,
-        ChatReducer = ChatReducer,
-        ReductionStoragePolicy = ReductionStoragePolicy,
         MaxItemCount = MaxItemCount,
         MaxBatchSize = MaxBatchSize,
         MaxMessagesToRetrieve = MaxMessagesToRetrieve,

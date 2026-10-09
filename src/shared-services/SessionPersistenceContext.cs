@@ -1,5 +1,6 @@
 using System.Text.Json.Serialization;
 using Microsoft.Agents.AI;
+using Microsoft.Extensions.AI;
 
 namespace SharedServices;
 
@@ -67,6 +68,13 @@ public sealed record SessionPersistenceContext
     [JsonPropertyName("activeHistory")]
     public HistoryReference ActiveHistory { get; }
 
+    // Live invocation state only. Serialization must not retain prepared work or background tickets.
+    [JsonIgnore]
+    internal PreparedHistoryCompaction? PreparedCompaction { get; init; }
+
+    [JsonIgnore]
+    internal PendingHistoryCompaction? PendingCompaction { get; init; }
+
     /// <summary>Initializes new state before history is used; the history id is generated server-side.</summary>
     public static SessionPersistenceContext Create(SessionStorageAddress initialAddress)
     {
@@ -105,9 +113,17 @@ public sealed record SessionPersistenceContext
         {
             throw new ArgumentOutOfRangeException(nameof(history), StorageErrors.Get("InvalidRevision"));
         }
-        return new(AgentId, history);
+        var sameConversation = history.ConversationId == ActiveHistory.ConversationId;
+        return new(AgentId, history)
+        {
+            PreparedCompaction = sameConversation ? PreparedCompaction : null,
+            PendingCompaction = sameConversation ? PendingCompaction : null
+        };
     }
 }
+
+internal sealed record PreparedHistoryCompaction(
+    HistoryReference Source, IReadOnlyList<ChatMessage> Messages, string OperationId, HistoryCompactionOptions Options);
 
 /// <summary>
 /// Explicit StateBag entry point shared by the session store and history provider. The provider
@@ -149,4 +165,10 @@ public static class SessionPersistenceState
         var context = GetRequired(session);
         s_state.SaveState(session, context.WithHistory(history));
     }
+
+    internal static void SetPendingCompaction(AgentSession session, PendingHistoryCompaction? pending) =>
+        s_state.SaveState(session, GetRequired(session) with { PendingCompaction = pending });
+
+    internal static void SetPreparedCompaction(AgentSession session, PreparedHistoryCompaction? prepared) =>
+        s_state.SaveState(session, GetRequired(session) with { PreparedCompaction = prepared });
 }

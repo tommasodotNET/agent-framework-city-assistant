@@ -121,10 +121,42 @@ public static class CosmosAgentSessionStoreExtensions
     {
         ArgumentNullException.ThrowIfNull(builder);
 
+        return builder.WithCosmosSessionStore((sp, _) => sp.GetRequiredService<CosmosAgentSessionStore>());
+    }
+
+    /// <summary>Attaches an existing store to this hosted agent without a global store registration.</summary>
+    /// <remarks>
+    /// Uses the same isolation policy as the parameterless overload. The caller owns the store's
+    /// Cosmos client; sharing a store does not share sessions between distinct agent ids.
+    /// </remarks>
+    public static IHostedAgentBuilder WithCosmosSessionStore(
+        this IHostedAgentBuilder builder, CosmosAgentSessionStore store)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(store);
+
+        return builder.WithCosmosSessionStore((_, _) => store);
+    }
+
+    /// <summary>Creates a store for this hosted agent using standard MAF hosting and dependency injection.</summary>
+    /// <remarks>
+    /// The factory receives the service provider and registered agent name. It is evaluated lazily
+    /// once per hosted store (singleton), independently of the agent's lifetime. Use it to select
+    /// a shared client/container and retention per agent without Aspire or global store options.
+    /// The existing anonymous-warning and strict authenticated-isolation policies always apply.
+    /// </remarks>
+    public static IHostedAgentBuilder WithCosmosSessionStore(
+        this IHostedAgentBuilder builder,
+        Func<IServiceProvider, string, CosmosAgentSessionStore> createStore)
+    {
+        ArgumentNullException.ThrowIfNull(builder);
+        ArgumentNullException.ThrowIfNull(createStore);
+
         return builder.WithSessionStore(
             (sp, agentName) =>
             {
-                var store = sp.GetRequiredService<CosmosAgentSessionStore>();
+                var store = createStore(sp, agentName);
+                ArgumentNullException.ThrowIfNull(store);
                 var isolationKeyProvider = sp.GetService<AgentIsolationKeyProvider>();
 
                 IsolationKeyScopedAgentSessionStoreOptions options;

@@ -1,4 +1,5 @@
 using Microsoft.Agents.AI;
+using Microsoft.Extensions.AI;
 using SharedServices;
 
 namespace SharedServices.Tests;
@@ -152,4 +153,38 @@ public class SessionPersistenceContextTests
 
         Assert.NotEqual(text.ActiveHistory.ConversationId, voice.ActiveHistory.ConversationId);
     }
+
+    [Fact]
+    public void PendingJobIsLiveOnlyAndDoesNotRoundTrip()
+    {
+        var session = new TestAgentSession();
+        var original = SessionPersistenceState.Initialize(session, SessionStorageAddress.Create("agent", "id"));
+        var pending = Pending(original.ActiveHistory);
+        SessionPersistenceState.SetPendingCompaction(session, pending);
+        SessionPersistenceState.SetHistory(session, original.ActiveHistory.WithRevision(1));
+        var restored = new TestAgentSession(AgentSessionStateBag.Deserialize(session.StateBag.Serialize()));
+
+        Assert.Equal(pending, SessionPersistenceState.GetRequired(session).PendingCompaction);
+        Assert.Null(SessionPersistenceState.GetRequired(restored).PendingCompaction);
+        Assert.Equal(1, restored.StateBag.Count);
+    }
+
+    [Fact]
+    public void OldSnapshotsWithoutPendingFieldRemainValid()
+    {
+        var json = """{"agentId":"agent","activeHistory":{"scopeKey":"[\"anonymous\",\"id\"]","conversationId":"history","revision":1}}""";
+        var state = System.Text.Json.JsonSerializer.Deserialize<SessionPersistenceContext>(json);
+
+        Assert.NotNull(state);
+        Assert.Null(state.PendingCompaction);
+        Assert.DoesNotContain("pendingCompaction", System.Text.Json.JsonSerializer.Serialize(state), StringComparison.Ordinal);
+    }
+
+    private static PendingHistoryCompaction Pending(HistoryReference source) =>
+        new(source,
+            new HistoryCompactionRequest("agent", "source-binding", [new ChatMessage(ChatRole.User, "message")],
+                new HistoryCompactionOptions { CompactorKey = "background", Mode = HistoryCompactionMode.Background }),
+            new HistoryCompactionTicket("job", "source-binding"),
+            Guid.NewGuid().ToString("N"),
+            new Moq.Mock<IHistoryCompactor>().Object);
 }

@@ -2,6 +2,7 @@ using System.Net;
 using System.Text;
 using System.Text.Json;
 using Microsoft.Azure.Cosmos;
+using Moq;
 
 namespace SharedServices.Tests;
 
@@ -49,6 +50,37 @@ public class SessionCosmosRepositoryTests
         Assert.Equal(("loaded", address.ToPartitionKey(), "città"),
             (result!.Version.ETag, Assert.Single(sdk.Requests).Partition,
                 result.Document.SerializedSession.GetProperty("unknown").GetProperty("unicode").GetString()));
+    }
+
+    [Fact]
+    public async Task ReadAcceptsANonSeekableResponseAndDisposesIt()
+    {
+        var sdk = new SessionCosmosSdkFixture();
+        var address = SessionStorageAddress.Create("agent", "nonseekable");
+        var stream = new NonSeekableReadStream(Document(address).SerializeToUtf8Bytes());
+        var response = new ResponseMessage(HttpStatusCode.OK) { Content = stream };
+        response.Headers["etag"] = "loaded";
+        sdk.Container.Setup(container => container.ReadItemStreamAsync(address.DocumentId,
+            address.ToPartitionKey(), It.IsAny<ItemRequestOptions>(), It.IsAny<CancellationToken>()))
+            .ReturnsAsync(response);
+
+        var result = await sdk.Repository.ReadAsync(address);
+
+        Assert.Equal("città", result!.Document.SerializedSession.GetProperty("unknown").GetProperty("unicode").GetString());
+        Assert.Equal("loaded", result.Version.ETag);
+        Assert.False(stream.CanRead);
+    }
+
+    private sealed class NonSeekableReadStream(byte[] bytes) : MemoryStream(bytes, writable: false)
+    {
+        public override bool CanSeek => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position
+        {
+            get => throw new NotSupportedException();
+            set => throw new NotSupportedException();
+        }
+        public override long Seek(long offset, SeekOrigin loc) => throw new NotSupportedException();
     }
 
     [Fact]

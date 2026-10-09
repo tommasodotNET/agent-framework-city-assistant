@@ -430,31 +430,6 @@ public class HistoryRepositoryTests
         Assert.Equal(-1, fixture.Documents.Single(document => document.GetProperty("type").GetString() == "HistoryHead").GetProperty("ttl").GetInt32());
     }
 
-    [Fact]
-    public async Task ArchivesRetainMessagesPermanently()
-    {
-        var fixture = new HistoryCosmosFixture();
-        var repository = fixture.CreateRepository();
-        var write = await repository.AppendAsync(NewReference(), [new(ChatRole.User, "one")], 604800);
-
-        await repository.ArchiveAsync(write.Reference, new(write.Reference.ScopeKey, "archive"));
-
-        Assert.All(fixture.Documents.Where(document => document.GetProperty("conversationId").GetString() == "archive"),
-            document => Assert.Equal(-1, document.GetProperty("ttl").GetInt32()));
-    }
-
-    [Fact]
-    public async Task FailedArchiveDoesNotClearSourceMessages()
-    {
-        var fixture = new HistoryCosmosFixture();
-        var repository = fixture.CreateRepository();
-        var write = await repository.AppendAsync(NewReference(), [new(ChatRole.User, "one")]);
-        fixture.BatchFailures[2] = HttpStatusCode.BadRequest;
-        await Assert.ThrowsAsync<InvalidOperationException>(() => repository.ArchiveAsync(write.Reference, new(write.Reference.ScopeKey, "archive")));
-
-        Assert.Equal(1, await repository.CountAsync(write.Reference));
-    }
-
     [Theory]
     [InlineData(0)]
     [InlineData(-2)]

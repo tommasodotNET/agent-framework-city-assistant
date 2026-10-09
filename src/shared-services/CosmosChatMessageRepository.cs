@@ -18,6 +18,9 @@ public sealed class CosmosChatMessageRepository
     private const int PayloadBudget = 1_800_000;
     private const int OperationOverhead = 1024;
     private const int HeadBudget = 65_536;
+    private const string Preparing = "preparing";
+    private const string Ready = "ready";
+    private const string Retired = "retired";
     private static readonly ConditionalWeakTable<Container, SchemaGate> s_schemaGates = new();
     private readonly Container _container;
     private readonly ILogger _logger;
@@ -117,20 +120,206 @@ public sealed class CosmosChatMessageRepository
     }
 
     /// <summary>
-    /// Copies the source into an explicitly supplied, new history with permanent message/head TTL.
-    /// Does not delete the source; this is not an atomic cross-partition move.
+    /// Stages a create-only, same-scope candidate, then publishes it by retiring the exact source
+    /// through an ETag CAS. Source messages and TTLs are never touched. The target starts at revision 1.
+    /// operationId is scoped to the history scope and must be Guid.NewGuid().ToString("N"),
+    /// retained across retries for this operation. Pass the configured TTL explicitly
+    /// (normally 86400); null and -1 retain messages permanently, as in AppendAsync.
+    /// A matching complete candidate may retry publication; a matching published target is returned
+    /// only while unadvanced. Partial candidates, reused ids with different bindings, and competing
+    /// writes conflict explicitly. No cleanup, cross-partition rollback or snapshot save is performed.
     /// </summary>
-    public async Task<HistoryWriteResult> ArchiveAsync(
-        HistoryReference source, HistoryStorageAddress target, Action<HistoryReference>? onCommitted = null,
-        CancellationToken cancellationToken = default)
+    public async Task<HistoryReference> RotateAsync(
+        HistoryReference expectedSource, IReadOnlyList<ChatMessage> compactedMessages,
+        int? messageTtlSeconds, string operationId, CancellationToken cancellationToken = default)
     {
-        ArgumentNullException.ThrowIfNull(source);
-        ArgumentNullException.ThrowIfNull(target);
-        if (source.ToAddress() == target || source.ScopeKey != target.ScopeKey)
-            throw new ArgumentException(StorageErrors.Get("IncompatibleContext"), nameof(target));
-        var messages = await ReadAsync(source, cancellationToken: cancellationToken).ConfigureAwait(false);
-        return await AppendAsync(new(target.ScopeKey, target.ConversationId, 0), messages.Messages, -1, onCommitted, cancellationToken).ConfigureAwait(false);
+        ArgumentNullException.ThrowIfNull(expectedSource);
+        ArgumentNullException.ThrowIfNull(compactedMessages);
+        if (!StorageSchema.IsRotationOperationId(operationId))
+            throw new ArgumentException(HistoryErrors.Get("RotationOperationId"), nameof(operationId));
+        if (compactedMessages.Count == 0)
+            throw new ArgumentException(HistoryErrors.Get("RotationEmpty"), nameof(compactedMessages));
+        var ttl = ValidateTtl(messageTtlSeconds);
+        var target = new HistoryReference(expectedSource.ScopeKey, RotationConversationId(operationId), 1);
+        if (expectedSource.ToAddress() == target.ToAddress()) throw new HistoryConcurrencyException();
+        var documents = compactedMessages.Select((message, index) =>
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            ArgumentNullException.ThrowIfNull(message);
+            return new HistoryMessageDocument
+            {
+                ScopeKey = target.ScopeKey, ConversationId = target.ConversationId,
+                Sequence = index, Timestamp = DateTimeOffset.UtcNow,
+                Message = JsonSerializer.SerializeToElement(message, HistoryJson.Options), Ttl = ttl
+            };
+        }).ToArray();
+        var chunks = Chunk(documents);
+        var binding = new HistoryRotationBinding
+        {
+            OperationId = operationId, Source = expectedSource, Target = target,
+            SnapshotHash = HistoryJson.Hash(documents.Select(document => document.Message), cancellationToken),
+            MessageCount = documents.Length, MessageTtl = ttl
+        };
+        var source = await ReadStoredHeadAsync(expectedSource.ToAddress(), cancellationToken).ConfigureAwait(false)
+            ?? throw new InvalidOperationException(HistoryErrors.Get("RotationMissingSource"));
+        if (source.Document.RotationState == Retired)
+        {
+            if (source.Document.RotationTransition != binding) throw new HistoryConcurrencyException();
+            return await ResolveRotationAsync(expectedSource, cancellationToken).ConfigureAwait(false)
+                ?? throw new HistoryConcurrencyException();
+        }
+        await ValidateActiveHeadAsync(source.Document, expectedSource, cancellationToken).ConfigureAwait(false);
+        var retired = source.Document with
+        {
+            Revision = checked(expectedSource.Revision + 1), Ttl = -1,
+            RotationState = Retired, RotationTransition = binding
+        };
+        ValidateHeadSize(retired);
+        var candidate = await ReadStoredHeadAsync(target.ToAddress(), cancellationToken).ConfigureAwait(false);
+        if (candidate is { } existing)
+        {
+            if (existing.Document.RotationCandidate != binding || existing.Document.RotationState != Ready
+                || existing.Document.Revision != target.Revision || existing.Document.NextSequence != binding.MessageCount)
+                throw new HistoryConcurrencyException();
+            var liveDocuments = await QueryDocumentsAsync(target, null, cancellationToken).ConfigureAwait(false);
+            if (liveDocuments.Count != binding.MessageCount
+                || liveDocuments.Where((document, index) => document.Sequence != index).Any()
+                || HistoryJson.Hash(liveDocuments.Select(document => document.Message), cancellationToken) != binding.SnapshotHash)
+                throw new HistoryConcurrencyException();
+            var checkedHead = await ReadStoredHeadAsync(target.ToAddress(), cancellationToken).ConfigureAwait(false);
+            if (checkedHead != existing)
+                throw new HistoryConcurrencyException();
+        }
+        else
+        {
+            var preparing = new HistoryHeadDocument
+            {
+                ScopeKey = target.ScopeKey, ConversationId = target.ConversationId,
+                RotationState = Preparing, RotationCandidate = binding
+            };
+            ValidateHeadSize(preparing);
+            string? etag = null;
+            foreach (var chunk in chunks)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                var complete = chunk[^1].Sequence + 1 == binding.MessageCount;
+                var next = preparing with
+                {
+                    NextSequence = chunk[^1].Sequence + 1,
+                    Revision = complete ? target.Revision : 0,
+                    RotationState = complete ? Ready : Preparing
+                };
+                await ExecuteRotationBatchAsync(target.ToAddress(), chunk, next, etag, cancellationToken).ConfigureAwait(false);
+                preparing = next;
+                // Read the exact committed candidate, never a latest-revision catch-up.
+                var stored = await ReadStoredHeadAsync(target.ToAddress(), cancellationToken).ConfigureAwait(false);
+                if (stored is not { } committed || committed.Document != next) throw new HistoryConcurrencyException();
+                etag = committed.ETag;
+            }
+        }
+        // Publication is this CAS alone. Its ETag was captured BEFORE staging, so an append
+        // during staging makes publication fail even if the candidate is fully persisted.
+        await ExecuteRotationBatchAsync(expectedSource.ToAddress(), [], retired, source.ETag, cancellationToken).ConfigureAwait(false);
+        return target;
     }
+
+    /// <summary>
+    /// Explicitly resolves one pure rotation for an exact stale snapshot, not a general redirect.
+    /// Returns null for a current, nonretired source (including a new revision-zero history).
+    /// Requires matching provenance and the target still at its published revision; stale sources,
+    /// unpublished/advanced/retired targets and mismatched bindings conflict. Call only at Load;
+    /// subsequent reads still verify the target revision. Append and Clear never redirect.
+    /// </summary>
+    public async Task<HistoryReference?> ResolveRotationAsync(
+        HistoryReference exactSource, CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(exactSource);
+        var stored = await ReadStoredHeadAsync(exactSource.ToAddress(), cancellationToken).ConfigureAwait(false);
+        if (stored is null)
+        {
+            if (exactSource.Revision != 0) throw new InvalidOperationException(HistoryErrors.Get("MissingHead"));
+            return null;
+        }
+        var source = stored.Value.Document;
+        if (source.RotationState != Retired)
+        {
+            await ValidateActiveHeadAsync(source, exactSource, cancellationToken).ConfigureAwait(false);
+            return null;
+        }
+        var transition = source.RotationTransition;
+        if (transition is null || transition.Source != exactSource) throw new HistoryConcurrencyException();
+        var target = await ReadStoredHeadAsync(transition.Target.ToAddress(), cancellationToken).ConfigureAwait(false);
+        if (target is not { } published || published.Document.RotationState != Ready
+            || published.Document.RotationCandidate != transition
+            || published.Document.Revision != transition.Target.Revision
+            || published.Document.NextSequence != transition.MessageCount)
+            throw new HistoryConcurrencyException();
+        return transition.Target;
+    }
+
+    private async Task ExecuteRotationBatchAsync(
+        HistoryStorageAddress address, IReadOnlyList<HistoryMessageDocument> messages,
+        HistoryHeadDocument head, string? etag, CancellationToken cancellationToken)
+    {
+        try
+        {
+            await ExecuteBatchAsync(address, messages, head, etag, delete: false, cancellationToken).ConfigureAwait(false);
+        }
+        catch (CosmosException exception) when (exception.StatusCode is HttpStatusCode.Conflict or HttpStatusCode.PreconditionFailed)
+        {
+            throw new HistoryConcurrencyException();
+        }
+    }
+
+    private async Task ExecuteBatchAsync(
+        HistoryStorageAddress address, IReadOnlyList<HistoryMessageDocument> documents,
+        HistoryHeadDocument head, string? etag, bool delete, CancellationToken cancellationToken)
+    {
+        var batch = _container.CreateTransactionalBatch(address.ToPartitionKey());
+        var streams = new List<MemoryStream>();
+        try
+        {
+            foreach (var document in documents)
+            {
+                if (delete)
+                {
+                    batch.DeleteItem(document.Id);
+                }
+                else
+                {
+                    var stream = new MemoryStream(JsonSerializer.SerializeToUtf8Bytes(document, HistoryJson.Options), writable: false);
+                    streams.Add(stream);
+                    batch.CreateItemStream(stream);
+                }
+            }
+            var headStream = new MemoryStream(JsonSerializer.SerializeToUtf8Bytes(head, HistoryJson.Options), writable: false);
+            streams.Add(headStream);
+            if (etag is null) batch.CreateItemStream(headStream);
+            else batch.ReplaceItemStream(HistoryHeadDocument.DocumentId, headStream,
+                new TransactionalBatchItemRequestOptions { IfMatchEtag = etag });
+            using var response = await batch.ExecuteAsync(cancellationToken).ConfigureAwait(false);
+            if (!response.IsSuccessStatusCode)
+            {
+                _logger.LogError("Conditional history batch failed with status {StatusCode}", response.StatusCode);
+                if (response.StatusCode is HttpStatusCode.Conflict or HttpStatusCode.PreconditionFailed
+                    || Enumerable.Range(0, response.Count).Any(index => response[index].StatusCode is HttpStatusCode.Conflict or HttpStatusCode.PreconditionFailed))
+                    throw new HistoryConcurrencyException();
+                throw new InvalidOperationException(HistoryErrors.Get("BatchFailed"));
+            }
+        }
+        finally
+        {
+            foreach (var stream in streams) stream.Dispose();
+        }
+    }
+
+    private static void ValidateHeadSize(HistoryHeadDocument head)
+    {
+        if (JsonSerializer.SerializeToUtf8Bytes(head, HistoryJson.Options).Length + OperationOverhead > HeadBudget)
+            throw new InvalidOperationException(HistoryErrors.Get("TooLarge"));
+    }
+
+    private static string RotationConversationId(string operationId) => "rotation-" + operationId;
 
     private async Task<List<HistoryMessageDocument>> ReadDocumentsAsync(
         HistoryReference reference, int? maxMessages, CancellationToken cancellationToken)
@@ -138,6 +327,15 @@ public sealed class CosmosChatMessageRepository
         ArgumentNullException.ThrowIfNull(reference);
         if (maxMessages is <= 0) throw new ArgumentOutOfRangeException(nameof(maxMessages), HistoryErrors.Get("PositiveLimit"));
         await ReadHeadAsync(reference, cancellationToken).ConfigureAwait(false);
+        var documents = await QueryDocumentsAsync(reference, maxMessages, cancellationToken).ConfigureAwait(false);
+        // This also detects writes racing the query rather than returning mixed revisions.
+        await ReadHeadAsync(reference, cancellationToken).ConfigureAwait(false);
+        return documents;
+    }
+
+    private async Task<List<HistoryMessageDocument>> QueryDocumentsAsync(
+        HistoryReference reference, int? maxMessages, CancellationToken cancellationToken)
+    {
         var select = maxMessages.HasValue ? "SELECT TOP @limit * FROM c" : "SELECT * FROM c";
         var query = MessageQuery(reference, select, maxMessages.HasValue ? " ORDER BY c.sequence DESC" : " ORDER BY c.sequence ASC");
         if (maxMessages.HasValue) query.WithParameter("@limit", maxMessages.Value);
@@ -157,8 +355,6 @@ public sealed class CosmosChatMessageRepository
                 documents.Add(document);
             }
         }
-        // This also detects writes racing the query rather than returning mixed revisions.
-        await ReadHeadAsync(reference, cancellationToken).ConfigureAwait(false);
         return documents.OrderBy(document => document.Sequence).ThenBy(document => document.Id, StringComparer.Ordinal).ToList();
     }
 
@@ -184,39 +380,7 @@ public sealed class CosmosChatMessageRepository
                     // head TTL therefore cannot safely cover all snapshots, even with a grace period.
                     Ttl = -1
                 };
-                var batch = _container.CreateTransactionalBatch(current.ToAddress().ToPartitionKey());
-                var streams = new List<MemoryStream>();
-                try
-                {
-                    foreach (var document in chunk)
-                    {
-                        if (delete) batch.DeleteItem(document.Id);
-                        else
-                        {
-                            var stream = new MemoryStream(JsonSerializer.SerializeToUtf8Bytes(document, HistoryJson.Options), writable: false);
-                            streams.Add(stream);
-                            batch.CreateItemStream(stream);
-                        }
-                    }
-                    var headStream = new MemoryStream(JsonSerializer.SerializeToUtf8Bytes(next, HistoryJson.Options), writable: false);
-                    streams.Add(headStream);
-                    if (head.ETag is null) batch.CreateItemStream(headStream);
-                    else batch.ReplaceItemStream(HistoryHeadDocument.DocumentId, headStream,
-                        new TransactionalBatchItemRequestOptions { IfMatchEtag = head.ETag });
-                    using var response = await batch.ExecuteAsync(cancellationToken).ConfigureAwait(false);
-                    if (!response.IsSuccessStatusCode)
-                    {
-                        _logger.LogError("Conditional history batch failed with status {StatusCode}", response.StatusCode);
-                        if (response.StatusCode is HttpStatusCode.Conflict or HttpStatusCode.PreconditionFailed
-                            || Enumerable.Range(0, response.Count).Any(index => response[index].StatusCode is HttpStatusCode.Conflict or HttpStatusCode.PreconditionFailed))
-                            throw new HistoryConcurrencyException();
-                        throw new InvalidOperationException(HistoryErrors.Get("BatchFailed"));
-                    }
-                }
-                finally
-                {
-                    foreach (var stream in streams) stream.Dispose();
-                }
+                await ExecuteBatchAsync(current.ToAddress(), chunk, next, head.ETag, delete, cancellationToken).ConfigureAwait(false);
                 current = current.WithRevision(next.Revision);
                 committed += chunk.Count;
                 onCommitted?.Invoke(current);
@@ -280,15 +444,24 @@ public sealed class CosmosChatMessageRepository
     private async Task<(HistoryHeadDocument Document, string? ETag)> ReadHeadAsync(HistoryReference reference, CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(reference);
-        await ValidateSchemaAsync(cancellationToken).ConfigureAwait(false);
         var address = reference.ToAddress();
-        using var response = await _container.ReadItemStreamAsync(
-            HistoryHeadDocument.DocumentId, address.ToPartitionKey(), cancellationToken: cancellationToken).ConfigureAwait(false);
-        if (response.StatusCode == HttpStatusCode.NotFound)
+        var stored = await ReadStoredHeadAsync(address, cancellationToken).ConfigureAwait(false);
+        if (stored is not { } head)
         {
             if (reference.Revision != 0) throw new InvalidOperationException(HistoryErrors.Get("MissingHead"));
             return (new() { ScopeKey = address.ScopeKey, ConversationId = address.ConversationId }, null);
         }
+        await ValidateActiveHeadAsync(head.Document, reference, cancellationToken).ConfigureAwait(false);
+        return head;
+    }
+
+    private async Task<(HistoryHeadDocument Document, string ETag)?> ReadStoredHeadAsync(
+        HistoryStorageAddress address, CancellationToken cancellationToken)
+    {
+        await ValidateSchemaAsync(cancellationToken).ConfigureAwait(false);
+        using var response = await _container.ReadItemStreamAsync(
+            HistoryHeadDocument.DocumentId, address.ToPartitionKey(), cancellationToken: cancellationToken).ConfigureAwait(false);
+        if (response.StatusCode == HttpStatusCode.NotFound) return null;
         response.EnsureSuccessStatusCode();
         var head = await JsonSerializer.DeserializeAsync<HistoryHeadDocument>(response.Content, HistoryJson.Options, cancellationToken).ConfigureAwait(false)
             ?? throw new InvalidOperationException(StorageErrors.Get("InvalidSchema"));
@@ -296,9 +469,62 @@ public sealed class CosmosChatMessageRepository
             || head.ScopeKey != address.ScopeKey || head.ConversationId != address.ConversationId
             || head.Revision < 0 || head.NextSequence < 0 || (head.Ttl != -1 && head.Ttl <= 0))
             throw new InvalidOperationException(StorageErrors.Get("InvalidSchema"));
-        if (head.Revision != reference.Revision) throw new HistoryConcurrencyException();
+        ValidateRotationMetadata(head, address);
         if (string.IsNullOrWhiteSpace(response.Headers.ETag)) throw new InvalidOperationException(StorageErrors.Get("InvalidSchema"));
         return (head, response.Headers.ETag);
+    }
+
+    private async Task ValidateActiveHeadAsync(HistoryHeadDocument head, HistoryReference reference, CancellationToken cancellationToken)
+    {
+        if (head.Revision != reference.Revision || head.RotationState is Retired or Preparing)
+            throw new HistoryConcurrencyException();
+        if (head.RotationCandidate is { } candidate)
+        {
+            var source = await ReadStoredHeadAsync(candidate.Source.ToAddress(), cancellationToken).ConfigureAwait(false);
+            if (source is not { } published || published.Document.RotationState != Retired
+                || published.Document.RotationTransition != candidate)
+                throw new HistoryConcurrencyException();
+        }
+    }
+
+    private static void ValidateRotationMetadata(HistoryHeadDocument head, HistoryStorageAddress address)
+    {
+        var candidate = head.RotationCandidate;
+        var transition = head.RotationTransition;
+        if (candidate is not null)
+        {
+            ValidateRotationBinding(candidate);
+            var validProgress = head.RotationState == Preparing
+                ? head.Revision == 0 && head.NextSequence < candidate.MessageCount
+                : head.Revision >= candidate.Target.Revision && head.NextSequence >= candidate.MessageCount;
+            if (candidate.Target.ToAddress() != address || head.NextSequence < 0 || !validProgress)
+                throw new HistoryConcurrencyException();
+        }
+        if (transition is not null)
+        {
+            ValidateRotationBinding(transition);
+            if (transition.Source.ToAddress() != address || transition.Source.Revision == long.MaxValue
+                || head.Revision != transition.Source.Revision + 1)
+                throw new HistoryConcurrencyException();
+        }
+        var valid = head.RotationState switch
+        {
+            null => candidate is null && transition is null,
+            Preparing or Ready => candidate is not null && transition is null && head.Ttl == -1,
+            Retired => transition is not null && head.Ttl == -1,
+            _ => false
+        };
+        if (!valid) throw new HistoryConcurrencyException();
+    }
+
+    private static void ValidateRotationBinding(HistoryRotationBinding binding)
+    {
+        if (binding.Source is null || binding.Target is null || !StorageSchema.IsRotationOperationId(binding.OperationId)
+            || binding.Source.ScopeKey != binding.Target.ScopeKey || binding.Source.ToAddress() == binding.Target.ToAddress()
+            || binding.Target.ConversationId != RotationConversationId(binding.OperationId) || binding.Target.Revision != 1
+            || binding.MessageCount <= 0 || (binding.MessageTtl != -1 && binding.MessageTtl <= 0)
+            || binding.SnapshotHash is not { Length: 64 } || binding.SnapshotHash.Any(character => !Uri.IsHexDigit(character)))
+            throw new HistoryConcurrencyException();
     }
 
     private async Task ValidateSchemaAsync(CancellationToken cancellationToken)

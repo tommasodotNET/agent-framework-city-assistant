@@ -256,6 +256,357 @@ cd src/orchestrator-agent && dotnet build
 cd src/a2a-orchestrator-agent && dotnet build
 ```
 
+### Persistence with standard MAF hosting (no Aspire)
+
+`SharedServices` does not require Aspire. A keyed Cosmos `Container` can come from
+ordinary DI or Aspire; existing keyed registrations remain supported. For per-agent
+composition, attach an existing `CosmosAgentSessionStore` or a store factory directly
+to `IHostedAgentBuilder`, and configure history on `ChatClientAgentOptions` using a
+`Container` or a DI container factory.
+
+For example, with an `IChatClient` already registered for the selected model:
+
+```csharp
+using Microsoft.Agents.AI;
+using Microsoft.Agents.AI.Hosting;
+using Microsoft.Azure.Cosmos;
+using Microsoft.Extensions.AI;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
+using Microsoft.Extensions.Logging;
+using SharedServices;
+
+var builder = Host.CreateApplicationBuilder(args);
+// Register the application's IChatClient before resolving the agent.
+builder.Services.AddSingleton<CosmosClient>(_ => new CosmosClient(
+    builder.Configuration.GetConnectionString("cosmos")
+        ?? throw new InvalidOperationException("Configure ConnectionStrings:cosmos.")));
+
+builder.Services.AddAIAgent("city-agent", (sp, name) =>
+{
+    var options = new ChatClientAgentOptions { Id = name, Name = name }
+        .WithCosmosChatHistoryProvider(
+            services => services.GetRequiredService<CosmosClient>()
+                .GetContainer("city", "conversations"),
+            sp,
+            history => history.MessageTtlSeconds = 86400 * 7);
+    return sp.GetRequiredService<IChatClient>().AsAIAgent(options, services: sp);
+}).WithCosmosSessionStore((sp, name) => new CosmosAgentSessionStore(
+    sp.GetRequiredService<CosmosClient>().GetContainer("city", "sessions"),
+    sp.GetRequiredService<ILogger<CosmosAgentSessionStore>>(),
+    ttl: 86400 * 7));
+```
+
+Keep credentials in application configuration/secret management, not source. Alternatively, construct
+the singleton client with the account endpoint and the application's `TokenCredential`.
+Containers must already have the documented schema and TTL settings; these helpers
+do not provision or migrate storage.
+
+The hosted store factory receives the registered agent name, runs lazily once per
+agent (singleton), and can select a different container/TTL for each agent. The
+instance overload is `.WithCosmosSessionStore(existingStore)`. Both preserve the
+existing anonymous warning and strict isolation when an `AgentIsolationKeyProvider`
+is registered. The history factory runs once when constructing that agent's options;
+it resolves the optional keyed compactor and logger through the supplied service
+provider. Direct history options do not inherit a separate global history registration.
+Shared clients/containers are never owned or disposed by these per-agent helpers.
+DI owns clients created by its singleton factory; externally supplied clients remain
+the caller's responsibility.
+Standalone extension overloads that create their own Cosmos client also dispose it
+if provider construction or configuration fails, without swallowing the original error.
+Direct provider constructors dispose an owned client if storage/dependency validation
+fails during initialization; borrowed clients remain the caller's responsibility.
+
+`WithSessionStore` configures a hosting service, not an automatic wrapper around
+arbitrary direct calls to `agent.RunAsync`. A non-HTTP application can explicitly
+use the registered hosted store:
+
+```csharp
+using var host = builder.Build();
+var agent = host.Services.GetRequiredKeyedService<AIAgent>("city-agent");
+var store = host.Services.GetRequiredKeyedService<AgentSessionStore>("city-agent");
+var key = new AgentSessionStoreKey("conversation-1");
+var session = await store.GetOrCreateSessionAsync(agent, key);
+await agent.RunAsync("Find a restaurant in Agentburg.", session);
+await store.SaveSessionAsync(agent, key, session);
+```
+
+A2A/Responses hosting integrations perform their own load/save lifecycle. A completely
+standalone agent without a session store must instead initialize
+`SessionPersistenceState` explicitly before using external history.
+
+### Optional history compaction
+
+Text history compaction is **disabled by default**. Register an
+`IHistoryCompactor` through DI and select it in the history provider's options.
+The compactor produces a candidate or an accepted-job ticket; the provider owns the Cosmos writes and
+the active-history reference.
+
+For example, this deliberately small demonstration profile retains recent turns:
+
+```csharp
+using Microsoft.Agents.AI.Compaction;
+using SharedServices;
+
+#pragma warning disable MAAI001 // Experimental MAF compaction APIs.
+builder.Services.AddHistoryCompactor("recent-turns", _ =>
+    new MafForegroundHistoryCompactor(
+        new SlidingWindowCompactionStrategy(CompactionTriggers.TurnsExceed(4))));
+#pragma warning restore MAAI001
+
+builder.Services.AddCosmosChatHistoryProvider("conversations", options =>
+{
+    options.Compaction = new HistoryCompactionOptions
+    {
+        Mode = HistoryCompactionMode.Foreground,
+        CompactorKey = "recent-turns"
+    };
+});
+```
+
+Extend the existing registration rather than registering the same history
+provider twice. Choose the trigger and algorithm for the application; these
+sample limits are not production recommendations.
+
+There is no application byte cap on the complete history. Each message is stored
+in a separate Cosmos document, so Cosmos's per-document size limit is not a limit
+on the whole conversation. The repository still validates document/batch payloads
+before writing. Structural, summary, tool/approval and concurrency checks remain.
+Full-history UTF-8 JSON sizes (including roles, contents and metadata) are retained
+as diagnostics and to verify a genuine reduction, not as a tokenizer count or a
+model-window guarantee. Compaction triggers/targets remain owned by the MAF strategy.
+
+Normal history and current-turn replies are recognized as summaries only through
+explicit MAF summary metadata. Literal assistant text such as `[Summary]` or
+`[Summary unavailable]` is not itself a generated summary. Every new assistant
+text-only message from the compactor must be nonblank and free of the unavailable
+summary sentinel, even without metadata or a summary prefix. Unchanged source messages,
+ordinary current-turn replies, and nontext tool/reasoning content are not new textual summaries.
+Each source occurrence can exempt at most one equal retained candidate message;
+additional blank/unavailable copies are new invalid output, not original history.
+The canonical source is also checked before invoking a compactor and before accepting
+a candidate. An explicitly flagged invalid persisted summary cannot be hidden by
+dropping it from the replacement; the original history stays unchanged and the error is surfaced.
+
+System/developer messages stored in history are compactable only when they form
+an initial contiguous prefix. That exact prefix must stay unchanged at the start
+of the candidate. Interleaved instructions skip compaction with a diagnostic;
+the original history remains usable and new turns are appended normally. Agent
+instructions configured outside stored history are unaffected.
+
+Any supported MAF `CompactionStrategy`, including a pipeline or a summarization
+strategy with a separately injected chat client, can be supplied. The foreground
+adapter uses the public ad-hoc MAF API and its default token estimate; it does
+not depend on internal index factories or keep an index in the session snapshot.
+
+When compaction changes history, foreground Load prepares and validates a detached
+candidate without writing to Cosmos or changing the active history. Only a successful
+Save writes the candidate plus the exact filtered new turn to a new conversation
+and conditionally retires the original. Original messages retain their TTLs.
+The external continuation id is unchanged; the normal hosting layer saves the
+updated session. Concurrent writes fail explicitly. Recovery can follow only one
+exact published, unadvanced target; after a failed session checkpoint that target
+can include an unacknowledged turn, without restoring newer skill/session state or
+deduplicating a resent request. See the
+[compaction architecture](.github/architecture.md#retention-and-history-compaction)
+for publication, recovery and remaining cross-container consistency limitations.
+
+Without compaction, `MaxMessagesToRetrieve` optionally returns only the latest
+N messages in chronological order without deleting or rewriting persisted history.
+It must be positive when set; `null` loads the complete history. This is a
+message-count window, not a token budget or a guarantee of complete tool groups.
+Compaction is the only supported history-reduction mechanism.
+
+Do not combine compaction with `MaxMessagesToRetrieve`: the compactor must read
+the complete history. The provider supports both execution lifecycles:
+
+| Mode | At Load | At Save |
+|---|---|---|
+| `Foreground` | Await and validate `Unchanged`/`Completed`; use a detached candidate for inference, without publishing it | Publish candidate + exact filtered new messages once, or append normally when no candidate was prepared |
+| `Background` | Start best-effort work and keep the ticket only for this invocation; inference uses the original history | Poll until `BackgroundSaveWaitTimeout`; publish result + current turn when ready, otherwise append normally |
+
+Foreground preparation and the background ticket/request are transient `[JsonIgnore]`
+values inside the existing `SessionPersistenceContext`, not durable jobs or additional
+StateBag entries. A model failure, restart, or Save timeout leaves the source history
+intact. The next Load starts fresh work when compaction is still needed. Calls on the
+same `AgentSession` must not overlap.
+
+The simple MAF provider hooks retain their default error handling and storage filters:
+history supplied to inference is not appended again. The output filter affects only the
+model view, not the canonical candidate. Context-provider state, tools and instructions
+are not copied into history; a contributed `ChatMessage` still follows MAF's normal
+request filtering policy. Intermediate tool/approval Saves may publish a prevalidated
+complete prefix plus an unchanged pending exchange. That suffix is never compacted;
+the repository's individual document/batch limits still apply.
+Target staging, source CAS publication and the normal hosted session checkpoint remain
+separate operations, not a single atomic write.
+
+Each Load prepares one model-history view. Approval-only messages are omitted only
+when a matching, complete contiguous function call/result exchange proves they are
+consumed. Proof uses the same exchange validator as compaction, including roles,
+unique call ids and complete parallel results; a matching result id alone is insufficient.
+Partial/malformed exchanges keep all existing approval records and flags unchanged,
+with an explicit diagnostic. Denied or nonmatching calls are not marked consumed.
+Compaction rejects denied approvals even if their nested call already carries an
+informational flag and a matching execution exists. Pending,
+denied, mixed-content and ambiguous approval messages remain. Actual tool calls and
+results remain too; no source documents are deleted or rewritten. The compactor
+receives a detached copy of this same view, not a separately filtered transcript.
+Completed background results are validated against that exact filtered view.
+
+The built-in `test-sliding-window` and `summary` profiles wrap
+`MafForegroundHistoryCompactor` in `LocalBackgroundHistoryCompactor` when
+`Mode` is `Background`. This worker is deliberately best-effort and in-process:
+it does not survive a restart or move across replicas. `BackgroundSaveWaitTimeout`
+defaults to two seconds and may be set to zero for one immediate result check.
+If the result is still pending, missing, failed, or invalid, Save requests
+`CancelAsync(ticket)`, discards the live ticket, and appends the current turn normally.
+The same ticket identifies both retrieval and cancellation; no additional id or
+session field is needed. Cancellation signals the worker without awaiting its
+completion, so a strategy ignoring cancellation cannot delay Save. A later Load
+starts a new job. No user message is dropped merely because compaction missed
+its deadline. New Load, Clear, and caller cancellation during Save also abandon outstanding work.
+
+The local worker's five-minute cleanup window starts only after the task terminates,
+not at enqueue. It covers orphan results, not running jobs or Save's two-second wait.
+Retrieval or cancellation immediately signals release and stops that retention delay,
+including removal that races its creation; consumed results are not kept for five minutes.
+Cancellation is cooperative; stopping the local request does not guarantee that
+the remote model service stops processing immediately.
+
+Custom background implementations still use the same `IHistoryCompactor` contract,
+advertise `Background` in `SupportedModes`, and implement `GetResultAsync` and
+idempotent `CancelAsync` without waiting for the worker to finish.
+Voice compaction remains out of scope.
+
+The five text hosts also accept an explicit `HistoryCompaction` configuration
+section. An absent/empty section or `Enabled=false` leaves the feature off:
+
+Each enabled built-in `AddHistoryCompactionProfile` call registers its own compactor
+and, for `summary`, dedicated client under private invocation-specific keys. Multiple
+agents in one service collection can use independent models, modes, triggers, targets
+and preservation settings, even with the same built-in kind. Configuration
+`CompactorKey` still selects `summary` or `test-sliding-window`; the returned options
+contain the generated DI key. Pass that returned options object to the relevant
+history provider rather than reconstructing it with the configured kind.
+Custom compactor keys remain unchanged and refer to your explicit keyed registrations.
+
+```json
+{
+  "HistoryCompaction": {
+    "Enabled": true,
+    "Mode": "Foreground",
+    "CompactorKey": "test-sliding-window",
+    "MaxTurns": 4
+  }
+}
+```
+
+These values can also be passed to an agent process as environment variables,
+for example `HistoryCompaction__Enabled=true`. The built-in
+`test-sliding-window` profile is model-free and requires `MaxTurns`; it is meant
+for controlled tests. `MaxTurns` follows MAF's turn grouping, not a guaranteed
+number of human requests: user-role approval responses can consume the window.
+In the skills UI, a two-turn window can remove the latest human prompt and its
+constraints while retaining tool output. Do not treat this test profile as a
+production policy for preserving recent user intent.
+For real LLM summarization, the same five text hosts support the opt-in `summary`
+profile using the public MAF `SummarizationCompactionStrategy` through
+`MafForegroundHistoryCompactor`:
+
+```json
+{
+  "HistoryCompaction": {
+    "Enabled": true,
+    "CompactorKey": "summary",
+    "Mode": "Foreground",
+    "Model": "gpt-5.4-mini",
+    "TriggerTokens": 24000,
+    "TargetTokens": 12000,
+    "MinimumPreservedGroups": 6,
+    "Timeout": "00:01:30"
+  }
+}
+```
+
+The dedicated summary client retains MAF's system prompt and appends a final
+instruction to summarize the preceding transcript rather than answer its historical
+requests. That instruction exists only in the summarizer request, never in persisted
+conversation history. This improves task framing; it does not guarantee semantic
+fidelity, which still needs workload-specific evaluation.
+
+To use this profile in the local background worker, set `"Mode": "Background"`.
+`"BackgroundSaveWaitTimeout": "00:00:02"` explicitly sets the default Save wait;
+the same setting is available as `HistoryCompaction__BackgroundSaveWaitTimeout`.
+
+If an agent response finishes without any non-whitespace text, the chat UI reports
+`empty_response` instead of silently returning to idle. It does not retry the request:
+tools may already have executed. Empty intermediate streaming events remain valid.
+Streaming message/status text is accepted only with the agent role; user echoes
+and unspecified roles cannot count as answers. Status context updates and text
+artifacts remain supported.
+Non-streaming history fallback considers only agent messages after the latest user
+message. Older replies never stand in for an empty current answer. If no user boundary
+is present in history, only agent status text or artifacts can supply the response.
+
+These are explicit example/calibration values, not production defaults or a model-window
+limit. Measure the actual tool-heavy workload before selecting a threshold and preservation
+floor. Nothing is enabled in checked-in appsettings. `Model` (deployment name),
+positive `TriggerTokens`, and positive `MinimumPreservedGroups` are required; invalid
+configuration fails before inference. `Mode` defaults to `Foreground`, and omitting
+the timeout leaves it disabled. Recent groups are MAF atomic message/tool
+groups, **not human turns**. The floor can prevent reduction even above the trigger;
+there is no guarantee the result fits a model context window.
+
+Optional `TargetTokens` must be positive and strictly less than `TriggerTokens`.
+It passes MAF's native target predicate `index.IncludedTokenCount <= TargetTokens`:
+once triggered, MAF selects older groups for summarization until the retained-history
+estimate reaches that target or the preserved-group floor prevents further reduction.
+Omitting it (or setting it to `null`) retains MAF's default inverse-trigger target.
+A lower target can leave more room before the next trigger, instead of summarizing
+only enough history to fall just below it. The target is evaluated **before the new
+summary is added**, so even estimated final history can exceed it; this is not a
+guaranteed exact budget, output-size cap, or a separate hysteresis mechanism.
+
+`TriggerTokens` compares MAF's **estimated included-history tokens** (default content
+bytes / 4 per group). It excludes instructions/tools added outside stored history,
+the new input and reserved output; it is not exact tokenizer usage or a full-prompt budget.
+Set `Logging:LogLevel:SharedServices.MafForegroundHistoryCompactor` to `Debug` to
+inspect the structured `EstimatedHistoryTokens` and `TriggerTokens` diagnostics.
+For offline calibration, a no-op public MAF strategy can observe
+`index.IncludedTokenCount` through its trigger when run via `CompactionProvider.CompactAsync`;
+no internal index factory is needed.
+
+Each host passes a lazy factory to `AddHistoryCompactionProfile` that creates a
+dedicated `ChatCompletionsClient.AsIChatClient(Model)` adapter from its existing
+Azure Inference client. It uses the same `foundry` endpoint/credential registration
+(`Aspire:Azure:AI:Inference` / `ConnectionStrings:foundry`, with the existing
+`DefaultAzureCredential` configuration), but **never** resolves the agent's wrapped
+`IChatClient` or falls back to `AI:ChatModel`. The adapter has no function-invoking,
+agent history, or compaction middleware. MAF receives old tool calls/results as history,
+not as executable tools; the native system prompt and the final task instruction ask
+for key facts, preferences and tool outcomes to be preserved. Only use a trusted summarization deployment: summary content becomes
+persisted assistant history. DI owns the adapter; a missing/disabled profile creates
+no extra client. Summaries are lossy and require realistic recall testing.
+
+Other keys must be supplied through a normal keyed DI registration.
+`Timeout` optionally accepts a positive TimeSpan for cooperative
+foreground execution or each background enqueue/retrieval call;
+it does not abandon a plugin task that ignores cancellation. The local background
+adapter additionally passes this timeout to its foreground worker, so a small value
+also limits local summarization time. Remote job deadlines belong to the custom compactor.
+Save's separate
+deadline cancels that worker through its ticket rather than awaiting its completion.
+An independent compactor/SDK cancellation with the caller token still active is
+logged as a compactor failure and uses the validated original-history fallback;
+actual caller cancellation and Save's deadline retain their existing semantics.
+
+The existing hierarchical container schemas are retained. Rotation adds optional
+control metadata rather than changing partition keys. Update every writer before
+enabling compaction: an older application does not understand retired history.
+The feature does not migrate or delete existing histories.
+
 ### Persistence regression tests
 
 ```powershell

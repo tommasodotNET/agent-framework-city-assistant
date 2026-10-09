@@ -5,6 +5,7 @@ using System.Runtime.CompilerServices;
 using System.Security.Claims;
 using System.Text.Json;
 using Microsoft.Agents.AI;
+using Microsoft.Agents.AI.Compaction;
 using Microsoft.Agents.AI.Hosting;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
@@ -342,6 +343,269 @@ public sealed class ProtocolPersistenceTests
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Foreground_compaction_preserves_protocol_continuation_and_original_history(bool responses)
+    {
+        var cosmos = new SessionCosmosSdkFixture();
+        var history = new HistoryCosmosFixture();
+        string? previous = null;
+        const string contextId = "foreground-session";
+        string? originalConversation = null;
+        await using (var host = await ProtocolHost.StartAsync(cosmos: cosmos, history: history,
+            historyProviderFactory: CompactingHistory))
+        {
+            for (var turn = 1; turn <= 4; turn++)
+            {
+                if (responses)
+                {
+                    var response = await host.CreateResponseAsync($"question-{turn}", previousResponseId: previous);
+                    previous = response.GetProperty("id").GetString()!;
+                }
+                else
+                {
+                    await host.SendA2AAsync(contextId, $"question-{turn}");
+                    await WaitForRepositoryWritesAsync(cosmos, turn);
+                }
+                if (turn == 1)
+                {
+                    originalConversation = history.Documents.Single(document =>
+                        document.GetProperty("type").GetString() == "HistoryHead").GetProperty("conversationId").GetString();
+                }
+            }
+
+            Assert.DoesNotContain(host.Model.Inputs.Last(), message => message.Text == "question-1");
+            Assert.Contains(host.Model.Inputs.Last(), message => message.Text == "question-2");
+            Assert.Contains(host.Model.Inputs.Last(), message => message.Text == "question-4");
+            Assert.Equal(6, history.Documents.Count(document =>
+                document.GetProperty("type").GetString() == "ChatMessage"
+                && document.GetProperty("conversationId").GetString() == originalConversation));
+            Assert.Equal(2, history.Documents.Count(document => document.GetProperty("type").GetString() == "HistoryHead"));
+        }
+
+        // A new application host has no reference to the first host's working AgentSession.
+        await using var restarted = await ProtocolHost.StartAsync(cosmos: cosmos, history: history,
+            historyProviderFactory: CompactingHistory);
+        if (responses)
+        {
+            await restarted.CreateResponseAsync("question-5", previousResponseId: previous);
+        }
+        else
+        {
+            await restarted.SendA2AAsync(contextId, "question-5");
+            await WaitForRepositoryWritesAsync(cosmos, 5);
+        }
+        Assert.Contains(restarted.Model.Inputs.Last(), message => message.Text == "question-4");
+        Assert.Contains(restarted.Model.Inputs.Last(), message => message.Text == "question-5");
+        Assert.DoesNotContain(restarted.Model.Inputs.Last(), message => message.Text == "question-1");
+        Assert.Equal(3, history.Documents.Count(document => document.GetProperty("type").GetString() == "HistoryHead"));
+    }
+
+    [Fact]
+    public async Task Foreground_Response_conversation_aliases_save_rotated_state_without_extra_checkpoints()
+    {
+        var cosmos = new SessionCosmosSdkFixture();
+        var history = new HistoryCosmosFixture();
+        await using var host = await ProtocolHost.StartAsync(cosmos: cosmos, history: history,
+            historyProviderFactory: CompactingHistory);
+        var conversationId = await host.CreateConversationAsync();
+        for (var turn = 1; turn <= 4; turn++)
+            await host.CreateResponseAsync($"turn-{turn}", conversationId: conversationId, store: false);
+
+        var writes = cosmos.Requests.Where(request => request.Operation != "read").ToArray();
+        Assert.Equal(4, writes.Length);
+        Assert.All(writes, write => Assert.Equal(conversationId,
+            JsonSerializer.Deserialize<SessionDocument>(write.Body)!.SessionId));
+        Assert.Equal(2, history.Documents.Count(document => document.GetProperty("type").GetString() == "HistoryHead"));
+        Assert.Contains(host.Model.Inputs.Last(), message => message.Text == "turn-3");
+        Assert.DoesNotContain(host.Model.Inputs.Last(), message => message.Text == "turn-1");
+    }
+
+    [Fact]
+    public async Task Failed_checkpoint_after_deferred_rotation_recovers_exact_target_but_not_its_later_append()
+    {
+        var cosmos = new SessionCosmosSdkFixture();
+        var history = new HistoryCosmosFixture();
+        await using var host = await ProtocolHost.StartAsync(cosmos: cosmos, history: history,
+            historyProviderFactory: CompactingHistory);
+        string? previous = null;
+        for (var turn = 1; turn <= 3; turn++)
+            previous = (await host.CreateResponseAsync($"turn-{turn}", previousResponseId: previous))
+                .GetProperty("id").GetString();
+
+        cosmos.WriteFailure = HttpStatusCode.ServiceUnavailable;
+        using var failed = await host.PostResponseAsync("turn-4", previousResponseId: previous);
+        Assert.False(failed.IsSuccessStatusCode);
+        Assert.Equal(2, history.Documents.Count(document => document.GetProperty("type").GetString() == "HistoryHead"));
+        cosmos.WriteFailure = null;
+        using var recovered = await host.PostResponseAsync("retry", previousResponseId: previous);
+        Assert.True(recovered.IsSuccessStatusCode);
+        Assert.Contains(host.Model.Inputs.Last(), message => message.Text == "turn-4");
+        Assert.DoesNotContain(host.Model.Inputs.Last(), message => message.Text == "turn-1");
+
+        using var stale = await host.PostResponseAsync("stale retry", previousResponseId: previous);
+        Assert.False(stale.IsSuccessStatusCode);
+        Assert.Equal(5, host.Model.Inputs.Count);
+    }
+
+    [Fact]
+    public async Task Foreground_Response_model_failure_leaves_source_and_checkpoint_intact_for_restart()
+    {
+        var cosmos = new SessionCosmosSdkFixture();
+        var history = new HistoryCosmosFixture();
+        string? previous = null;
+        await using (var host = await ProtocolHost.StartAsync(cosmos: cosmos, history: history,
+            historyProviderFactory: CompactingHistory))
+        {
+            for (var turn = 1; turn <= 3; turn++)
+                previous = (await host.CreateResponseAsync($"turn-{turn}", previousResponseId: previous))
+                    .GetProperty("id").GetString();
+            host.Model.Failure = new HttpRequestException("model unavailable");
+
+            using var failed = await host.PostResponseAsync("failed turn", previousResponseId: previous);
+
+            Assert.False(failed.IsSuccessStatusCode);
+            Assert.Equal(3, history.Batches.Count);
+            Assert.Equal(3, cosmos.CompletedWrites);
+        }
+
+        await using var restarted = await ProtocolHost.StartAsync(cosmos: cosmos, history: history,
+            historyProviderFactory: CompactingHistory);
+        await restarted.CreateResponseAsync("turn-4", previousResponseId: previous);
+        Assert.DoesNotContain(restarted.Model.Inputs.Last(), message => message.Text == "failed turn");
+        Assert.DoesNotContain(restarted.Model.Inputs.Last(), message => message.Text == "turn-1");
+        Assert.Equal(2, history.Documents.Count(document => document.GetProperty("type").GetString() == "HistoryHead"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Background_restart_starts_fresh_job_and_rotates_at_save(bool responses)
+    {
+        var cosmos = new SessionCosmosSdkFixture();
+        var history = new HistoryCosmosFixture();
+        var jobs = new ProtocolBackgroundJobs();
+        CosmosChatHistoryProvider Provider(CosmosChatMessageRepository repository) => new(repository,
+            compactor: new ProtocolBackgroundCompactor(jobs),
+            compactionOptions: new()
+            {
+                CompactorKey = "protocol-background",
+                Mode = HistoryCompactionMode.Background,
+                BackgroundSaveWaitTimeout = TimeSpan.Zero
+            });
+        const string contextId = "background-context";
+        string? previous = null;
+        var firstQuestion = new string('x', 500);
+        await using (var host = await ProtocolHost.StartAsync(cosmos: cosmos, history: history, historyProviderFactory: Provider))
+        {
+            if (responses)
+            {
+                previous = (await host.CreateResponseAsync(firstQuestion)).GetProperty("id").GetString();
+                previous = (await host.CreateResponseAsync("second", previousResponseId: previous)).GetProperty("id").GetString();
+            }
+            else
+            {
+                await host.SendA2AAsync(contextId, firstQuestion);
+                await WaitForRepositoryWritesAsync(cosmos, 1);
+                await host.SendA2AAsync(contextId, "second");
+                await WaitForRepositoryWritesAsync(cosmos, 2);
+            }
+            Assert.NotNull(jobs.Request);
+            Assert.Single(history.Documents, document => document.GetProperty("type").GetString() == "HistoryHead");
+        }
+
+        jobs.Ready = true;
+        await using var restarted = await ProtocolHost.StartAsync(cosmos: cosmos, history: history, historyProviderFactory: Provider);
+        if (responses)
+        {
+            previous = (await restarted.CreateResponseAsync("third", previousResponseId: previous)).GetProperty("id").GetString();
+            await restarted.CreateResponseAsync("fourth", previousResponseId: previous);
+        }
+        else
+        {
+            await restarted.SendA2AAsync(contextId, "third");
+            await WaitForRepositoryWritesAsync(cosmos, 3);
+            await restarted.SendA2AAsync(contextId, "fourth");
+            await WaitForRepositoryWritesAsync(cosmos, 4);
+        }
+
+        Assert.Contains(restarted.Model.Inputs.First(), message => message.Text == firstQuestion);
+        Assert.DoesNotContain(restarted.Model.Inputs.Last(), message => message.Text == firstQuestion);
+        Assert.Contains(restarted.Model.Inputs.Last(), message => message.Text == "third");
+        Assert.Contains(restarted.Model.Inputs.Last(), message => message.Text == "summary");
+        Assert.Equal(3, history.Documents.Count(document => document.GetProperty("type").GetString() == "HistoryHead"));
+    }
+
+    [Fact]
+    public async Task Background_conversation_aliases_keep_store_false_checkpoint_semantics()
+    {
+        var cosmos = new SessionCosmosSdkFixture();
+        var history = new HistoryCosmosFixture();
+        var jobs = new ProtocolBackgroundJobs();
+        await using var host = await ProtocolHost.StartAsync(cosmos: cosmos, history: history,
+            historyProviderFactory: repository => new(repository,
+                compactor: new ProtocolBackgroundCompactor(jobs),
+                compactionOptions: new()
+                {
+                    CompactorKey = "background",
+                    Mode = HistoryCompactionMode.Background,
+                    BackgroundSaveWaitTimeout = TimeSpan.Zero
+                }));
+        var conversationId = await host.CreateConversationAsync();
+        await host.CreateResponseAsync(new string('x', 500), conversationId: conversationId, store: false);
+        await host.CreateResponseAsync("second", conversationId: conversationId, store: false);
+        jobs.Ready = true;
+        await host.CreateResponseAsync("third", conversationId: conversationId, store: false);
+        await host.CreateResponseAsync("fourth", conversationId: conversationId, store: false);
+
+        var writes = cosmos.Requests.Where(request => request.Operation != "read").ToArray();
+        Assert.Equal(4, writes.Length);
+        Assert.All(writes, write => Assert.Equal(conversationId, JsonSerializer.Deserialize<SessionDocument>(write.Body)!.SessionId));
+        Assert.Contains(host.Model.Inputs.Last(), message => message.Text == "summary");
+        Assert.Contains(host.Model.Inputs.Last(), message => message.Text == "third");
+        Assert.Equal(3, history.Documents.Count(document => document.GetProperty("type").GetString() == "HistoryHead"));
+    }
+
+    private sealed class ProtocolBackgroundJobs
+    {
+        public HistoryCompactionRequest? Request { get; set; }
+        public bool Ready { get; set; }
+    }
+
+    private sealed class ProtocolBackgroundCompactor(ProtocolBackgroundJobs jobs) : IHistoryCompactor
+    {
+        public IReadOnlySet<HistoryCompactionMode> SupportedModes { get; } =
+            new HashSet<HistoryCompactionMode> { HistoryCompactionMode.Background };
+        public Task<HistoryCompactionResult> CompactAsync(HistoryCompactionRequest request, CancellationToken cancellationToken = default)
+        {
+            jobs.Request = request;
+            return Task.FromResult(HistoryCompactionResult.Pending(new("protocol-job", request.SourceBinding)));
+        }
+        public Task<HistoryCompactionResult> GetResultAsync(HistoryCompactionTicket ticket, CancellationToken cancellationToken = default)
+        {
+            if (jobs.Request is not { } request || ticket != new HistoryCompactionTicket("protocol-job", request.SourceBinding))
+                throw new InvalidOperationException("The accepted job is no longer available.");
+            ChatMessage[] summary = [new(ChatRole.User, "summary")];
+            return Task.FromResult(jobs.Ready
+                ? new HistoryCompactionResult(HistoryCompactionStatus.Completed, ticket.SourceBinding, summary,
+                    HistoryCompactionValidation.Measure(request.Messages), HistoryCompactionValidation.Measure(summary))
+                : HistoryCompactionResult.Pending(ticket));
+        }
+
+        public Task CancelAsync(HistoryCompactionTicket ticket, CancellationToken cancellationToken = default) =>
+            Task.CompletedTask;
+    }
+
+    private static CosmosChatHistoryProvider CompactingHistory(CosmosChatMessageRepository repository) =>
+        new(repository,
+            compactor: new MafForegroundHistoryCompactor(new SlidingWindowCompactionStrategy(
+                CompactionTriggers.TurnsExceed(2), minimumPreservedTurns: 2)),
+            compactionOptions: new HistoryCompactionOptions
+            {
+                CompactorKey = "protocol-sliding"
+            });
+
     private static string CallerScope(string caller) =>
         StorageScope.Create("ignored", new Dictionary<string, string> { ["isolation"] = caller });
 
@@ -355,7 +619,8 @@ public sealed class ProtocolPersistenceTests
 
         public static async Task<ProtocolHost> StartAsync(bool withIsolation = false,
             ConcurrentDictionary<SessionStorageAddress, JsonElement>? snapshots = null,
-            SessionCosmosSdkFixture? cosmos = null, HistoryCosmosFixture? history = null)
+            SessionCosmosSdkFixture? cosmos = null, HistoryCosmosFixture? history = null,
+            Func<CosmosChatMessageRepository, CosmosChatHistoryProvider>? historyProviderFactory = null)
         {
             var builder = WebApplication.CreateBuilder();
             builder.WebHost.UseTestServer();
@@ -375,7 +640,9 @@ public sealed class ProtocolPersistenceTests
                 {
                     Id = key,
                     Name = key,
-                    ChatHistoryProvider = history is null ? null : new CosmosChatHistoryProvider(history.CreateRepository())
+                    ChatHistoryProvider = history is null ? null
+                        : historyProviderFactory?.Invoke(history.CreateRepository())
+                            ?? new CosmosChatHistoryProvider(history.CreateRepository())
                 }));
             if (cosmos is null)
             {
@@ -544,12 +811,14 @@ public sealed class ProtocolPersistenceTests
     {
         public ConcurrentQueue<ChatMessage[]> Inputs { get; } = new();
         public TaskCompletionSource? Pause { get; set; }
+        public HttpRequestException? Failure { get; set; }
 
         public async Task<ChatResponse> GetResponseAsync(IEnumerable<ChatMessage> messages, ChatOptions? options = null,
             CancellationToken cancellationToken = default)
         {
             Inputs.Enqueue(messages.ToArray());
             if (Pause is not null) await Pause.Task.WaitAsync(cancellationToken);
+            if (Failure is { } failure) throw failure;
             return new ChatResponse(new ChatMessage(ChatRole.Assistant, "deterministic answer"))
             {
                 ResponseId = Guid.NewGuid().ToString("N"),

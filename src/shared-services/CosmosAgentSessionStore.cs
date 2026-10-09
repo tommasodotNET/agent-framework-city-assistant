@@ -8,7 +8,7 @@ using Microsoft.Extensions.Logging;
 
 namespace SharedServices;
 
-/// <summary>Per-host snapshot retention configuration, also consumed by history metadata retention.</summary>
+/// <summary>Per-host snapshot retention configuration, independent of history metadata retention.</summary>
 public sealed class CosmosAgentSessionStoreOptions
 {
     /// <summary>Session TTL in seconds; -1 preserves the default of no expiration.</summary>

@@ -1,5 +1,6 @@
 using A2A;
 using A2A.AspNetCore;
+using Azure.AI.Inference;
 using Azure.Identity;
 using Microsoft.Agents.AI;
 using Microsoft.Agents.AI.Hosting;
@@ -65,7 +66,10 @@ builder.AddKeyedAzureCosmosContainer("conversations",
 
 // Register session store and chat history provider
 builder.Services.AddCosmosAgentSessionStore("sessions");
-builder.Services.AddCosmosChatHistoryProvider("conversations");
+var historyCompaction = builder.Services.AddHistoryCompactionProfile(
+    builder.Configuration.GetSection("HistoryCompaction"),
+    static (sp, model) => sp.GetRequiredService<ChatCompletionsClient>().AsIChatClient(model));
+builder.Services.AddCosmosChatHistoryProvider("conversations", options => options.Compaction = historyCompaction);
 
 var systemPrompt = File.ReadAllText(Path.Combine(builder.Environment.ContentRootPath, "Prompts", "system-prompt.txt"));
 

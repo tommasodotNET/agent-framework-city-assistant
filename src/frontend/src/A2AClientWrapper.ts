@@ -16,6 +16,15 @@ export interface A2AStreamEvent {
     contextId?: string;
 }
 
+export class EmptyAgentResponseError extends Error {
+    readonly code = 'empty_response';
+
+    constructor() {
+        super('The agent finished without a text response. The request was not retried automatically; any tools may already have run.');
+        this.name = 'EmptyAgentResponseError';
+    }
+}
+
 export class A2AClientWrapper {
     private client: Client | null = null;
     private agentCardUrl: string;
@@ -59,6 +68,7 @@ export class A2AClientWrapper {
         try {
             // Stream the response
             const stream = client.sendMessageStream(params);
+            let receivedText = false;
             
             for await (const event of stream) {
                 const payload = event.payload;
@@ -67,7 +77,8 @@ export class A2AClientWrapper {
                 }
 
                 if (payload.$case === 'message') {
-                    const content = getText(payload.value.parts);
+                    const content = getAgentText(payload.value);
+                    receivedText ||= content.trim().length > 0;
                     if (content) {
                         yield {
                             content,
@@ -81,7 +92,8 @@ export class A2AClientWrapper {
                 }
 
                 if (payload.$case === 'statusUpdate') {
-                    const content = getText(payload.value.status?.message?.parts ?? []);
+                    const content = getAgentText(payload.value.status?.message);
+                    receivedText ||= content.trim().length > 0;
                     yield {
                         content: content || undefined,
                         contextId: payload.value.contextId || undefined,
@@ -90,6 +102,7 @@ export class A2AClientWrapper {
 
                 if (payload.$case === 'artifactUpdate') {
                     const content = getText(payload.value.artifact?.parts ?? []);
+                    receivedText ||= content.trim().length > 0;
                     if (content) {
                         yield {
                             content,
@@ -97,6 +110,9 @@ export class A2AClientWrapper {
                         };
                     }
                 }
+            }
+            if (!receivedText) {
+                throw new EmptyAgentResponseError();
             }
         } catch (error) {
             console.error('Error streaming message:', error);
@@ -127,15 +143,20 @@ export class A2AClientWrapper {
 
         if (isMessage(response)) {
             responseContextId = response.contextId || undefined;
-            content = getText(response.parts);
+            content = getAgentText(response);
         } else {
             responseContextId = response.contextId || undefined;
-            const lastMessage = response.history[response.history.length - 1] ?? response.status?.message;
-            if (lastMessage) {
-                content = getText(lastMessage.parts);
-            } else {
+            content = getCurrentTurnAgentText(response.history);
+            if (!content.trim()) {
+                content = getAgentText(response.status?.message);
+            }
+            if (!content.trim()) {
                 content = response.artifacts.map(artifact => getText(artifact.parts)).join('');
             }
+        }
+
+        if (!content.trim()) {
+            throw new EmptyAgentResponseError();
         }
 
         return {
@@ -173,6 +194,21 @@ function getText(parts: Part[]): string {
         .filter(part => part.content?.$case === 'text')
         .map(part => part.content?.value ?? '')
         .join('');
+}
+
+function getAgentText(message?: Message): string {
+    return message?.role === Role.ROLE_AGENT ? getText(message.parts) : '';
+}
+
+function getCurrentTurnAgentText(history: Message[]): string {
+    for (let index = history.length - 1; index >= 0; index--) {
+        if (history[index].role === Role.ROLE_USER) {
+            const lastMessage = history.slice(index + 1).reverse()
+                .find(message => getAgentText(message).trim().length > 0);
+            return getAgentText(lastMessage);
+        }
+    }
+    return '';
 }
 
 function isMessage(result: Message | Task): result is Message {
